@@ -1,4 +1,4 @@
-Fetch Indicator and Observables from SEKOIA.IO Intelligence Center.
+Fetch Indicator and Observables from SEKOIA.IO CTI.
 To use this integration, please create an API Key with the right permissions.
 
 This integration was integrated and tested with version 2.20220712 of SEKOIA.IO Intelligence Center.
