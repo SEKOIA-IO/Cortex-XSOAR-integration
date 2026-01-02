@@ -267,7 +267,7 @@ script:
       type: textArea
     description: Add or update a custom label to a data store.
     name: polar-apply-label
-  dockerimage: demisto/python3:3.10.13.75921
+  dockerimage: demisto/python3:3.12.8.3296088
   runonce: false
   script: ''
   subtype: python3
