@@ -4,18 +4,23 @@ on: pull_request
 env:
   CHANGED_FILES_DELIMITER: ";"
 
+permissions: {}
+
 jobs:
   release_notes_review:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: read  # for tj-actions/changed-files to list changed files via pulls.listFiles API
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 2
       - name: Get changed files
         id: changed-files
-        uses: tj-actions/changed-files@v41.0.1
+        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
         with:
           separator: ${{ env.CHANGED_FILES_DELIMITER }}
           files: |
@@ -23,12 +28,12 @@ jobs:
           since_last_remote_commit: false
       - name: Setup Python
         if: ${{ steps.changed-files.outputs.all_changed_files }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.10"
       - name: Setup Poetry
         if: ${{ steps.changed-files.outputs.all_changed_files }}
-        uses: Gr1N/setup-poetry@v9
+        uses: Gr1N/setup-poetry@48b0f77c8c1b1b19cb962f0f00dff7b4be8f81ec # v9
       - name: Install python dependencies
         if: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
@@ -36,10 +41,12 @@ jobs:
       - name: Set Python Path
         if: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Review Release Notes
         if: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          release_notes="${{ steps.changed-files.outputs.all_changed_files }}"
+          release_notes="${STEPS_CHANGED_FILES_OUTPUTS_ALL_CHANGED_FILES}"
           echo "Release notes found in PR: ${release_notes}. Starting docs review..."
           poetry run demisto-sdk doc-review --release-notes --xsoar-only --use-git --use-packs-known-words --known-words ./Tests/known_words.txt --console-log-threshold INFO
+        env:
+          STEPS_CHANGED_FILES_OUTPUTS_ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}

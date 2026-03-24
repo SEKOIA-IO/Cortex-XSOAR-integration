@@ -21,20 +21,22 @@ permissions:
 
 jobs:
   update-dep:
+    permissions:
+      contents: write  # for Git to git push
     runs-on: ubuntu-latest
 
     steps:
     - name: Install poetry
-      uses: Gr1N/setup-poetry@v8
+      uses: Gr1N/setup-poetry@48b0f77c8c1b1b19cb962f0f00dff7b4be8f81ec # v9
 
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         fetch-depth: 0
         token: ${{ secrets.CONTENTBOT_GH_ADMIN_TOKEN }}
 
     - name: Setup python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
       with:
         python-version: '3.10'
         cache: 'poetry'
@@ -43,28 +45,34 @@ jobs:
       run: |
         git config --global user.email "bot@demisto.com"
         git config --global user.name "Content Bot"
-        git checkout -b ${{ inputs.release_version }}
-    
+        git checkout -b "${INPUTS_RELEASE_VERSION}"
+      env:
+        INPUTS_RELEASE_VERSION: ${{ inputs.release_version }}
+
     - name: Update dependencies
       continue-on-error: true
       run: |
-        poetry add --group dev demisto-sdk@${{inputs.release_version}}
+        poetry add --group dev "demisto-sdk@${INPUTS_RELEASE_VERSION}"
         poetry lock --no-update
         git add .
         source .venv/bin/activate
         demisto-sdk pre-commit --mode=ci
         git add .
+      env:
+        INPUTS_RELEASE_VERSION: ${{inputs.release_version}}
 
     - name: Create pull request
       run: |
         git commit -m "poetry files" -a
-        git push origin ${{ inputs.release_version }}
+        git push origin "${INPUTS_RELEASE_VERSION}"
         if ${{ inputs.is_draft == true }}; then
           echo "creating draft release pull request"
-          gh pr create -B master -H ${{ inputs.release_version }} --title "demisto-sdk-release ${{ inputs.release_version }}" --body "Initial body, will be replaced." --reviewer ${{ inputs.reviewer }} -l "docs-approved" --draft
+          gh pr create -B master -H "${INPUTS_RELEASE_VERSION}" --title "demisto-sdk-release ${INPUTS_RELEASE_VERSION}" --body "Initial body, will be replaced." --reviewer "${INPUTS_REVIEWER}" -l "docs-approved" --draft
         else
           echo "creating release pull request"
-          gh pr create -B master -H ${{ inputs.release_version }} --title "demisto-sdk-release ${{ inputs.release_version }}" --body "Initial body, will be replaced." --reviewer ${{ inputs.reviewer }} -l "docs-approved"
+          gh pr create -B master -H "${INPUTS_RELEASE_VERSION}" --title "demisto-sdk-release ${INPUTS_RELEASE_VERSION}" --body "Initial body, will be replaced." --reviewer "${INPUTS_REVIEWER}" -l "docs-approved"
         fi
       env:
         GH_TOKEN: ${{ secrets.CONTENTBOT_GH_ADMIN_TOKEN }}
+        INPUTS_RELEASE_VERSION: ${{ inputs.release_version }}
+        INPUTS_REVIEWER: ${{ inputs.reviewer }}

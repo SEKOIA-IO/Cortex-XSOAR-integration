@@ -8,18 +8,20 @@ permissions:
 
 jobs:
   add_pr_link_to_related_jira_issue:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content' && github.event.pull_request.head.repo.fork == false && github.actor != 'dependabot[bot]' && startsWith(github.head_ref, 'contrib/') == false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.10"
       - name: Setup Poetry
-        uses: Gr1N/setup-poetry@v9
-      - uses: actions/cache@v2
+        uses: Gr1N/setup-poetry@48b0f77c8c1b1b19cb962f0f00dff7b4be8f81ec # v9
+      - uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: .venv
           key: ${{ runner.os }}-poetry-${{ hashFiles('poetry.lock') }}
@@ -38,5 +40,5 @@ jobs:
         run: |
           echo "Checking for related Jira issues to PR: $PR_NUMBER"
           cd .github/github_workflow_scripts/jira_integration_scripts
-          echo --pr_num $PR_NUMBER --pr_link $PR_LINK --pr_title $PR_TITLE --pr_body $PR_BODY --no-is_merged
-          poetry run python ./link_pr_to_jira_issue.py --url "$INSTANCE_URL" --pr_num "$PR_NUMBER" --pr_link "$PR_LINK" --pr_title "$PR_TITLE" --pr_body "$PR_BODY" --no-is_merged --username $USERNAME --password $PASSWORD
+          echo --pr_num "$PR_NUMBER" --pr_link "$PR_LINK" --pr_title "$PR_TITLE" --pr_body "$PR_BODY" --no-is_merged
+          poetry run python ./link_pr_to_jira_issue.py --url "$INSTANCE_URL" --pr_num "$PR_NUMBER" --pr_link "$PR_LINK" --pr_title "$PR_TITLE" --pr_body "$PR_BODY" --no-is_merged --username "$USERNAME" --password "$PASSWORD"

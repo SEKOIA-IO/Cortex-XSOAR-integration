@@ -10,20 +10,23 @@ permissions:
 
 jobs:
   create_internal_pr:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: write  # for run step (declared via comment)
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.fork == true
     steps:
       - name: set pythonpath
         run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.10"
       - name: Setup Poetry
-        uses: Gr1N/setup-poetry@v9
+        uses: Gr1N/setup-poetry@48b0f77c8c1b1b19cb962f0f00dff7b4be8f81ec # v9
       - name: Print Context
         run: |
           echo "$GITHUB_CONTEXT"
@@ -37,15 +40,16 @@ jobs:
         env:
           CONTENTBOT_GH_ADMIN_TOKEN: ${{ secrets.CONTENTBOT_GH_ADMIN_TOKEN }}
           EVENT_PAYLOAD: ${{ toJson(github.event) }}
+          GITHUB_EVENT_PULL_REQUEST_HTML_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          echo "Creating an internal PR from original merged external PR ${{ github.event.pull_request.html_url }}"
+          echo "Creating an internal PR from original merged external PR ${GITHUB_EVENT_PULL_REQUEST_HTML_URL}"
           cd .github/github_workflow_scripts
           poetry run ./create_internal_pr.py
           echo "Finished Creating Internal PR"
 
       - name: Notify External PR Merge
         env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}  # gha-perms:permissions=pull-requests:write
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           echo "Add a comment"

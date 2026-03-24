@@ -6,23 +6,28 @@ on:
       - opened
       - synchronize
 
+permissions: {}
+
 jobs:
   protect-infra-files:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: read  # for tj-actions/changed-files to list changed files via pulls.listFiles API
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 100 # to speed up. changed-files will fetch more if necessary
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
 
       - name: Get changed files
         id: changed-files
-        uses: tj-actions/changed-files@v44 # disable-secrets-detection
+        uses: tj-actions/changed-files@22103cc46bda19c2b464ffe86db46df6922fd323 # v47.0.5
         with:
           files: |
             .gitlab/ci/.gitlab-ci.yml
