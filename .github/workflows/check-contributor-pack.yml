@@ -13,13 +13,13 @@ jobs:
     if: github.repository == 'demisto/content' && startsWith(github.head_ref, 'contrib/') == false && startsWith(github.head_ref, 'to-merge/') == false && contains(github.head_ref, 'xsoar-bot-contrib-ContributionTestPack') == false && github.event.pull_request.head.repo.fork == false
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.8"
       - name: Setup Poetry
-        uses: Gr1N/setup-poetry@v9
+        uses: Gr1N/setup-poetry@48b0f77c8c1b1b19cb962f0f00dff7b4be8f81ec # v9
       - name: Install python dependencies
         run: |
           poetry install --with github-actions
