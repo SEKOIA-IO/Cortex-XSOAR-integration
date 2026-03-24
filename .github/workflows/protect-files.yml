@@ -6,8 +6,13 @@ on:
       - opened
       - synchronize
 
+permissions: {}
+
 jobs:
   protect-infra-files:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: read  # for tj-actions/changed-files to list changed files via pulls.listFiles API
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

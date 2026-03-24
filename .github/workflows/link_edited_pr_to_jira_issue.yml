@@ -8,6 +8,8 @@ permissions:
 
 jobs:
   add_pr_link_to_related_jira_issue:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content' && github.event.pull_request.head.repo.fork == false && github.actor != 'dependabot[bot]' && startsWith(github.head_ref, 'contrib/') == false
     steps:

@@ -9,8 +9,12 @@ env:
   OPERATION_PER_RUN: 1000
   EXEMPT_LABELS: "Ignore Stale,External PR"
 
+permissions: {}
+
 jobs:
   stale:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content' && github.event.pull_request.head.repo.fork == false
     steps:

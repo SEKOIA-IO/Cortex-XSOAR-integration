@@ -7,8 +7,12 @@ on:
     branches:
       - '*'
 
+permissions: {}
+
 jobs:
   purge_branch_protection_rules:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository

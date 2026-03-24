@@ -4,8 +4,13 @@ on: pull_request
 env:
   CHANGED_FILES_DELIMITER: ";"
 
+permissions: {}
+
 jobs:
   release_notes_review:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: read  # for tj-actions/changed-files to list changed files via pulls.listFiles API
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content'
     steps:

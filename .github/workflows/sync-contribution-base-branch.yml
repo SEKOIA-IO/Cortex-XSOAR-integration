@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   sync_contributor_base_branch:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content'
     steps:

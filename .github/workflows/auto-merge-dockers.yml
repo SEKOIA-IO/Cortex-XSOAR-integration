@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   auto_approve_and_merge:
+    permissions:
+      pull-requests: write  # for dependabot to enable auto-approve
     runs-on: ubuntu-latest
     if: startsWith(github.head_ref, 'demisto/') && github.repository == 'demisto/content' && contains(github.event.pull_request.labels.*.name, 'docker-image-auto-update')
     steps:

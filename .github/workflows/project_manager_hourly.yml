@@ -3,8 +3,12 @@ on:
   schedule:
     - cron: "0 * * * *"
 
+permissions: {}
+
 jobs:
   manage_project_board:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content'
     steps:

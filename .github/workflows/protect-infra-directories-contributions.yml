@@ -6,8 +6,13 @@ on:
       - opened
       - synchronize
 
+permissions: {}
+
 jobs:
   protect-non-packs:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: read  # for tj-actions/changed-files to list changed files via pulls.listFiles API
     runs-on: ubuntu-latest
     if: 'startsWith(github.head_ref, ''contrib'') || (github.event.pull_request.head.repo.fork == true && contains(github.event.pull_request.base.ref, ''contrib''))'
     steps:

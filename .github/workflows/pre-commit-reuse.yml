@@ -3,13 +3,15 @@ on:
   workflow_call:
 
 
+permissions: {}
+
 jobs:
   pre-commit:
-    runs-on: ubuntu-latest
     permissions:
-      checks: write
-      pull-requests: write
-      contents: write
+      checks: write  # for MishaKav/pytest-coverage-comment to create check annotations from junit XML
+      contents: read  # for MishaKav/pytest-coverage-comment to compare commits for changed files
+      pull-requests: write  # for MishaKav/pytest-coverage-comment to create or update PR comments
+    runs-on: ubuntu-latest
     steps:
     - name: Install poetry
       uses: Gr1N/setup-poetry@48b0f77c8c1b1b19cb962f0f00dff7b4be8f81ec # v9

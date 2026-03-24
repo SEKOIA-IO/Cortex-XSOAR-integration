@@ -3,12 +3,14 @@ on: pull_request
 
 
 
+permissions: {}
+
 jobs:
   pre-commit:
-    permissions:
-      checks: write
-      pull-requests: write
-      contents: write
 
+    permissions:
+      checks: write  # for MishaKav/pytest-coverage-comment to create check annotations from junit XML
+      contents: read  # for MishaKav/pytest-coverage-comment to compare commits for changed files
+      pull-requests: write  # for MishaKav/pytest-coverage-comment to create or update PR comments
     uses: ./.github/workflows/pre-commit-reuse.yml
       

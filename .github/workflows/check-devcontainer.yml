@@ -14,8 +14,12 @@ on:
       - pyproject.toml
       - poetry.lock
       - .github/workflows/check-devcontainer.yml
+permissions: {}
+
 jobs:
   Build-Devcontainer:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
     runs-on: ubuntu-latest
     steps:
     - name: Checkout

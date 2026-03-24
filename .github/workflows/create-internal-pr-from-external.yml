@@ -10,6 +10,9 @@ permissions:
 
 jobs:
   create_internal_pr:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: write  # for run step (declared via comment)
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content' && github.event.action == 'closed' && github.event.pull_request.merged == true && github.event.pull_request.head.repo.fork == true
     steps:
@@ -45,7 +48,7 @@ jobs:
 
       - name: Notify External PR Merge
         env:
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}  # gha-perms:permissions=pull-requests:write
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           echo "Add a comment"

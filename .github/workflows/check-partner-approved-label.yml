@@ -8,6 +8,9 @@ permissions:
 
 jobs:
   check_label_job:
+    permissions:
+      contents: read  # for actions/checkout to fetch code
+      pull-requests: read  # for run step (declared via comment)
     runs-on: ubuntu-latest
     if: github.repository == 'demisto/content' && github.event.pull_request.head.repo.fork == true && contains(github.head_ref, 'xsoar-bot-contrib-ContributionTestPack') == false
     steps:
@@ -30,7 +33,7 @@ jobs:
         id: check_label
         env:
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # gha-perms:permissions=pull-requests:read
         run: |
           echo "Checking label Partner-Approved for: $PR_NUMBER"
           cd .github/github_workflow_scripts
