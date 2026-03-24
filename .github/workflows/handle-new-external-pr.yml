@@ -40,8 +40,9 @@ jobs:
         env:
           CONTENTBOT_GH_ADMIN_TOKEN: ${{ secrets.CONTENTBOT_GH_ADMIN_TOKEN }}
           EVENT_PAYLOAD: ${{ toJson(github.event) }}
+          GITHUB_EVENT_PULL_REQUEST_HTML_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          echo "Updating External PR ${{ github.event.pull_request.html_url }}"
+          echo "Updating External PR ${GITHUB_EVENT_PULL_REQUEST_HTML_URL}"
           cd .github/github_workflow_scripts
           poetry run ./handle_external_pr.py
           echo "Finished Handling External PR"
@@ -61,7 +62,8 @@ jobs:
           CONTENTBOT_GH_ADMIN_TOKEN: ${{ secrets.CONTENTBOT_GH_ADMIN_TOKEN }}
           EVENT_PAYLOAD: ${{ toJson(github.event) }}
           CORTEX_XSOAR_SLACK_TOKEN: ${{ secrets.CORTEX_XSOAR_SLACK_TOKEN }}
+          GITHUB_EVENT_PULL_REQUEST_HTML_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          echo "Sending notification about External PR ${{ github.event.pull_request.html_url }}"
+          echo "Sending notification about External PR ${GITHUB_EVENT_PULL_REQUEST_HTML_URL}"
           cd .github/github_workflow_scripts
           poetry run ./send_slack_message.py

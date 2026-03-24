@@ -45,6 +45,8 @@ jobs:
       - name: Review Release Notes
         if: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          release_notes="${{ steps.changed-files.outputs.all_changed_files }}"
+          release_notes="${STEPS_CHANGED_FILES_OUTPUTS_ALL_CHANGED_FILES}"
           echo "Release notes found in PR: ${release_notes}. Starting docs review..."
           poetry run demisto-sdk doc-review --release-notes --xsoar-only --use-git --use-packs-known-words --known-words ./Tests/known_words.txt --console-log-threshold INFO
+        env:
+          STEPS_CHANGED_FILES_OUTPUTS_ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}

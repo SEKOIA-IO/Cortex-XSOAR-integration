@@ -30,4 +30,6 @@ jobs:
 
       - name: Check for changes in protected directories
         run: |
-              python .github/github_workflow_scripts/check_protected_directories.py ${{ steps.changed-files.outputs.all_changed_files }}
+              python .github/github_workflow_scripts/check_protected_directories.py ${STEPS_CHANGED_FILES_OUTPUTS_ALL_CHANGED_FILES}
+        env:
+          STEPS_CHANGED_FILES_OUTPUTS_ALL_CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
