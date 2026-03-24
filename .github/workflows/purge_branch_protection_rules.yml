@@ -4,8 +4,6 @@ run-name: "Handle Deleted Branch '${{ github.event.ref }}'"
 
 on:
   delete:
-    branches:
-      - '*'
 
 permissions: {}
 

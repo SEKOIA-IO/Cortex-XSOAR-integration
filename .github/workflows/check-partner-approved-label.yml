@@ -27,7 +27,7 @@ jobs:
           poetry install --with github-actions
       - name: set pythonpath
         run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
 
       - name: Check if partner-approved label exists
         id: check_label
@@ -37,4 +37,4 @@ jobs:
         run: |
           echo "Checking label Partner-Approved for: $PR_NUMBER"
           cd .github/github_workflow_scripts
-          poetry run python check_if_partner_approved_label_exists.py --pr_number $PR_NUMBER --github_token $GITHUB_TOKEN
+          poetry run python check_if_partner_approved_label_exists.py --pr_number "$PR_NUMBER" --github_token "$GITHUB_TOKEN"

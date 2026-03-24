@@ -41,7 +41,7 @@ jobs:
       - name: Set Python Path
         if: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Review Release Notes
         if: ${{ steps.changed-files.outputs.all_changed_files }}
         run: |

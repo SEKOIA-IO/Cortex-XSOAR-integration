@@ -35,7 +35,7 @@ jobs:
           poetry install --with github-actions
       - name: set pythonpath
         run: |
-          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - name: Check conflicts and add release notes
         env:
           CONTENTBOT_GH_ADMIN_TOKEN: ${{ secrets.CONTENTBOT_GH_ADMIN_TOKEN }}
@@ -45,4 +45,4 @@ jobs:
           git config --global user.email "bot@demisto.com"
           git config --global user.name "Content Bot"
           echo "Someone merged to master. Starting to check if conflicts in release notes created."
-          poetry run python .github/github_workflow_scripts/autobump_rn.py -g $CONTENTBOT_GH_ADMIN_TOKEN -r $RUN_ID
+          poetry run python .github/github_workflow_scripts/autobump_rn.py -g "$CONTENTBOT_GH_ADMIN_TOKEN" -r "$RUN_ID"

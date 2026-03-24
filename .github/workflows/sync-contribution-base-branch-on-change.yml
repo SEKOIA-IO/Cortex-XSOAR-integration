@@ -35,5 +35,5 @@ jobs:
         run: |
           echo "Updating contribution base branch (contrib/*)"
           cd .github/github_workflow_scripts
-          poetry run ./sync_contrib_base.py --branch_name ${GITHUB_EVENT_PULL_REQUEST_BASE_REF}
+          poetry run ./sync_contrib_base.py --branch_name "${GITHUB_EVENT_PULL_REQUEST_BASE_REF}"
           echo "Finished updating base branch"
