@@ -8,6 +8,12 @@ updates:
       - "github_actions"
       - "dependencies"
       - "docs-approved"
+    cooldown:
+      default-days: 14
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
 
   - package-ecosystem: "npm"
     directory: "/"
