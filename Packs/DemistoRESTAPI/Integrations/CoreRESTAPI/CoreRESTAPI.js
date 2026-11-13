@@ -1,5 +1,11 @@
 
 const MIN_HOSTED_XSOAR_VERSION = '8.0.0';
+const PLAYBOOK_METADATA = 'playbook_metadata';
+const INTEGRATION_NAME = 'CoreRESTAPI';
+const xsoar_hosted = ['xsoar', 'xsoar_hosted']
+const platform_hosted = ['x2', 'unified_platform']
+// Default timeout for HTTP requests (3 minutes in milliseconds)
+const default_timeout = 3 * 60 * 1000;
 
 var serverURL = params.url;
 if (serverURL.slice(-1) === '/') {
@@ -10,7 +16,7 @@ if (serverURL.slice(-1) === '/') {
 isHosted = function () {
     res = getDemistoVersion();
     platform = res.platform;
-    if  (((platform === "xsoar" || platform === "xsoar_hosted") && (isDemistoVersionGE(MIN_HOSTED_XSOAR_VERSION))) || platform === "x2") {
+    if  ((xsoar_hosted.includes(platform) && isDemistoVersionGE(MIN_HOSTED_XSOAR_VERSION)) || platform_hosted.includes(platform)) {
         return true
     }
     return false
@@ -68,10 +74,14 @@ getRequestURL = function (uri) {
     var requestUrl = serverURL;
 
     // only when using XSIAM or XSOAR >= 8.0 we will add the /xsoar suffix
-    // and only when it is not a /public_api endpoint.
+    // and only when it is not a /public_api or /platform endpoint.
     if (isHosted()) {
-        if ((!serverURL.endsWith('/xsoar')) && (!uri.startsWith('/public_api'))) {
-            requestUrl += '/xsoar'
+        const isPublicApi = uri.startsWith('/public_api');
+        const isPlatformApi = uri.startsWith('/platform');
+        const isXsoarApi = serverURL.endsWith('/xsoar');
+
+        if (!isXsoarApi && !isPublicApi && !isPlatformApi) {
+            requestUrl += '/xsoar';
         }
     }
     if (params.use_tenant){
@@ -81,10 +91,10 @@ getRequestURL = function (uri) {
         requestUrl += '/';
     }
     requestUrl += uri;
-    return requestUrl
+    return requestUrl;
 }
 
-sendMultipart = function (uri, entryID, body) {
+sendMultipart = function (uri, entryID, body, timeoutInMilliseconds) {
     var requestUrl = getRequestURL(uri)
     try {
         body = JSON.parse(body);
@@ -106,10 +116,13 @@ sendMultipart = function (uri, entryID, body) {
     else if (params.auth_method == 'Advanced') {
         headers = getAdvancedAuthMethodHeaders(key, auth_id, 'multipart/form-data')
     }
+    // Default timeout to 3 minutes if not provided
+    timeoutInMilliseconds = timeoutInMilliseconds ? timeoutInMilliseconds : 3 * 60 * 1000; // timeout in milliseconds
 
     var res;
     var tries = 0;
     do {
+        logDebug('Calling httpMultipart from sendMultipart, try number ' + tries + ', with requestUrl = ' + requestUrl + ', entryID = ' + entryID + ', body = ' + JSON.stringify(body) + ', insecure = ' + params.insecure + ', proxy = ' + params.proxy + ', undefined = ' + undefined + ', file, ' + ' timeout in milliseconds = ' + timeoutInMilliseconds);
         res = httpMultipart(
             requestUrl,
             entryID,
@@ -120,15 +133,22 @@ sendMultipart = function (uri, entryID, body) {
             params.insecure,
             params.proxy,
             undefined,
-            'file'
+            'file',
+            undefined,
+            undefined,
+            timeoutInMilliseconds
         );
+        logDebug('The result of calling httpMultipart, with the requestUrl = ' + requestUrl + ' is ' + res.Status + ' and res is ' + JSON.stringify(res))
         tries++;
     } while (tries < 3 && res.Status.startsWith('timeout'));
     logDebug("Ran httpMultipart() " + tries + " time(s)")
 
     if (res.StatusCode < 200 || res.StatusCode >= 300) {
-        throw 'Core REST APIs - Request Failed.\nStatus code: ' + res.StatusCode + '.\nBody: ' + JSON.stringify(res) + '.';
+        logDebug('httpMultipart request to requestUrl = ' + requestUrl + ' failed.\nStatus code: ' + res.StatusCode + '.\nBody: ' + JSON.stringify(res) + '.');
+        throw 'Core REST APIs - Request to requestUrl = ' + requestUrl + ' Failed.\nStatus code: ' + res.StatusCode + '.\nBody: ' + JSON.stringify(res) + '.';
     }
+    logDebug('httpMultipart request to requestUrl = ' + requestUrl + ' was successful.');
+
     try {
         var response = res.Body;
         try {
@@ -138,135 +158,185 @@ sendMultipart = function (uri, entryID, body) {
         }
         return {response: response};
     } catch (ex) {
-        throw 'Core REST APIs - Error parsing response - ' + ex + '\nBody:' + res.Body;
+        throw 'Core REST APIs - Error parsing response in httpMultipart request - ' + ex + '\nBody:' + res.Body;
     }
 
 };
 
-var sendRequest = function(method, uri, body, raw) {
+var addPlaybookMetadataToRequest = function(body, command) {
+    try {
+        var requestBodyObject = JSON.parse(body);
+        var playbookTaskInfoJson = JSON.parse(playbookTaskInfo);
+        requestBodyObject.request_data.playbook_metadata = {
+            'playbook_id': playbookTaskInfoJson.playbookID,
+            'playbook_name': playbookTaskInfoJson.playbookName,
+            'task_id': playbookTaskInfoJson.taskID,
+            'task_name': playbookTaskInfoJson.taskName,
+            'integration_name': INTEGRATION_NAME,
+            'command_name': command,
+        }
+        logDebug("Added playbook-metadata to request body " + requestBodyObject.request_data.playbook_metadata);
+    } catch(error) {
+        logError("Error parsing as a JSON object playbookTaskInfo: " + error);
+    } finally {
+        body = JSON.stringify(requestBodyObject);
+    }
+    return body;
+};
+
+
+var sendRequest = function(method, uri, body, raw, timeout = default_timeout) {
     var requestUrl = getRequestURL(uri);
-    var key = params.apikey? params.apikey : (params.creds_apikey? params.creds_apikey.password : '');
-    if (key == ''){
+
+    var key = params.apikey ? params.apikey : (params.creds_apikey ? params.creds_apikey.password : '');
+    if (key == '') {
         throw 'API Key must be provided.';
     }
-    var auth_id = params.auth_id? params.auth_id : (params.creds_apikey? params.creds_apikey.identifier : '');
-    var headers = {}
-    // in case the integration was installed before auth_method was added, the auth_method param will be empty so
-    // we will use the standard auth method
-    if (!params.auth_method || params.auth_method == 'Standard'){
-        headers = getStandardAuthMethodHeaders(key, auth_id, 'application/json')
-    }
-    else if (params.auth_method == 'Advanced') {
+
+    var auth_id = params.auth_id ? params.auth_id : (params.creds_apikey ? params.creds_apikey.identifier : '');
+
+    var headers = {};
+    if (!params.auth_method || params.auth_method == 'Standard') {
+        headers = getStandardAuthMethodHeaders(key, auth_id, 'application/json');
+    } else if (params.auth_method == 'Advanced') {
         if (!auth_id) {
             throw 'Core REST APIs - please choose "Standard Authentication method" or provide the API Key ID.';
         }
-        headers = getAdvancedAuthMethodHeaders(key, auth_id, 'application/json')
+        headers = getAdvancedAuthMethodHeaders(key, auth_id, 'application/json');
     }
-    var res = http(
-        requestUrl,
-        {
-            Method: method,
-            Headers: headers,
-            Body: body,
-            SaveToFile: raw
-        },
-        params.insecure,
-        params.proxy
-    );
+
+    if (requestUrl.includes("start_xql_query") && method === 'POST') {
+        body = addPlaybookMetadataToRequest(body, command);
+    }
+
+    var res;
+    var tries = 0;
+    var maxTries = 3;
+
+    do {
+        logDebug('Calling http() from sendRequest, try number ' + tries);
+
+        res = http(
+            requestUrl,
+            {
+                Method: method,
+                Headers: headers,
+                Body: body,
+                SaveToFile: raw
+            },
+            params.insecure,
+            params.proxy,
+            undefined,
+            undefined,
+            timeout
+        );
+
+        logDebug(
+            'Result of http() requestUrl = ' + requestUrl +
+            ' status = ' + res.Status);
+
+        tries++;
+
+    } while (tries < maxTries && res.Status && res.Status.startsWith('timeout'));
+
+    logDebug("Ran http() " + tries + " time(s)");
 
     if (res.StatusCode < 200 || res.StatusCode >= 300) {
-        throw 'Core REST APIs - Request Failed.\nStatus code: ' + res.StatusCode + '.\nBody: ' + JSON.stringify(res) + '.';
+        logDebug('http() request failed.\nStatus code: ' + res.StatusCode + '.\nBody: ' + JSON.stringify(res));
+        throw 'Core REST APIs - Request to requestUrl = ' + requestUrl +
+              ' Failed.\nStatus code: ' + res.StatusCode +
+              '.\nBody: ' + JSON.stringify(res);
     }
+
+    logDebug('http() request was successful.');
+
     if (raw) {
         return res;
-    } else {
+    }
+
+    try {
+        var response = res.Body;
         try {
-            var response = res.Body;
-            try {
-                response = JSON.parse(res.Body);
-            } catch (ex) {
-                // do nothing, already handled prior the try/catch
-            }
-            return {response: response};
+            response = JSON.parse(res.Body);
         } catch (ex) {
-            throw 'Core REST APIs - Error parsing response - ' + ex + '\nBody:' + res.Body;
+            // keep raw body if not JSON
         }
+        return { response: response };
+    } catch (ex) {
+        throw 'Core REST APIs - Error parsing response - http() request to requestUrl = ' +
+              requestUrl + '\nError: ' + ex + '\nBody:' + res.Body;
     }
 };
 
-function reduce_one_entry(data, keep_fields) {
+function reduce_data(data, keep_fields) {
     var new_d = {};
     for (var field_index = 0; field_index < keep_fields.length; field_index += 1) {
         var field = keep_fields[field_index];
-        if (data[field]) {
+        if (field in data) {
             new_d[field] = data[field];
         }
     }
     return new_d;
 }
 
-function reduce_data(data, fields_to_keep) {
-    if (data instanceof Array) {
-        var new_data = [];
-        for (var data_index = 0; data_index < data.length; data_index += 1) {
-            var d = data[data_index];
-            new_data.push(reduce_one_entry(d, fields_to_keep));
-        }
-        return new_data;
-    }
-    else {
-        if (data.constructor == Object) {
-            return [reduce_one_entry(data, fields_to_keep)];
-        }
-    }
-    return data;
-}
-
-var deleteIncidents = function(ids_to_delete, fields_to_keep) {
+var deleteIncidents = function(ids_to_delete) {
     var body = {
         ids: ids_to_delete,
         all: false,
-        filter: {}
+        filter: {"size": 1},
+        excludeIncidentsResponseData: true // exclude unrelated data in response
     };
 
     var res = sendRequest('POST', '/incident/batchDelete', JSON.stringify(body));
     if (isError(res[0])) {
         throw res[0].Contents;
     }
+    
+    var relevant_headers = ['totalDeleted', "notUpdated", 'total']
+    var response = reduce_data(res['response'], relevant_headers)
 
-    var response = res['response'];
-    if (fields_to_keep && (fields_to_keep != "all")) {
-        response['data'] = reduce_data(response['data'], fields_to_keep);
-    }
-    var md = tableToMarkdown('Core delete incidents', response, ['data', 'total', "notUpdated"]);
+    var md = tableToMarkdown('Core delete incidents', response);
 
     return {
         ContentsFormat: formats.json,
         Type: entryTypes.note,
-        Contents: res,
+        Contents: {"response": response},
         HumanReadable: md
     };
 };
 
-var installPack = function(pack_url, entry_id, skip_verify, skip_validation){
+var installPack = function(pack_url, entry_id, skip_verify, skip_validation, timeoutInSeconds){
     let file_path;
+    // Convert timeout from seconds to milliseconds, default to 180 seconds (3 minutes)
+    var timeoutInMilliseconds = timeoutInSeconds ? parseInt(timeoutInSeconds) * 1000 : 3 * 60 * 1000;
+    
     if (entry_id){
         file_path = entry_id;
     }
     else{
+        var method = 'GET';
+        var save_to_file = true;
         // download pack zip file
+        logDebug('Calling http() from installPack, with pack_url = ' + pack_url + ', Method = ' + method + ', SaveToFile = ' + save_to_file + ', timeout in milliseconds = ' + timeoutInMilliseconds);
         var res = http(
         pack_url,
         {
-            Method: 'GET',
+            Method: method,
             Headers: {},
-            SaveToFile: true
-        });
+            SaveToFile: save_to_file
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        timeoutInMilliseconds
+        );
 
         if (res.StatusCode < 200 || res.StatusCode >= 300) {
             throw 'Core REST APIs - Failed to download pack file from ' + pack_url;
         }
         file_path = res.Path;
+        logDebug('The result of http() from installPack, to pack_url = ' + pack_url + ' is ' + res.StatusCode)
     }
 
     let upload_url = 'contentpacks/installed/upload?'
@@ -289,20 +359,20 @@ var installPack = function(pack_url, entry_id, skip_verify, skip_validation){
         }
     }
     // upload the pack
-    sendMultipart(upload_url, file_path,'{}');
+    sendMultipart(upload_url, file_path,'{}', timeoutInMilliseconds);
 };
 
-var installPacks = function(packs_to_install, file_url, entry_id, skip_verify, skip_validation) {
+var installPacks = function(packs_to_install, file_url, entry_id, skip_verify, skip_validation, timeoutInSeconds = 3 * 60) {
     if ((!packs_to_install) && (!file_url) && (!entry_id)) {
         throw 'Either packs_to_install, file_url or entry_id argument must be provided.';
     }
     else if (file_url) {
-        installPack(file_url, undefined, skip_verify, skip_validation)
+        installPack(file_url, undefined, skip_verify, skip_validation, timeoutInSeconds)
         logDebug('Pack installed successfully from ' + file_url)
         return 'The pack installed successfully from the file ' + file_url
     }
     else if (entry_id) {
-        installPack(undefined, entry_id, skip_verify, skip_validation)
+        installPack(undefined, entry_id, skip_verify, skip_validation, timeoutInSeconds)
         logDebug('The pack installed successfully from the file.')
         return 'The pack installed successfully from the file.'
     }
@@ -316,7 +386,7 @@ var installPacks = function(packs_to_install, file_url, entry_id, skip_verify, s
             let pack_version = pack[pack_id]
 
             let pack_url = '{0}{1}/{2}/{3}.zip'.format(marketplace_url,pack_id,pack_version,pack_id)
-            installPack(pack_url, undefined, skip_verify, skip_validation)
+            installPack(pack_url, undefined, skip_verify, skip_validation, timeoutInSeconds)
             logDebug(pack_id + ' pack installed successfully')
             installed_packs.push(pack_id)
         }
@@ -341,7 +411,10 @@ Returns:
 """
  */
 var uploadFile= function(incident_id, entry_id) {
-    var res = httpMultipart(`/entry/upload/${incident_id}`, entry_id);
+    timeout = 3 * 60 * 1000; // timeout in milliseconds
+    logDebug('Calling httpMultipart from uploadFile, with the url /entry/upload/' + incident_id + ' and entry_id = ' + entry_id + ', timeout in milliseconds = ' + timeout);
+    var res = httpMultipart(`/entry/upload/${incident_id}`, entry_id, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, timeout);
+    logDebug('After Calling to httpMultipart with the url /entry/upload/' + incident_id + ' and entry_id = ' + entry_id + '. The satus code: ' + res.StatusCode);
     if (isError(res[0])) {
         throw res[0].Contents;
     }
@@ -422,11 +495,16 @@ var fileUploadCommand = function(incident_id, file_content, file_name, entryID )
     }
     var fileId = '';
     if ((!entryID)) {
+        logDebug('Calling saveFile for the file ' + file_name);
         fileId = saveFile(file_content);
+        logDebug('Calling uploadFile for the incident ' + incident_id + ' with fileId = ' + fileId);
         response = uploadFile(incident_id, fileId);
+        logDebug('After the call to uploadFile for the incident ' + incident_id + ' with fileId = ' + fileId + '. Status code: ' + response.StatusCode);
     } else {
         if (file_name === undefined) {
+            logDebug('Calling dq with the invContext of incident ' + incident_id + ' and the transformation string: File(val.EntryID == ${entryID}).Name');
             file_name = dq(invContext, `File(val.EntryID == ${entryID}).Name`);
+            logDebug('After calling dq. The returned file name is ' + file_name + '. The parameters were the invContext of incident ' + incident_id + ' and the transformation string: File(val.EntryID == ${entryID}).Name');
         }
         if (Array.isArray(file_name)) {
             if (file_name.length > 0) {
@@ -536,19 +614,28 @@ var fileDeleteAttachmentCommand = function (attachment_path, incident_id, field_
 
 switch (command) {
     case 'test-module':
-        res = sendRequest('GET','user');
-        if (res.response.id == undefined){
-            throw 'Test integration failed, The URL or The API key you entered might be incorrect.';
-        }
+        res = sendRequest('GET','user');  // throws an exception if the request fails
         return 'ok';
     case 'demisto-api-post':
     case 'core-api-post':
         if(args.body)
             var body = JSON.parse(args.body);
         else
-            logDebug('The body is empty.')
+            logDebug('The body is empty.');
+        var timeout; // Declare timeout.
+        if (args.timeout) {
+            var parsedTimeout = parseInt(args.timeout);
+            if (!isNaN(parsedTimeout) && parsedTimeout >= 0) {
+                timeout = parsedTimeout * 60 * 1000; // timeout in milliseconds
+                logDebug('Timeout was set to ' + timeout + ' milliseconds.');
+            }
+        }
+        if (!timeout) {
+            timeout = default_timeout; // Default 3 minutes timeout
+            logDebug('Timeout was not provided or it is invalid. Will use the default 3 minutes timeout.');
+        }
 
-        return sendRequest('POST',args.uri, args.body);
+        return sendRequest('POST', args.uri, args.body, false, timeout);
     case 'demisto-api-get':
     case 'core-api-get':
         return sendRequest('GET',args.uri);
@@ -556,6 +643,9 @@ switch (command) {
     case 'core-api-put':
         var body = JSON.parse(args.body);
         return sendRequest('PUT',args.uri, args.body);
+    case 'core-api-patch':
+        var body = JSON.parse(args.body);
+        return sendRequest('PATCH',args.uri, args.body);
     case 'demisto-api-delete':
     case 'core-api-delete':
         return sendRequest('DELETE',args.uri);
@@ -579,11 +669,10 @@ switch (command) {
     case 'demisto-delete-incidents':
     case 'core-delete-incidents':
         var ids = argToList(args.ids);
-        var fields = argToList(args.fields);
-        return deleteIncidents(ids, fields);
+        return deleteIncidents(ids);
     case 'demisto-api-install-packs':
     case 'core-api-install-packs':
-        return installPacks(args.packs_to_install, args.file_url, args.entry_id, args.skip_verify, args.skip_validation);
+        return installPacks(args.packs_to_install, args.file_url, args.entry_id, args.skip_verify, args.skip_validation, args.timeout_in_seconds);
     case 'core-api-file-upload':
         return fileUploadCommand(args.incident_id, args.file_content, args.file_name, args.entry_id)
     case 'core-api-file-delete':
@@ -595,3 +684,4 @@ switch (command) {
     default:
         throw 'Core REST APIs - unknown command';
 }
+

@@ -1,5 +1,6 @@
 category: Network Security
-sectionOrder:
+provider: SolarWinds Corporation
+sectionorder:
 - Connect
 - Collect
 commonfields:
@@ -10,6 +11,13 @@ configuration:
   display: Name or IP address of the Orion server
   name: server
   required: true
+  type: 0
+  section: Connect
+- additionalinfo: 'Port number with which to connect to the Orion server. Default is 17774.'
+  display: Port
+  name: port
+  defaultvalue: 17774
+  required: false
   type: 0
   section: Connect
 - additionalinfo: Admin can create users such as guests from the Orion platform and provide access permission according to need.
@@ -144,6 +152,13 @@ configuration:
   type: 13
   section: Connect
   required: false
+- display: Incidents Fetch Interval
+  name: incidentFetchInterval
+  defaultvalue: '1'
+  required: false
+  type: 19
+  section: Collect
+  advanced: true
 - display: Fetch incidents
   name: isFetch
   type: 8
@@ -460,7 +475,7 @@ script:
       Executes a query request.
       Note: The guidelines for composing the query can be found in the 'View Integration Documentation' linked in the integration tips.
     name: swis-query
-  dockerimage: demisto/python3:3.10.13.84405
+  dockerimage: demisto/python3:3.12.13.10116658
   isfetch: true
   runonce: false
   script: '-'

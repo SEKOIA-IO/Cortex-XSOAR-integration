@@ -1,22 +1,30 @@
 import json
 
+import demistomock as demisto
+import GitHub
 import pytest
 import requests_mock
+from CommonServerPython import CommandResults, DemistoException
+from GitHub import (
+    add_issue_to_project_board_command,
+    get_branch_command,
+    get_path_data,
+    github_releases_list_command,
+    github_list_organization_repositories_command,
+    github_list_actions_caches_command,
+    github_delete_actions_cache_command,
+    github_list_actions_artifacts_command,
+    github_delete_actions_artifact_command,
+    http_request,
+    list_all_projects_command,
+    list_branch_pull_requests,
+    list_issue_comments,
+    main,
+)
 
-import demistomock as demisto
-from CommonServerPython import CommandResults
-from GitHub import main, list_branch_pull_requests, list_all_projects_command, \
-    add_issue_to_project_board_command, get_path_data, github_releases_list_command, get_branch_command, \
-    list_issue_comments, http_request
-import GitHub
+REGULAR_BASE_URL = "https://api.github.com"
 
-REGULAR_BASE_URL = 'https://api.github.com'
-
-MOCK_PARAMS = {
-    'user': 'test',
-    'repository': 'hello-world',
-    'token': 'testtoken'
-}
+MOCK_PARAMS = {"user": "test", "repository": "hello-world", "token": "testtoken"}
 
 
 def load_test_data(json_path):
@@ -25,62 +33,50 @@ def load_test_data(json_path):
 
 
 def test_search_code(requests_mock, mocker):
-    raw_response = load_test_data('./test_data/search_code_response.json')
-    requests_mock.get(f'{REGULAR_BASE_URL}/search/code?q=create_artifacts%2borg%3ademisto&page=0&per_page=10',
-                      json=raw_response)
+    raw_response = load_test_data("./test_data/search_code_response.json")
+    requests_mock.get(f"{REGULAR_BASE_URL}/search/code?q=create_artifacts%2borg%3ademisto&page=0&per_page=10", json=raw_response)
 
-    mocker.patch.object(demisto, 'params', return_value=MOCK_PARAMS)
-    mocker.patch.object(demisto, 'args', return_value={
-        'query': 'create_artifacts+org:demisto',
-        'limit': '10'
-    })
-    mocker.patch.object(demisto, 'command', return_value='GitHub-search-code')
-    mocker.patch.object(demisto, 'results')
+    mocker.patch.object(demisto, "params", return_value=MOCK_PARAMS)
+    mocker.patch.object(demisto, "args", return_value={"query": "create_artifacts+org:demisto", "limit": "10"})
+    mocker.patch.object(demisto, "command", return_value="GitHub-search-code")
+    mocker.patch.object(demisto, "results")
 
     main()
 
     results = demisto.results.call_args[0][0]
-    assert results['Contents'] == raw_response
-    assert len(results['EntryContext']['GitHub.CodeSearchResults(val.html_url && val.html_url == obj.html_url)']) == 7
-    assert 'Repository Name' in results['HumanReadable']
+    assert results["Contents"] == raw_response
+    assert len(results["EntryContext"]["GitHub.CodeSearchResults(val.html_url && val.html_url == obj.html_url)"]) == 7
+    assert "Repository Name" in results["HumanReadable"]
 
 
 def test_list_branch_pull_requests_command(requests_mock):
-    test_list_branch_pull_requests_command_response = load_test_data(
-        './test_data/get-branch-pull-requests-response.json')
-    requests_mock.get('https://api.github.com/repos/demisto/content/pulls?head=demisto:Update-Docker-Image',
-                      json=test_list_branch_pull_requests_command_response['response'])
-    formatted_outputs = list_branch_pull_requests(branch_name='Update-Docker-Image', repository='content',
-                                                  organization='demisto')
-    assert formatted_outputs == test_list_branch_pull_requests_command_response['expected']
+    test_list_branch_pull_requests_command_response = load_test_data("./test_data/get-branch-pull-requests-response.json")
+    requests_mock.get(
+        "https://api.github.com/repos/demisto/content/pulls?head=demisto:Update-Docker-Image",
+        json=test_list_branch_pull_requests_command_response["response"],
+    )
+    formatted_outputs = list_branch_pull_requests(branch_name="Update-Docker-Image", repository="content", organization="demisto")
+    assert formatted_outputs == test_list_branch_pull_requests_command_response["expected"]
 
 
 def mock_http_request(method, url_suffix, params=None, data=None, headers=None, is_raw_response=False):
     if url_suffix == "/search/issues":
         return {"items": [{"repository_url": "", "limit": params.get("per_page")}]}
-    elif url_suffix == "/orgs/demisto/teams/content/members" and params.get('page') == 1:
-        return [{"login": 'test1', 'id': '12345'}]
-    elif url_suffix == "/orgs/demisto/teams/content/members" and params.get('page') == 2:
+    elif url_suffix == "/orgs/demisto/teams/content/members" and params.get("page") == 1:
+        return [{"login": "test1", "id": "12345"}]
+    elif url_suffix == "/orgs/demisto/teams/content/members" and params.get("page") == 2:
         return []
     return None
 
 
-SEARCH_CASES = [
-    (200, 100),
-    (40, 100)
-]
+SEARCH_CASES = [(200, 100), (40, 100)]
 
-LIST_TEAM_MEMBERS_CASES = [
-    (200, {'page': 1, 'per_page': 100}),
-    (40, {'page': 1, 'per_page': 40})
-]
+LIST_TEAM_MEMBERS_CASES = [(200, {"page": 1, "per_page": 100}), (40, {"page": 1, "per_page": 40})]
 
-RETURN_ERROR_TARGET = 'GitHub.return_error'
+RETURN_ERROR_TARGET = "GitHub.return_error"
 
 
-@pytest.mark.parametrize('params, expected_result', [
-    ({'credentials': {'password': '1234'}}, "Insert api token or private key")
-])
+@pytest.mark.parametrize("params, expected_result", [({"credentials": {"password": "1234"}}, "Insert api token or private key")])
 def test_missing_params(mocker, params, expected_result):
     """
     Given:
@@ -92,7 +88,7 @@ def test_missing_params(mocker, params, expected_result):
       - Case 1: Should return "Insert api token or private key" error message.
     """
 
-    mocker.patch.object(demisto, 'params', return_value=params)
+    mocker.patch.object(demisto, "params", return_value=params)
     return_error_mock = mocker.patch(RETURN_ERROR_TARGET)
     main()
     assert return_error_mock.call_count == 1
@@ -101,7 +97,7 @@ def test_missing_params(mocker, params, expected_result):
     assert expected_result in err_msg
 
 
-@pytest.mark.parametrize('limit, expected_result', SEARCH_CASES)
+@pytest.mark.parametrize("limit, expected_result", SEARCH_CASES)
 def test_search_command(mocker, limit, expected_result):
     """
     Given:
@@ -111,21 +107,18 @@ def test_search_command(mocker, limit, expected_result):
     Then:
         Assert that the limit <= 100
     """
-    mocker.patch.object(demisto, 'params', return_value=MOCK_PARAMS)
-    mocker.patch.object(demisto, 'args', return_value={
-        'query': 'Hello',
-        'limit': limit
-    })
-    mocker.patch('GitHub.http_request', side_effect=mock_http_request)
-    mocker_output = mocker.patch('GitHub.return_outputs')
+    mocker.patch.object(demisto, "params", return_value=MOCK_PARAMS)
+    mocker.patch.object(demisto, "args", return_value={"query": "Hello", "limit": limit})
+    mocker.patch("GitHub.http_request", side_effect=mock_http_request)
+    mocker_output = mocker.patch("GitHub.return_outputs")
     from GitHub import search_command
 
     search_command()
 
-    assert mocker_output.call_args.args[2].get('items')[0].get('limit') == expected_result
+    assert mocker_output.call_args.args[2].get("items")[0].get("limit") == expected_result
 
 
-@pytest.mark.parametrize('maximum_users, expected_result1', LIST_TEAM_MEMBERS_CASES)
+@pytest.mark.parametrize("maximum_users, expected_result1", LIST_TEAM_MEMBERS_CASES)
 def test_list_team_members_command(mocker, maximum_users, expected_result1):
     """
     Given:
@@ -136,19 +129,17 @@ def test_list_team_members_command(mocker, maximum_users, expected_result1):
         Assert that the number of users in single page is compatible with the maximum_users number and with the github
         page size limit
     """
-    mocker.patch.object(demisto, 'params', return_value=MOCK_PARAMS)
-    mocker.patch.object(demisto, 'args', return_value={
-        'organization': 'demisto',
-        'team_slug': 'content',
-        'maximum_users': maximum_users
-    })
-    mock_list_members = mocker.patch('GitHub.http_request', side_effect=mock_http_request)
+    mocker.patch.object(demisto, "params", return_value=MOCK_PARAMS)
+    mocker.patch.object(
+        demisto, "args", return_value={"organization": "demisto", "team_slug": "content", "maximum_users": maximum_users}
+    )
+    mock_list_members = mocker.patch("GitHub.http_request", side_effect=mock_http_request)
     from GitHub import list_team_members_command
 
     list_team_members_command()
 
-    url_suffix = '/orgs/demisto/teams/content/members'
-    mock_list_members.call_args_list[0]('GET', url_suffix, expected_result1)
+    url_suffix = "/orgs/demisto/teams/content/members"
+    mock_list_members.call_args_list[0]("GET", url_suffix, expected_result1)
 
 
 def test_get_issue_events_command(mocker):
@@ -161,42 +152,22 @@ def test_get_issue_events_command(mocker):
         Assert expected CommandResults object is returned.
     """
     import GitHub
-    GitHub.ISSUE_SUFFIX = ''
-    mock_response = load_test_data('test_data/search_issue_events_response.json')
-    mocker.patch('GitHub.http_request', return_value=mock_response)
-    mocker_output = mocker.patch('GitHub.return_results')
+
+    GitHub.ISSUE_SUFFIX = ""
+    mock_response = load_test_data("test_data/search_issue_events_response.json")
+    mocker.patch("GitHub.http_request", return_value=mock_response)
+    mocker_output = mocker.patch("GitHub.return_results")
     GitHub.get_issue_events_command()
     result: CommandResults = mocker_output.call_args[0][0]
     assert result.outputs == mock_response
-    assert result.outputs_key_field == 'id'
-    assert result.outputs_prefix == 'GitHub.IssueEvent'
+    assert result.outputs_key_field == "id"
+    assert result.outputs_prefix == "GitHub.IssueEvent"
 
 
 PROJECTS_TEST = [
-    {
-        "number": 22,
-        "Number": 22,
-        "Columns": {},
-        "Issues": [],
-        "ID": 11111111,
-        "Name": "Project_1"
-    },
-    {
-        "number": 23,
-        "Number": 23,
-        "Columns": {},
-        "Issues": [],
-        "ID": 2222222,
-        "Name": "Project_2"
-    },
-    {
-        "number": 24,
-        "Number": 24,
-        "Columns": {},
-        "Issues": [],
-        "ID": 3333333,
-        "Name": "Project_2"
-    }
+    {"number": 22, "Number": 22, "Columns": {}, "Issues": [], "ID": 11111111, "Name": "Project_1"},
+    {"number": 23, "Number": 23, "Columns": {}, "Issues": [], "ID": 2222222, "Name": "Project_2"},
+    {"number": 24, "Number": 24, "Columns": {}, "Issues": [], "ID": 3333333, "Name": "Project_2"},
 ]
 
 
@@ -213,32 +184,33 @@ def test_list_all_projects_command(mocker, requests_mock):
     Then:
         Assert that only the filtered projects are returned.
     """
-    mocker.patch.object(demisto, 'args', return_value={'project_filter': '22,24'})
-    requests_mock.get(f'{REGULAR_BASE_URL}/projects?per_page=100', json=PROJECTS_TEST)
-    mocker.patch('GitHub.get_project_details', side_effect=get_project_d)
-    mocker_output = mocker.patch('GitHub.return_results')
+    mocker.patch.object(demisto, "args", return_value={"project_filter": "22,24"})
+    requests_mock.get(f"{REGULAR_BASE_URL}/projects?per_page=100", json=PROJECTS_TEST)
+    mocker.patch("GitHub.get_project_details", side_effect=get_project_d)
+    mocker_output = mocker.patch("GitHub.return_results")
 
     import GitHub
-    GitHub.PROJECT_SUFFIX = '/projects'
+
+    GitHub.PROJECT_SUFFIX = "/projects"
 
     list_all_projects_command()
     result: CommandResults = mocker_output.call_args[0][0]
 
     assert len(result.outputs) == 2
-    assert result.outputs[0]['Number'] == 22
-    assert result.outputs[1]['Number'] == 24
+    assert result.outputs[0]["Number"] == 22
+    assert result.outputs[1]["Number"] == 24
 
 
 RESPONSE_DETAILS = [
-    (200, b'{}', 'GitHub.return_results', "The issue was successfully added to column ID column_id."),
-    (404, b'{"message": "Column not found."}', 'GitHub.return_error',
-     'Post result <Response [404]>\nMessage: Column not found.')
+    (200, b"{}", "GitHub.return_results", "The issue was successfully added to column ID column_id."),
+    (404, b'{"message": "Column not found."}', "GitHub.return_error", "Post result <Response [404]>\nMessage: Column not found."),
 ]
 
 
-@pytest.mark.parametrize('response_code,response_content,mocked_return,expected_result', RESPONSE_DETAILS)
-def test_add_issue_to_project_board_command(mocker, requests_mock, response_code, response_content, mocked_return,
-                                            expected_result):
+@pytest.mark.parametrize("response_code,response_content,mocked_return,expected_result", RESPONSE_DETAILS)
+def test_add_issue_to_project_board_command(
+    mocker, requests_mock, response_code, response_content, mocked_return, expected_result
+):
     """
     Given:
         'issue_unique_id': The issue ID to add.
@@ -248,9 +220,10 @@ def test_add_issue_to_project_board_command(mocker, requests_mock, response_code
     Then:
         Assert the message returned is as expected.
     """
-    mocker.patch.object(demisto, 'args', return_value={'column_id': 'column_id', 'issue_unique_id': '11111'})
-    requests_mock.post(f'{REGULAR_BASE_URL}/projects/columns/column_id/cards', status_code=response_code,
-                       content=response_content)
+    mocker.patch.object(demisto, "args", return_value={"column_id": "column_id", "issue_unique_id": "11111"})
+    requests_mock.post(
+        f"{REGULAR_BASE_URL}/projects/columns/column_id/cards", status_code=response_code, content=response_content
+    )
     mocker_results = mocker.patch(mocked_return)
 
     add_issue_to_project_board_command()
@@ -270,23 +243,30 @@ def test_get_path_data_command(requests_mock, mocker):
     - Ensure expected CommandResults object is returned.
 
     """
-    mocker.patch.object(demisto, 'args', return_value={'branch_name': 'Update-Docker-Image', 'repository': 'content',
-                                                       'organization': 'demisto',
-                                                       'relative_path': 'Packs/BitcoinAbuse/pack_metadata.json'})
-    GitHub.TOKEN, GitHub.USE_SSL = '', ''
-    test_get_file_data_command_response = load_test_data(
-        './test_data/get_path_data_response.json')
-    requests_mock.get('https://api.github.com/repos/demisto/content/contents/Packs/BitcoinAbuse/pack_metadata.json?ref'
-                      '=Update-Docker-Image',
-                      json=test_get_file_data_command_response['response'])
-    mocker_results = mocker.patch('GitHub.return_results')
+    mocker.patch.object(
+        demisto,
+        "args",
+        return_value={
+            "branch_name": "Update-Docker-Image",
+            "repository": "content",
+            "organization": "demisto",
+            "relative_path": "Packs/BitcoinAbuse/pack_metadata.json",
+        },
+    )
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
+    test_get_file_data_command_response = load_test_data("./test_data/get_path_data_response.json")
+    requests_mock.get(
+        "https://api.github.com/repos/demisto/content/contents/Packs/BitcoinAbuse/pack_metadata.json?ref=Update-Docker-Image",
+        json=test_get_file_data_command_response["response"],
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
     get_path_data()
 
     command_results: CommandResults = mocker_results.call_args[0][0]
-    assert command_results.outputs_prefix == 'GitHub.PathData'
-    assert command_results.outputs_key_field == 'url'
-    assert command_results.raw_response == test_get_file_data_command_response['response']
-    assert command_results.outputs == test_get_file_data_command_response['expected']
+    assert command_results.outputs_prefix == "GitHub.PathData"
+    assert command_results.outputs_key_field == "url"
+    assert command_results.raw_response == test_get_file_data_command_response["response"]
+    assert command_results.outputs == test_get_file_data_command_response["expected"]
 
 
 def test_releases_list_command(requests_mock, mocker):
@@ -301,22 +281,22 @@ def test_releases_list_command(requests_mock, mocker):
     - Ensure expected CommandResults object is returned.
 
     """
-    mocker.patch.object(demisto, 'args', return_value={'repository': 'demisto-sdk', 'organization': 'demisto',
-                                                       'limit': 2})
-    GitHub.TOKEN, GitHub.USE_SSL = '', ''
+    mocker.patch.object(demisto, "args", return_value={"repository": "demisto-sdk", "organization": "demisto", "limit": 2})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
     GitHub.HEADERS = {}
-    GitHub.BASE_URL = 'https://api.github.com/'
-    test_releases_list_command_data = load_test_data(
-        './test_data/releases_get_response.json')
-    requests_mock.get(f'{GitHub.BASE_URL}/repos/demisto/demisto-sdk/releases?per_page=100&page=1',
-                      json=test_releases_list_command_data['response'])
-    mocker_results = mocker.patch('GitHub.return_results')
+    GitHub.BASE_URL = "https://api.github.com/"
+    test_releases_list_command_data = load_test_data("./test_data/releases_get_response.json")
+    requests_mock.get(
+        f"{GitHub.BASE_URL}/repos/demisto/demisto-sdk/releases?per_page=100&page=1",
+        json=test_releases_list_command_data["response"],
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
     github_releases_list_command()
 
     command_results: CommandResults = mocker_results.call_args[0][0]
-    assert command_results.outputs_prefix == 'GitHub.Release'
-    assert command_results.outputs_key_field == 'id'
-    assert command_results.outputs == test_releases_list_command_data['expected']
+    assert command_results.outputs_prefix == "GitHub.Release"
+    assert command_results.outputs_key_field == "id"
+    assert command_results.outputs == test_releases_list_command_data["expected"]
 
 
 def test_get_branch(requests_mock, mocker):
@@ -328,35 +308,39 @@ def test_get_branch(requests_mock, mocker):
     Then:
         Assert that the flow succeeded and that the output is as expected
     """
-    mocker.patch.object(demisto, 'args', return_value={'branch_name': 'my-branch'})
-    GitHub.TOKEN, GitHub.USE_SSL = '', ''
+    mocker.patch.object(demisto, "args", return_value={"branch_name": "my-branch"})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
     GitHub.HEADERS = {}
-    GitHub.BASE_URL = 'https://api.github.com/'
-    GitHub.USER_SUFFIX = '/repos/user/repo'
-    raw_response = load_test_data('./test_data/get_branch_response.json')
-    requests_mock.get(f'{GitHub.BASE_URL}/repos/user/repo/branches/my-branch',
-                      json=raw_response)
-    mocker_results = mocker.patch('GitHub.return_outputs')
+    GitHub.BASE_URL = "https://api.github.com/"
+    GitHub.USER_SUFFIX = "/repos/user/repo"
+    raw_response = load_test_data("./test_data/get_branch_response.json")
+    requests_mock.get(f"{GitHub.BASE_URL}/repos/user/repo/branches/my-branch", json=raw_response)
+    mocker_results = mocker.patch("GitHub.return_outputs")
 
     get_branch_command()
-    return_outputs_res: CommandResults = mocker_results.call_args.kwargs.get('outputs')
+    return_outputs_res: CommandResults = mocker_results.call_args.kwargs.get("outputs")
     assert return_outputs_res == {
-        'GitHub.Branch(val.Name === obj.Name && val.CommitSHA === obj.CommitSHA)': {'Name': 'my_branch',
-                                                                                    'CommitSHA': 'dsfsdf',
-                                                                                    'CommitNodeID': '45678=',
-                                                                                    'CommitAuthorID': None,
-                                                                                    'CommitAuthorLogin': None,
-                                                                                    'CommitParentSHA': ['dfg',
-                                                                                                        'srdtfy'],
-                                                                                    'Protected': False}}
+        "GitHub.Branch(val.Name === obj.Name && val.CommitSHA === obj.CommitSHA)": {
+            "Name": "my_branch",
+            "CommitSHA": "dsfsdf",
+            "CommitNodeID": "45678=",
+            "CommitAuthorID": None,
+            "CommitAuthorLogin": None,
+            "CommitParentSHA": ["dfg", "srdtfy"],
+            "Protected": False,
+        }
+    }
 
 
-@pytest.mark.parametrize('mock_params, expected_url', [
-    ({'url': 'example.com', 'token': 'testtoken'}, 'example.com'),
-    ({'token': 'testtoken'}, 'https://api.github.com'),
-])
+@pytest.mark.parametrize(
+    "mock_params, expected_url",
+    [
+        ({"url": "example.com", "token": "testtoken"}, "example.com"),
+        ({"token": "testtoken"}, "https://api.github.com"),
+    ],
+)
 def test_url_parameter_value(mocker, mock_params, expected_url):
-    mocker.patch.object(demisto, 'params', return_value=mock_params)
+    mocker.patch.object(demisto, "params", return_value=mock_params)
 
     main()
 
@@ -372,13 +356,13 @@ def test_list_issue_comments_no_since(mocker):
     Then:
         The url_suffix argument provided to the http request should not include a since parameter
     """
-    patched_request = mocker.patch('GitHub.http_request')
-    GitHub.ISSUE_SUFFIX = 'test'
+    patched_request = mocker.patch("GitHub.http_request")
+    GitHub.ISSUE_SUFFIX = "test"
     issue_number = 1234
     since_date = None
     list_issue_comments(issue_number, since_date)
     request_args = patched_request.call_args
-    assert 'since' not in request_args.kwargs['url_suffix']
+    assert "since" not in request_args.kwargs["url_suffix"]
 
 
 def test_list_issue_comments_since(mocker):
@@ -390,24 +374,36 @@ def test_list_issue_comments_since(mocker):
     Then:
         The url_suffix argument provided to the http request should include a since parameter
     """
-    patched_request = mocker.patch('GitHub.http_request')
-    GitHub.ISSUE_SUFFIX = 'test'
+    patched_request = mocker.patch("GitHub.http_request")
+    GitHub.ISSUE_SUFFIX = "test"
     issue_number = 1234
-    since_date = '2022-10-01'
+    since_date = "2022-10-01"
     list_issue_comments(issue_number, since_date)
     request_args = patched_request.call_args
-    assert 'since' in request_args.kwargs['params']
+    assert "since" in request_args.kwargs["params"]
 
 
-@pytest.mark.parametrize('args, response_content, expected_result', [
-    ({'assignee': 'user1', 'pull_request_number': '1'}, b'{"message": "success"}',
-     "The following users were assigned successfully to PR #1: \n['user1']"),
-    ({'assignee': 'user1, user2', 'pull_request_number': '1'}, b'{"message": "success"}',
-     "The following users were assigned successfully to PR #1: \n['user1', 'user2']"),
-    ({'assignee': 'user3', 'pull_request_number': '1'}, b'{"message": "success"}',
-     "\nThe following users were not assigned to #1: \n['user3'] \nVerify that the users exist and that you have the "
-     "right permissions."),
-])
+@pytest.mark.parametrize(
+    "args, response_content, expected_result",
+    [
+        (
+            {"assignee": "user1", "pull_request_number": "1"},
+            b'{"message": "success"}',
+            "The following users were assigned successfully to PR #1: \n['user1']",
+        ),
+        (
+            {"assignee": "user1, user2", "pull_request_number": "1"},
+            b'{"message": "success"}',
+            "The following users were assigned successfully to PR #1: \n['user1', 'user2']",
+        ),
+        (
+            {"assignee": "user3", "pull_request_number": "1"},
+            b'{"message": "success"}',
+            "\nThe following users were not assigned to #1: \n['user3'] \nVerify that the users exist and that you have the "
+            "right permissions.",
+        ),
+    ],
+)
 def test_assignee(mocker, args, response_content, expected_result):
     """
     Given:
@@ -422,10 +418,10 @@ def test_assignee(mocker, args, response_content, expected_result):
       - Case 2: Should return Success for two provided users
       - Case 3: Should return that assignment failed for provided user
     """
-    mocker.patch.object(demisto, 'args', return_value=args)
-    GitHub.USER_SUFFIX = '/repos/user/repo'
-    mocker.patch('GitHub.http_request', return_value={"assignees": [{"login": "user1"}, {"login": "user2"}]})
-    mocker_results = mocker.patch('GitHub.return_results')
+    mocker.patch.object(demisto, "args", return_value=args)
+    GitHub.USER_SUFFIX = "/repos/user/repo"
+    mocker.patch("GitHub.http_request", return_value={"assignees": [{"login": "user1"}, {"login": "user2"}]})
+    mocker_results = mocker.patch("GitHub.return_results")
     GitHub.github_add_assignee_command()
     mocker_results.assert_called_once()
     assert mocker_results.call_args_list[0].args[0].readable_output == expected_result
@@ -434,26 +430,99 @@ def test_assignee(mocker, args, response_content, expected_result):
 def test_github_trigger_workflow(mocker):
     """
     Given:
-      - A workflow name.
+      - A workflow name and the API returns 204 No Content.
     When:
       - Calling the 'github_trigger_workflow_command' function
     Then:
-      - Ensure workflow triggerd successfully.
+      - Ensure a plain success message is returned.
     """
-    GitHub.BASE_URL = 'https://github.com'
+    GitHub.BASE_URL = "https://github.com"
     GitHub.USE_SSL = True
-    GitHub.TOKEN = '123456'
-    mock_args = {'owner': 'demisto', 'repository': 'test', 'workflow': 'nightly.yml',
-                 'inputs': '{\"release_changes\": \"* Fixed an issue.\n* Added a feature.\"}'}
-    mocker.patch.object(demisto, 'args', return_value=mock_args)
-    mocker_results = mocker.patch('GitHub.return_results')
+    GitHub.TOKEN = "123456"
+    mock_args = {
+        "owner": "demisto",
+        "repository": "test",
+        "workflow": "nightly.yml",
+        "inputs": '{"release_changes": "* Fixed an issue.\n* Added a feature."}',
+    }
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+    mocker_results = mocker.patch("GitHub.return_results")
 
     with requests_mock.Mocker() as m:
-        m.post('https://github.com/repos/demisto/test/actions/workflows/nightly.yml/dispatches', status_code=204)
+        m.post("https://github.com/repos/demisto/test/actions/workflows/nightly.yml/dispatches", status_code=204)
         GitHub.github_trigger_workflow_command()
 
     mocker_results.assert_called_once()
-    assert mocker_results.call_args[0][0].readable_output == 'Workflow triggered successfully.'
+    assert mocker_results.call_args[0][0].readable_output == "Workflow triggered successfully."
+
+
+def test_github_trigger_workflow_with_run_details(mocker):
+    """
+    Given:
+      - A workflow name and the API returns 200 with a JSON body.
+    When:
+      - Calling the 'github_trigger_workflow_command' function
+    Then:
+      - Ensure the workflow run details are returned in the CommandResults outputs.
+    """
+    GitHub.BASE_URL = "https://github.com"
+    GitHub.USE_SSL = True
+    GitHub.TOKEN = "123456"
+    mock_args = {
+        "owner": "demisto",
+        "repository": "test",
+        "workflow": "nightly.yml",
+        "inputs": "{}",
+    }
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+    mocker_results = mocker.patch("GitHub.return_results")
+    json_response = {"workflow_run_id": 9876, "run_url": "https://api.github.com/repos/demisto/test/actions/runs/9876"}
+
+    with requests_mock.Mocker() as m:
+        m.post(
+            "https://github.com/repos/demisto/test/actions/workflows/nightly.yml/dispatches",
+            status_code=200,
+            json=json_response,
+        )
+        GitHub.github_trigger_workflow_command()
+
+    mocker_results.assert_called_once()
+    result: CommandResults = mocker_results.call_args[0][0]
+    assert result.outputs_prefix == "GitHub.WorkflowRun"
+    assert result.outputs["ID"] == 9876
+
+
+def test_github_get_workflow_run(mocker):
+    """
+    Given:
+      - A workflow run ID.
+    When:
+      - Calling the 'github_get_workflow_run_command' function
+    Then:
+      - Ensure the correct workflow run details are returned.
+    """
+    GitHub.BASE_URL = "https://github.com"
+    GitHub.USE_SSL = True
+    GitHub.TOKEN = "123456"
+    GitHub.USER = "demisto"
+    GitHub.REPOSITORY = "test"
+    mock_args = {"owner": "demisto", "repository": "test", "run_id": "1212121"}
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+    mocker_results = mocker.patch("GitHub.return_results")
+    json_response = load_test_data("test_data/get_workflow_run_response.json")
+
+    with requests_mock.Mocker() as m:
+        m.get("https://github.com/repos/demisto/test/actions/runs/1212121", json=json_response)
+        GitHub.github_get_workflow_run_command()
+
+    mocker_results.assert_called_once()
+    result: CommandResults = mocker_results.call_args[0][0]
+    assert result.outputs_prefix == "GitHub.WorkflowRun"
+    assert result.outputs["ID"] == 1212121
+    assert result.outputs["Status"] == "completed"
+    assert result.outputs["Conclusion"] == "success"
+    assert result.outputs["Event"] == "workflow_dispatch"
+    assert result.outputs["HeadBranch"] == "master"
 
 
 def test_github_cancel_workflow(mocker):
@@ -465,19 +534,19 @@ def test_github_cancel_workflow(mocker):
     Then:
       - Ensure workflow canceled successfully.
     """
-    GitHub.BASE_URL = 'https://github.com'
+    GitHub.BASE_URL = "https://github.com"
     GitHub.USE_SSL = True
-    GitHub.TOKEN = '123456'
-    mock_args = {'owner': 'demisto', 'repository': 'test', 'workflow_id': '1234'}
-    mocker.patch.object(demisto, 'args', return_value=mock_args)
-    mocker_results = mocker.patch('GitHub.return_results')
+    GitHub.TOKEN = "123456"
+    mock_args = {"owner": "demisto", "repository": "test", "workflow_id": "1234"}
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+    mocker_results = mocker.patch("GitHub.return_results")
 
     with requests_mock.Mocker() as m:
-        m.post('https://github.com/repos/demisto/test/actions/runs/1234/cancel', status_code=202)
+        m.post("https://github.com/repos/demisto/test/actions/runs/1234/cancel", status_code=202)
         GitHub.github_cancel_workflow_command()
 
     mocker_results.assert_called_once()
-    assert mocker_results.call_args[0][0].readable_output == 'Workflow canceled successfully.'
+    assert mocker_results.call_args[0][0].readable_output == "Workflow canceled successfully."
 
 
 def test_github_list_workflow(mocker):
@@ -489,21 +558,21 @@ def test_github_list_workflow(mocker):
     Then:
       - Ensure the correctness of the response.
     """
-    GitHub.BASE_URL = 'https://github.com'
+    GitHub.BASE_URL = "https://github.com"
     GitHub.USE_SSL = True
-    GitHub.TOKEN = '123456'
-    GitHub.USER = 'demisto'
-    GitHub.REPOSITORY = 'master'
-    mocker.patch.object(demisto, 'args', return_value={'workflow': 'nightly.yml', 'limit': 1})
-    mocker_results = mocker.patch('GitHub.return_results')
-    json_response = load_test_data('test_data/list_workflow.json')
+    GitHub.TOKEN = "123456"
+    GitHub.USER = "demisto"
+    GitHub.REPOSITORY = "master"
+    mocker.patch.object(demisto, "args", return_value={"workflow": "nightly.yml", "limit": 1})
+    mocker_results = mocker.patch("GitHub.return_results")
+    json_response = load_test_data("test_data/list_workflow.json")
 
     with requests_mock.Mocker() as m:
-        m.get('/repos/demisto/master/actions/workflows/nightly.yml/runs?per_page=1', json=json_response)
+        m.get("/repos/demisto/master/actions/workflows/nightly.yml/runs?per_page=1", json=json_response)
         GitHub.github_list_workflows_command()
 
     mocker_results.assert_called_once()
-    assert mocker_results.call_args[0][0].outputs[0]['head_branch'] == 'master'
+    assert mocker_results.call_args[0][0].outputs[0]["head_branch"] == "master"
 
 
 def test_http_request():
@@ -517,33 +586,352 @@ def test_http_request():
     """
 
     GitHub.BASE_URL = REGULAR_BASE_URL
-    GitHub.USE_SSL = ''
+    GitHub.USE_SSL = ""
     GitHub.HEADERS = {}
 
     # Test HTTP request with data equal to 'dictionary'
     with requests_mock.Mocker() as m:
-        mock_req = m.post(f'{REGULAR_BASE_URL}/test', json={})
-        response = http_request('POST', '/test', data={'test_key': 'test_value'})
+        mock_req = m.post(f"{REGULAR_BASE_URL}/test", json={})
+        response = http_request("POST", "/test", data={"test_key": "test_value"})
     assert response == {}
     assert mock_req.last_request.text == '{"test_key": "test_value"}'
 
     # Test HTTP request with data equal to empty 'dictionary'
     with requests_mock.Mocker() as m:
-        mock_req = m.post(f'{REGULAR_BASE_URL}/test', json={})
-        response = http_request('POST', '/test', data={})
+        mock_req = m.post(f"{REGULAR_BASE_URL}/test", json={})
+        response = http_request("POST", "/test", data={})
     assert response == {}
     assert not mock_req.last_request.text
 
     # Test HTTP request with data equal to 'null'
     with requests_mock.Mocker() as m:
-        mock_req = m.post(f'{REGULAR_BASE_URL}/test', json={})
-        response = http_request('POST', '/test', data='null')
+        mock_req = m.post(f"{REGULAR_BASE_URL}/test", json={})
+        response = http_request("POST", "/test", data="null")
     assert response == {}
     assert mock_req.last_request.text == '"null"'
 
     # Test HTTP request with data equal to 'None'
     with requests_mock.Mocker() as m:
-        mock_req = m.post(f'{REGULAR_BASE_URL}/test', json={})
-        response = http_request('POST', '/test', data=None)
+        mock_req = m.post(f"{REGULAR_BASE_URL}/test", json={})
+        response = http_request("POST", "/test", data=None)
     assert response == {}
     assert not mock_req.last_request.text
+
+
+@pytest.mark.parametrize(
+    "response_json, expected_error_message",
+    [
+        pytest.param(
+            {"message": "Validation Failed", "errors": ["Custom string error"]},
+            "Error: Custom string error. Validation Failed",
+            id="errors_is_a_list_of_strings",
+        ),
+        pytest.param(
+            {"message": "Validation Failed", "errors": "Custom string error"},
+            "Error in API call to the GitHub Integration [422] - Unprocessable Entity. Validation Failed",
+            id="errors_is_a_string",
+        ),
+        pytest.param(
+            {"message": "Validation Failed", "errors": []},
+            "Error in API call to the GitHub Integration [422] - Unprocessable Entity. Validation Failed",
+            id="errors_is_an_empty_list",
+        ),
+        pytest.param(
+            {"message": "Validation Failed", "errors": [{"code": "unrecognized_code", "field": "title"}]},
+            "Error in API call to the GitHub Integration [422] - Unprocessable Entity. Validation Failed",
+            id="errors_is_a_list_of_dicts_with_an_unrecognized_code",
+        ),
+        pytest.param(
+            {
+                "message": "Validation Failed",
+                "errors": [{"code": "missing_field", "field": "title"}],
+                "documentation_url": "https://docs.github.com",
+            },
+            'Error: the field: "title" requires a value. Validation Failed see: https://docs.github.com',
+            id="errors_is_a_list_of_dicts_with_a_missing_field_code",
+        ),
+        pytest.param(
+            {"message": "Validation Failed", "errors": [{"code": "invalid", "field": "q", "message": "invalid query"}]},
+            "Error: invalid query - invalid query. Validation Failed",
+            id="errors_is_a_list_of_dicts_with_an_invalid_query_code",
+        ),
+        pytest.param(
+            {"message": "Validation Failed", "errors": [{"code": "missing", "resource": "Issue"}]},
+            "Error: Issue does not exist. Validation Failed",
+            id="errors_is_a_list_of_dicts_with_a_missing_resource_code",
+        ),
+    ],
+)
+def test_http_request_error_handling(response_json, expected_error_message):
+    """
+    Given:
+      - An error response (status code >= 400) from the GitHub API, where the 'errors' field is either
+        a list of strings, a plain string, an empty list, or a list of error objects.
+    When:
+      - Calling the 'http_request' function.
+    Then:
+      - Ensure a DemistoException with the expected message is raised, and that non-dict 'errors' values
+        do not raise an AttributeError (calling '.get()' on a str).
+    """
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USE_SSL = ""
+    GitHub.HEADERS = {}
+
+    with (
+        requests_mock.Mocker() as m,
+        pytest.raises(DemistoException) as exception_info,
+    ):
+        m.get(f"{REGULAR_BASE_URL}/test", json=response_json, status_code=422, reason="Unprocessable Entity")
+        http_request("GET", "/test")
+
+    assert str(exception_info.value) == expected_error_message
+
+
+def test_http_request_error_handling_non_json_response():
+    """
+    Given:
+      - An error response (status code >= 400) from the GitHub API with a body that is not valid JSON.
+    When:
+      - Calling the 'http_request' function.
+    Then:
+      - Ensure a DemistoException with the generic error message is raised.
+    """
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USE_SSL = ""
+    GitHub.HEADERS = {}
+
+    with (
+        requests_mock.Mocker() as m,
+        pytest.raises(DemistoException) as exception_info,
+    ):
+        m.get(f"{REGULAR_BASE_URL}/test", text="<html>Bad Gateway</html>", status_code=502, reason="Bad Gateway")
+        http_request("GET", "/test")
+
+    assert str(exception_info.value) == "Error in API call to GitHub Integration [502] - Bad Gateway"
+
+
+def test_github_revoke_credentials_success(mocker):
+    """
+    Given:
+      - A list of valid GitHub credential tokens.
+    When:
+      - Calling the 'github_revoke_credentials_command' function.
+    Then:
+      - Ensure the revocation request succeeds with a 202 status code.
+      - Ensure the Authorization header is NOT sent.
+    """
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USE_SSL = True
+    GitHub.HEADERS = {"Authorization": "Bearer should_not_be_sent"}
+
+    mock_args = {"credentials": "ghp_abc123,github_pat_xyz456"}
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+    mocker_results = mocker.patch("GitHub.return_results")
+
+    with requests_mock.Mocker() as m:
+        mock_req = m.post(f"{REGULAR_BASE_URL}/credentials/revoke", status_code=202)
+        GitHub.github_revoke_credentials_command()
+
+    mocker_results.assert_called_once()
+    assert mocker_results.call_args[0][0].readable_output == "Successfully submitted 2 credential(s) for revocation."
+    assert "Authorization" not in mock_req.last_request.headers
+    assert mock_req.last_request.headers["Accept"] == "application/vnd.github+json"
+    body = json.loads(mock_req.last_request.text)
+    assert body == {"credentials": ["ghp_abc123", "github_pat_xyz456"]}
+
+
+def test_github_revoke_credentials_invalid_prefix(mocker):
+    """
+    Given:
+      - A credential with an unsupported prefix.
+    When:
+      - Calling the 'github_revoke_credentials_command' function.
+    Then:
+      - Ensure a DemistoException is raised with an appropriate message.
+    """
+    mock_args = {"credentials": "ghp_valid,invalid_token_abc"}
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+
+    with pytest.raises(DemistoException, match="invalid prefixes"):
+        GitHub.github_revoke_credentials_command()
+
+
+def test_github_revoke_credentials_empty(mocker):
+    """
+    Given:
+      - An empty credentials argument.
+    When:
+      - Calling the 'github_revoke_credentials_command' function.
+    Then:
+      - Ensure a DemistoException is raised indicating credentials are required.
+    """
+    mock_args = {"credentials": ""}
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+
+    with pytest.raises(DemistoException, match="'credentials' argument is required"):
+        GitHub.github_revoke_credentials_command()
+
+
+def test_github_revoke_credentials_too_many(mocker):
+    """
+    Given:
+      - More than 1000 credentials.
+    When:
+      - Calling the 'github_revoke_credentials_command' function.
+    Then:
+      - Ensure a DemistoException is raised about the 1000 token limit.
+    """
+    tokens = [f"ghp_token{i}" for i in range(1001)]
+    mock_args = {"credentials": ",".join(tokens)}
+    mocker.patch.object(demisto, "args", return_value=mock_args)
+
+    with pytest.raises(DemistoException, match="maximum of 1000 credentials"):
+        GitHub.github_revoke_credentials_command()
+
+
+def test_list_organization_repositories_command(requests_mock, mocker):
+    """
+    Given:
+        Organization name and default args.
+    When:
+        Calling github-list-organization-repositories.
+    Then:
+        Ensure expected CommandResults are returned with GitHub.Repository prefix.
+    """
+    mocker.patch.object(demisto, "args", return_value={"organization": "my-org"})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
+    GitHub.HEADERS = {}
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USER = "test"
+
+    test_data = load_test_data("./test_data/list_org_repos_response.json")
+    requests_mock.get(
+        f"{REGULAR_BASE_URL}/orgs/my-org/repos",
+        json=test_data,
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
+    github_list_organization_repositories_command()
+
+    command_results: CommandResults = mocker_results.call_args[0][0]
+    assert command_results.outputs_prefix == "GitHub.Repository"
+    assert command_results.outputs_key_field == "id"
+    assert len(command_results.outputs) == 2
+    assert command_results.outputs[0]["name"] == "repo-alpha"
+
+
+def test_list_actions_caches_command(requests_mock, mocker):
+    """
+    Given:
+        Owner, repository, and default args.
+    When:
+        Calling github-list-actions-caches.
+    Then:
+        Ensure expected CommandResults are returned with GitHub.ActionsCache prefix.
+    """
+    mocker.patch.object(demisto, "args", return_value={"owner": "my-org", "repository": "my-repo"})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
+    GitHub.HEADERS = {}
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USER = "test"
+    GitHub.REPOSITORY = "hello-world"
+
+    test_data = load_test_data("./test_data/list_actions_caches_response.json")
+    requests_mock.get(
+        f"{REGULAR_BASE_URL}/repos/my-org/my-repo/actions/caches",
+        json=test_data,
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
+    github_list_actions_caches_command()
+
+    command_results: CommandResults = mocker_results.call_args[0][0]
+    assert command_results.outputs_prefix == "GitHub.ActionsCache"
+    assert command_results.outputs_key_field == "id"
+    assert len(command_results.outputs) == 2
+    assert command_results.outputs[0]["key"] == "npm-cache-linux-abc123"
+
+
+def test_delete_actions_cache_command(requests_mock, mocker):
+    """
+    Given:
+        Owner, repository, and cache_id.
+    When:
+        Calling github-delete-actions-cache.
+    Then:
+        Ensure DELETE request is sent and success message is returned.
+    """
+    mocker.patch.object(demisto, "args", return_value={"owner": "my-org", "repository": "my-repo", "cache_id": "501"})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
+    GitHub.HEADERS = {}
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USER = "test"
+    GitHub.REPOSITORY = "hello-world"
+
+    requests_mock.delete(
+        f"{REGULAR_BASE_URL}/repos/my-org/my-repo/actions/caches/501",
+        status_code=204,
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
+    github_delete_actions_cache_command()
+
+    result = mocker_results.call_args[0][0]
+    assert "501" in result
+    assert "deleted successfully" in result
+
+
+def test_list_actions_artifacts_command(requests_mock, mocker):
+    """
+    Given:
+        Owner, repository, and default args.
+    When:
+        Calling github-list-actions-artifacts.
+    Then:
+        Ensure expected CommandResults are returned with GitHub.ActionsArtifact prefix.
+    """
+    mocker.patch.object(demisto, "args", return_value={"owner": "my-org", "repository": "my-repo"})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
+    GitHub.HEADERS = {}
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USER = "test"
+    GitHub.REPOSITORY = "hello-world"
+
+    test_data = load_test_data("./test_data/list_actions_artifacts_response.json")
+    requests_mock.get(
+        f"{REGULAR_BASE_URL}/repos/my-org/my-repo/actions/artifacts",
+        json=test_data,
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
+    github_list_actions_artifacts_command()
+
+    command_results: CommandResults = mocker_results.call_args[0][0]
+    assert command_results.outputs_prefix == "GitHub.ActionsArtifact"
+    assert command_results.outputs_key_field == "id"
+    assert len(command_results.outputs) == 2
+    assert command_results.outputs[0]["name"] == "build-output"
+
+
+def test_delete_actions_artifact_command(requests_mock, mocker):
+    """
+    Given:
+        Owner, repository, and artifact_id.
+    When:
+        Calling github-delete-actions-artifact.
+    Then:
+        Ensure DELETE request is sent and success message is returned.
+    """
+    mocker.patch.object(demisto, "args", return_value={"owner": "my-org", "repository": "my-repo", "artifact_id": "801"})
+    GitHub.TOKEN, GitHub.USE_SSL = "", ""
+    GitHub.HEADERS = {}
+    GitHub.BASE_URL = REGULAR_BASE_URL
+    GitHub.USER = "test"
+    GitHub.REPOSITORY = "hello-world"
+
+    requests_mock.delete(
+        f"{REGULAR_BASE_URL}/repos/my-org/my-repo/actions/artifacts/801",
+        status_code=204,
+    )
+    mocker_results = mocker.patch("GitHub.return_results")
+    github_delete_actions_artifact_command()
+
+    result = mocker_results.call_args[0][0]
+    assert "801" in result
+    assert "deleted successfully" in result

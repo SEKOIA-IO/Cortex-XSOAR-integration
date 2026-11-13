@@ -1,0 +1,28 @@
+{
+    "name": "Azure",
+    "description": "Microsoft Azure",
+    "support": "xsoar",
+    "currentVersion": "1.24.1",
+    "author": "Cortex XSOAR",
+    "url": "https://www.paloaltonetworks.com/cortex",
+    "email": "",
+    "categories": [
+        "Cloud Services"
+    ],
+    "tags": [],
+    "useCases": [],
+    "keywords": [],
+    "marketplaces": [
+        "platform",
+        "xsoar",
+        "marketplacev2"
+    ],
+    "supportedModules": [
+        "cloud_posture",
+        "cloud",
+        "cloud_runtime_security",
+        "agentix",
+        "xsiam"
+    ],
+    "derivedSource": "cooc"
+}

@@ -1,16 +1,17 @@
 import json
 import os
+
 import pytest
 from CloudflareWAF import Client
 
 
-'''MOCK PARAMETERS '''
-CREDENTIALS = "credentials"
+"""MOCK PARAMETERS """
+CREDENTIALS = '{"Authorization": "Bearer YOUR_TOKEN"}'
 ACCOUNT_ID = "account_id"
 ZONE_ID = "zone_id"
 
-'''CONSTANTS'''
-BASE_URL = 'https://api.cloudflare.com/client/v4/'
+"""CONSTANTS"""
+BASE_URL = "https://api.cloudflare.com/client/v4/"
 
 
 def load_mock_response(file_name: str) -> str:
@@ -22,18 +23,13 @@ def load_mock_response(file_name: str) -> str:
         str: Mock file content.
     """
 
-    with open(os.path.join('test_data', file_name), mode='r', encoding='utf-8') as mock_file:
+    with open(os.path.join("test_data", file_name), encoding="utf-8") as mock_file:
         return json.loads(mock_file.read())
 
 
 @pytest.fixture(autouse=True)
 def mock_client():
-    return Client(account_id=ACCOUNT_ID,
-                  zone_id=ZONE_ID,
-                  credentials=CREDENTIALS,
-                  base_url=BASE_URL,
-                  proxy=False,
-                  insecure=True)
+    return Client(account_id=ACCOUNT_ID, zone_id=ZONE_ID, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True)
 
 
 def test_cloudflare_waf_firewall_rule_create_command(requests_mock, mock_client):
@@ -52,19 +48,18 @@ def test_cloudflare_waf_firewall_rule_create_command(requests_mock, mock_client)
 
     from CloudflareWAF import cloudflare_waf_firewall_rule_create_command
 
-    mock_response = load_mock_response('create_firewall_rule.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/firewall/rules'
+    mock_response = load_mock_response("create_firewall_rule.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/firewall/rules"
     requests_mock.post(url=url, json=mock_response)
 
-    action = 'allow'
-    filter_expression = 'filter_expression'
+    action = "allow"
+    filter_expression = "filter_expression"
 
-    result = cloudflare_waf_firewall_rule_create_command(
-        mock_client, {'action': action, 'filter_expression': filter_expression})
+    result = cloudflare_waf_firewall_rule_create_command(mock_client, {"action": action, "filter_expression": filter_expression})
 
-    assert result.outputs_prefix == 'CloudflareWAF.FirewallRule'
+    assert result.outputs_prefix == "CloudflareWAF.FirewallRule"
     assert len(result.outputs[0]) == 8
-    assert result.outputs[0]['id'] == 'firewall_rule_id'
+    assert result.outputs[0]["id"] == "firewall_rule_id"
 
 
 def test_cloudflare_waf_firewall_rule_update_command(requests_mock, mock_client):
@@ -83,16 +78,17 @@ def test_cloudflare_waf_firewall_rule_update_command(requests_mock, mock_client)
 
     from CloudflareWAF import cloudflare_waf_firewall_rule_update_command
 
-    mock_response = load_mock_response('create_firewall_rule.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/firewall/rules'
+    mock_response = load_mock_response("create_firewall_rule.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/firewall/rules"
     requests_mock.put(url=url, json=mock_response)
 
     result = cloudflare_waf_firewall_rule_update_command(
-        mock_client, {'id': 'rule_id', 'action': 'action', 'filter_id': 'filter_id'})
+        mock_client, {"id": "rule_id", "action": "action", "filter_id": "filter_id"}
+    )
 
-    assert result.outputs_prefix == 'CloudflareWAF.FirewallRule'
+    assert result.outputs_prefix == "CloudflareWAF.FirewallRule"
     assert len(result.outputs[0]) == 8
-    assert result.outputs[0]['id'] == 'firewall_rule_id'
+    assert result.outputs[0]["id"] == "firewall_rule_id"
 
 
 def test_cloudflare_waf_firewall_rule_delete_command(requests_mock, mock_client):
@@ -111,18 +107,17 @@ def test_cloudflare_waf_firewall_rule_delete_command(requests_mock, mock_client)
 
     from CloudflareWAF import cloudflare_waf_firewall_rule_delete_command
 
-    mock_response = load_mock_response('delete_firewall_rule.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/firewall/rules'
+    mock_response = load_mock_response("delete_firewall_rule.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/firewall/rules"
     requests_mock.delete(url=url, json=mock_response)
 
-    rule_id = 'rule_id'
+    rule_id = "rule_id"
 
-    result = cloudflare_waf_firewall_rule_delete_command(
-        mock_client, {'id': rule_id})
+    result = cloudflare_waf_firewall_rule_delete_command(mock_client, {"id": rule_id})
 
     assert len(result.raw_response) == 4
-    assert result.raw_response['success'] is True
-    assert result.raw_response['result'][0]['id'] == 'firewall_rule_id'
+    assert result.raw_response["success"] is True
+    assert result.raw_response["result"][0]["id"] == "firewall_rule_id"
 
 
 def test_cloudflare_waf_firewall_rule_list_command(requests_mock, mock_client):
@@ -140,15 +135,15 @@ def test_cloudflare_waf_firewall_rule_list_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_firewall_rule_list_command
 
-    mock_response = load_mock_response('list_firewall_rule.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/firewall/rules'
+    mock_response = load_mock_response("list_firewall_rule.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/firewall/rules"
     requests_mock.get(url=url, json=mock_response)
 
-    result = cloudflare_waf_firewall_rule_list_command(mock_client, {'page': 1, 'page_size': 5})
+    result = cloudflare_waf_firewall_rule_list_command(mock_client, {"page": 1, "page_size": 5})
 
-    assert result.outputs_prefix == 'CloudflareWAF.FirewallRule'
+    assert result.outputs_prefix == "CloudflareWAF.FirewallRule"
     assert len(result.outputs) == 2
-    assert result.outputs[0]['id'] == 'firewall_rule_id_1'
+    assert result.outputs[0]["id"] == "firewall_rule_id_1"
 
 
 def test_cloudflare_waf_zone_list_command(requests_mock, mock_client):
@@ -166,15 +161,15 @@ def test_cloudflare_waf_zone_list_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_zone_list_command
 
-    mock_response = load_mock_response('list_zone.json')
-    url = f'{BASE_URL}zones'
+    mock_response = load_mock_response("list_zone.json")
+    url = f"{BASE_URL}zones"
     requests_mock.get(url=url, json=mock_response)
 
-    result = cloudflare_waf_zone_list_command(mock_client, {'page': 1, 'page_size': 5})
+    result = cloudflare_waf_zone_list_command(mock_client, {"page": 1, "page_size": 5})
 
-    assert result.outputs_prefix == 'CloudflareWAF.Zone'
+    assert result.outputs_prefix == "CloudflareWAF.Zone"
     assert len(result.outputs) == 2
-    assert result.outputs[0]['id'] == 'zone_id_1'
+    assert result.outputs[0]["id"] == "zone_id_1"
 
 
 def test_cloudflare_waf_filter_create_command(requests_mock, mock_client):
@@ -193,18 +188,17 @@ def test_cloudflare_waf_filter_create_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_filter_create_command
 
-    mock_response = load_mock_response('create_filter.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/filters'
+    mock_response = load_mock_response("create_filter.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/filters"
     requests_mock.post(url=url, json=mock_response)
 
-    filter_expression = 'filter_expression'
+    filter_expression = "filter_expression"
 
-    result = cloudflare_waf_filter_create_command(
-        mock_client, {'expression': filter_expression})
+    result = cloudflare_waf_filter_create_command(mock_client, {"expression": filter_expression})
 
-    assert result.outputs_prefix == 'CloudflareWAF.Filter'
+    assert result.outputs_prefix == "CloudflareWAF.Filter"
     assert len(result.outputs) == 2
-    assert result.outputs[0]['id'] == 'filter_id'
+    assert result.outputs[0]["id"] == "filter_id"
 
 
 def test_cloudflare_waf_filter_update_command(requests_mock, mock_client):
@@ -223,19 +217,18 @@ def test_cloudflare_waf_filter_update_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_filter_update_command
 
-    mock_response = load_mock_response('create_filter.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/filters'
+    mock_response = load_mock_response("create_filter.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/filters"
     requests_mock.put(url=url, json=mock_response)
 
-    filter_expression = 'filter_expression'
-    filter_id = 'filter_id'
+    filter_expression = "filter_expression"
+    filter_id = "filter_id"
 
-    result = cloudflare_waf_filter_update_command(
-        mock_client, {'id': filter_id, 'expression': filter_expression})
+    result = cloudflare_waf_filter_update_command(mock_client, {"id": filter_id, "expression": filter_expression})
 
-    assert result.outputs_prefix == 'CloudflareWAF.Filter'
+    assert result.outputs_prefix == "CloudflareWAF.Filter"
     assert len(result.outputs) == 1
-    assert result.outputs[0]['id'] == 'filter_id'
+    assert result.outputs[0]["id"] == "filter_id"
 
 
 def test_cloudflare_waf_filter_delete_command(requests_mock, mock_client):
@@ -254,16 +247,16 @@ def test_cloudflare_waf_filter_delete_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_filter_delete_command
 
-    mock_response = load_mock_response('create_filter.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/filters'
+    mock_response = load_mock_response("create_filter.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/filters"
     requests_mock.delete(url=url, json=mock_response)
 
-    filter_id = 'filter_id'
+    filter_id = "filter_id"
 
-    result = cloudflare_waf_filter_delete_command(mock_client, {'filter_id': filter_id})
+    result = cloudflare_waf_filter_delete_command(mock_client, {"filter_id": filter_id})
 
     assert len(result.raw_response) == 4
-    assert result.raw_response['result'][0]['id'] == 'filter_id'
+    assert result.raw_response["result"][0]["id"] == "filter_id"
 
 
 def test_cloudflare_waf_filter_list_command(requests_mock, mock_client):
@@ -281,15 +274,15 @@ def test_cloudflare_waf_filter_list_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_filter_list_command
 
-    mock_response = load_mock_response('list_filter.json')
-    url = f'{BASE_URL}zones/{ZONE_ID}/filters'
+    mock_response = load_mock_response("list_filter.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/filters"
     requests_mock.get(url=url, json=mock_response)
 
-    result = cloudflare_waf_filter_list_command(mock_client, {'limit': 5})
+    result = cloudflare_waf_filter_list_command(mock_client, {"limit": 5})
 
-    assert result.outputs_prefix == 'CloudflareWAF.Filter'
+    assert result.outputs_prefix == "CloudflareWAF.Filter"
     assert len(result.outputs) == 2
-    assert result.outputs[0]['id'] == 'filter_id_1'
+    assert result.outputs[0]["id"] == "filter_id_1"
 
 
 def test_cloudflare_waf_ip_list_create_command(requests_mock, mock_client):
@@ -308,20 +301,19 @@ def test_cloudflare_waf_ip_list_create_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_list_create_command
 
-    mock_response = load_mock_response('create_ip_list.json')
+    mock_response = load_mock_response("create_ip_list.json")
 
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists'
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists"
     requests_mock.post(url=url, json=mock_response)
 
-    name = 'list_name'
+    name = "list_name"
 
-    result = cloudflare_waf_ip_list_create_command(
-        mock_client, {'name': name})
+    result = cloudflare_waf_ip_list_create_command(mock_client, {"name": name})
 
-    assert result.outputs_prefix == 'CloudflareWAF.IpList'
+    assert result.outputs_prefix == "CloudflareWAF.IpList"
     assert len(result.outputs) == 7
-    assert result.outputs['id'] == 'list_id'
-    assert result.outputs['name'] == 'list_name'
+    assert result.outputs["id"] == "list_id"
+    assert result.outputs["name"] == "list_name"
 
 
 def test_cloudflare_waf_ip_list_delete_command(requests_mock, mock_client):
@@ -340,18 +332,17 @@ def test_cloudflare_waf_ip_list_delete_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_list_delete_command
 
-    mock_response = load_mock_response('delete_ip_list.json')
+    mock_response = load_mock_response("delete_ip_list.json")
 
-    list_id = 'list_id'
+    list_id = "list_id"
 
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}'
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}"
     requests_mock.delete(url=url, json=mock_response)
 
-    result = cloudflare_waf_ip_list_delete_command(
-        mock_client, {'id': list_id})
+    result = cloudflare_waf_ip_list_delete_command(mock_client, {"id": list_id})
 
     assert len(result.raw_response) == 4
-    assert result.raw_response['result']['id'] == 'list_id'
+    assert result.raw_response["result"]["id"] == "list_id"
 
 
 def test_cloudflare_waf_ip_lists_list_command(requests_mock, mock_client):
@@ -369,16 +360,15 @@ def test_cloudflare_waf_ip_lists_list_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_lists_list_command
 
-    mock_response = load_mock_response('lists_ip_list.json')
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists'
+    mock_response = load_mock_response("lists_ip_list.json")
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists"
     requests_mock.get(url=url, json=mock_response)
 
-    result = cloudflare_waf_ip_lists_list_command(
-        mock_client, {'page': 1, 'page_size': 5})
+    result = cloudflare_waf_ip_lists_list_command(mock_client, {"page": 1, "page_size": 5})
 
-    assert result.outputs_prefix == 'CloudflareWAF.IpList'
+    assert result.outputs_prefix == "CloudflareWAF.IpList"
     assert len(result.outputs) == 2
-    assert result.outputs[0]['id'] == 'list_id_1'
+    assert result.outputs[0]["id"] == "list_id_1"
 
 
 def test_cloudflare_waf_ip_list_item_list_command(requests_mock, mock_client):
@@ -396,15 +386,16 @@ def test_cloudflare_waf_ip_list_item_list_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_list_item_list_command
 
-    mock_response = load_mock_response('ip_list_item_list.json')
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/123/items'
+    mock_response = load_mock_response("ip_list_item_list.json")
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/123/items"
     requests_mock.get(url=url, json=mock_response)
 
     result = cloudflare_waf_ip_list_item_list_command(
-        mock_client, {'page': 1, 'page_size': 5, 'list_id': '123', 'item_ip': 'ip1'})
+        mock_client, {"page": 1, "page_size": 5, "list_id": "123", "item_ip": "ip1"}
+    )
 
-    assert result.outputs_prefix == 'CloudflareWAF.IpListItem'
-    assert result.outputs['list_id'] == '123'
+    assert result.outputs_prefix == "CloudflareWAF.IpListItem"
+    assert result.outputs["list_id"] == "123"
 
 
 def test_cloudflare_waf_ip_list_item_create_command(requests_mock, mock_client):
@@ -423,18 +414,18 @@ def test_cloudflare_waf_ip_list_item_create_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_list_item_create_command
 
-    mock_response = load_mock_response('ip_list_item.json')
+    mock_response = load_mock_response("ip_list_item.json")
 
-    list_id = 'list_id'
-    items = '120.2.2.8'
+    list_id = "list_id"
+    items = "120.2.2.8"
 
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}/items'
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}/items"
 
     requests_mock.post(url=url, json=mock_response)
 
-    result = cloudflare_waf_ip_list_item_create_command(mock_client, {'list_id': list_id, 'items': items})
+    result = cloudflare_waf_ip_list_item_create_command(mock_client, {"list_id": list_id, "items": items})
 
-    assert result.raw_response['operation_id'] == 'operation_id'
+    assert result.raw_response["operation_id"] == "operation_id"
 
 
 def test_cloudflare_waf_ip_list_item_update_command(requests_mock, mock_client):
@@ -453,18 +444,18 @@ def test_cloudflare_waf_ip_list_item_update_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_list_item_update_command
 
-    mock_response = load_mock_response('ip_list_item.json')
+    mock_response = load_mock_response("ip_list_item.json")
 
-    list_id = 'list_id'
-    items = '120.2.2.8'
+    list_id = "list_id"
+    items = "120.2.2.8"
 
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}/items'
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}/items"
 
     requests_mock.put(url=url, json=mock_response)
 
-    result = cloudflare_waf_ip_list_item_update_command(mock_client, {'list_id': list_id, 'items': items})
+    result = cloudflare_waf_ip_list_item_update_command(mock_client, {"list_id": list_id, "items": items})
 
-    assert result.raw_response['operation_id'] == 'operation_id'
+    assert result.raw_response["operation_id"] == "operation_id"
 
 
 def test_cloudflare_waf_ip_list_item_delete_command(requests_mock, mock_client):
@@ -483,15 +474,1521 @@ def test_cloudflare_waf_ip_list_item_delete_command(requests_mock, mock_client):
 
     from CloudflareWAF import cloudflare_waf_ip_list_item_delete_command
 
-    mock_response = load_mock_response('ip_list_item.json')
+    mock_response = load_mock_response("ip_list_item.json")
 
-    list_id = 'list_id'
-    items = 'item_id'
+    list_id = "list_id"
+    items = "item_id"
 
-    url = f'{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}/items'
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rules/lists/{list_id}/items"
 
     requests_mock.delete(url=url, json=mock_response)
 
-    result = cloudflare_waf_ip_list_item_delete_command(mock_client, {'list_id': list_id, 'items': items})
+    result = cloudflare_waf_ip_list_item_delete_command(mock_client, {"list_id": list_id, "items": items})
 
-    assert result.raw_response['operation_id'] == 'operation_id'
+    assert result.raw_response["operation_id"] == "operation_id"
+
+
+def test_get_headers_with_api_token():
+    """
+    Scenario: Use API Token authentication.
+    Given:
+     - User has provided an API token using the credentials parameter.
+    When:
+     - get_headers is called.
+    Then:
+     - Ensure the 'Authorization' header is correctly set with the bearer token.
+     - Ensure the 'Content-Type' header is set to 'application/json'.
+    """
+    from CloudflareWAF import get_headers
+
+    params = {"credentials": {"password": "test_token"}}
+    expected = {"Authorization": "Bearer test_token", "Content-Type": "application/json"}
+    result = get_headers(params)
+    assert json.loads(result) == expected
+
+
+def test_get_headers_with_global_api_key():
+    """
+    Scenario: Use Global API Key and Email for authentication.
+    Given:
+     - User has provided a global API key and email.
+    When:
+     - get_headers is called.
+    Then:
+     - Ensure the 'X-Auth-Email' and 'X-Auth-Key' headers are correctly set.
+     - Ensure the 'Content-Type' header is set to 'application/json'.
+    """
+    from CloudflareWAF import get_headers
+
+    params = {"global_api_key": {"password": "test_key"}, "email": "user@example.com"}
+    expected = {"X-Auth-Email": "user@example.com", "X-Auth-Key": "test_key", "Content-Type": "application/json"}
+    result = get_headers(params)
+    assert json.loads(result) == expected
+
+
+def test_get_headers_missing_authentication():
+    """
+    Scenario: Missing all authentication methods.
+    Given:
+     - No API token.
+     - No global API key and email.
+    When:
+     - get_headers is called.
+    Then:
+     - Raise ValueError indicating that authentication parameters are missing.
+    """
+    from CloudflareWAF import get_headers
+
+    params = {}
+    with pytest.raises(ValueError, match="Missing authentication parameters"):
+        get_headers(params)
+
+
+def test_cloudflare_waf_ruleset_list_command(requests_mock, mock_client):
+    """
+    Scenario: List rulesets.
+    Given:
+     - User has provided valid credentials.
+     - Default zone_id is configured on the client.
+    When:
+     - cloudflare-waf-ruleset-list called without explicit zone_id.
+    Then:
+     - Ensure the zone-level endpoint is used (falls back to client zone_id).
+     - Ensure number of items is correct.
+     - Ensure outputs prefix is correct.
+     - Ensure a sample value from the API matches what is generated in the context.
+    """
+
+    from CloudflareWAF import cloudflare_waf_ruleset_list_command
+
+    mock_response = load_mock_response("list_ruleset.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/rulesets"
+    requests_mock.get(url=url, json=mock_response)
+
+    result = cloudflare_waf_ruleset_list_command(mock_client, {})
+
+    assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+    assert len(result.outputs) == 2
+    assert result.outputs[0]["id"] == "ruleset_id_1"
+    assert result.outputs[1]["id"] == "ruleset_id_2"
+
+
+def test_cloudflare_waf_ruleset_list_command_account_level(requests_mock):
+    """
+    Scenario: List rulesets at account level.
+    Given:
+     - User has provided valid credentials.
+     - No zone_id is configured on the client or passed as argument.
+    When:
+     - cloudflare-waf-ruleset-list called.
+    Then:
+     - Ensure the account-level endpoint is used.
+     - Ensure outputs prefix is correct.
+    """
+
+    from CloudflareWAF import cloudflare_waf_ruleset_list_command
+
+    client_no_zone = Client(
+        account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+    )
+
+    mock_response = load_mock_response("list_ruleset.json")
+    url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rulesets"
+    requests_mock.get(url=url, json=mock_response)
+
+    result = cloudflare_waf_ruleset_list_command(client_no_zone, {})
+
+    assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+    assert len(result.outputs) == 2
+
+
+def test_cloudflare_waf_ruleset_get_command(requests_mock, mock_client):
+    """
+    Scenario: Get a specific ruleset.
+    Given:
+     - User has provided valid credentials.
+     - Ruleset ID.
+    When:
+     - cloudflare-waf-ruleset-get called.
+    Then:
+     - Ensure outputs prefix is correct.
+     - Ensure a sample value from the API matches what is generated in the context.
+     - Ensure rules are included in the output.
+    """
+
+    from CloudflareWAF import cloudflare_waf_ruleset_get_command
+
+    mock_response = load_mock_response("get_ruleset.json")
+    ruleset_id = "ruleset_id_1"
+    url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}"
+    requests_mock.get(url=url, json=mock_response)
+
+    result = cloudflare_waf_ruleset_get_command(mock_client, {"ruleset_id": ruleset_id})
+
+    assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+    assert result.outputs["id"] == "ruleset_id_1"
+    assert result.outputs["name"] == "Cloudflare Managed Ruleset"
+    assert len(result.outputs["rules"]) == 2
+    assert result.outputs["rules"][0]["id"] == "rule_id_1"
+
+
+def test_cloudflare_waf_ruleset_create_command(requests_mock, mock_client):
+    """
+    Scenario: Create a new ruleset.
+    Given:
+     - User has provided valid credentials.
+     - Ruleset name, kind, and phase.
+    When:
+     - cloudflare-waf-ruleset-create called.
+    Then:
+     - Ensure outputs prefix is correct.
+     - Ensure a sample value from the API matches what is generated in the context.
+    """
+
+    from CloudflareWAF import cloudflare_waf_ruleset_create_command
+
+    mock_response = load_mock_response("create_ruleset.json")
+    url = f"{BASE_URL}zones/{ZONE_ID}/rulesets"
+    requests_mock.post(url=url, json=mock_response)
+
+    result = cloudflare_waf_ruleset_create_command(
+        mock_client,
+        {
+            "name": "New Custom Ruleset",
+            "kind": "custom",
+            "phase": "http_request_firewall_custom",
+            "description": "A new custom ruleset",
+            "rules": '[{"action": "block", "expression": "(ip.src eq 10.0.0.1)", "description": "Block internal IP"}]',
+        },
+    )
+
+    assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+    assert result.outputs["id"] == "ruleset_id_new"
+    assert result.outputs["name"] == "New Custom Ruleset"
+
+
+def test_cloudflare_waf_ruleset_update_command(requests_mock, mock_client):
+    """
+    Scenario: Update an existing ruleset.
+    Given:
+     - User has provided valid credentials.
+     - Ruleset ID and updated fields.
+    When:
+     - cloudflare-waf-ruleset-update called.
+    Then:
+     - Ensure outputs prefix is correct.
+     - Ensure a sample value from the API matches what is generated in the context.
+    """
+
+    from CloudflareWAF import cloudflare_waf_ruleset_update_command
+
+    mock_response = load_mock_response("update_ruleset.json")
+    ruleset_id = "ruleset_id_1"
+    url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}"
+    requests_mock.put(url=url, json=mock_response)
+
+    result = cloudflare_waf_ruleset_update_command(
+        mock_client,
+        {
+            "ruleset_id": ruleset_id,
+            "name": "Updated Ruleset Name",
+            "description": "Updated description",
+        },
+    )
+
+    assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+    assert result.outputs["id"] == "ruleset_id_1"
+    assert result.outputs["name"] == "Updated Ruleset Name"
+
+
+def test_cloudflare_waf_ruleset_delete_command(requests_mock, mock_client):
+    """
+    Scenario: Delete a ruleset.
+    Given:
+     - User has provided valid credentials.
+     - Ruleset ID.
+    When:
+     - cloudflare-waf-ruleset-delete called.
+    Then:
+     - Ensure the readable output confirms deletion.
+    """
+
+    from CloudflareWAF import cloudflare_waf_ruleset_delete_command
+
+    ruleset_id = "ruleset_id_1"
+    url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}"
+    requests_mock.delete(url=url, status_code=204)
+
+    result = cloudflare_waf_ruleset_delete_command(mock_client, {"ruleset_id": ruleset_id})
+
+    assert result.readable_output == f"Ruleset {ruleset_id} was successfully deleted."
+
+
+class TestResolveScopeIds:
+    """Tests for the _resolve_scope_ids helper function."""
+
+    def test_both_zone_id_and_account_id_in_args_raises(self, mock_client):
+        """
+        Scenario: Both zone_id and account_id are explicitly provided in args.
+        Given:
+         - args contains both zone_id and account_id.
+        When:
+         - _resolve_scope_ids is called.
+        Then:
+         - Raise ValueError indicating mutual exclusivity.
+        """
+        from CloudflareWAF import _resolve_scope_ids
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            _resolve_scope_ids({"zone_id": "z1", "account_id": "a1"}, mock_client)
+
+    def test_neither_zone_nor_account_raises(self):
+        """
+        Scenario: Neither zone_id nor account_id is available from args or client.
+        Given:
+         - args is empty.
+         - Client has no zone_id and no account_id.
+        When:
+         - _resolve_scope_ids is called.
+        Then:
+         - Raise ValueError indicating that at least one must be provided.
+        """
+        from CloudflareWAF import _resolve_scope_ids
+
+        client_empty = Client(account_id="", zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True)
+
+        with pytest.raises(ValueError, match="Either zone_id or account_id must be provided"):
+            _resolve_scope_ids({}, client_empty)
+
+    def test_zone_id_in_args_only(self, mock_client):
+        """
+        Scenario: zone_id is provided in args only (no account_id in args).
+        Given:
+         - args contains zone_id.
+         - Client has account_id.
+        When:
+         - _resolve_scope_ids is called.
+        Then:
+         - Returns (zone_id_from_args, client.account_id).
+        """
+        from CloudflareWAF import _resolve_scope_ids
+
+        zone_id, account_id = _resolve_scope_ids({"zone_id": "arg_zone"}, mock_client)
+
+        assert zone_id == "arg_zone"
+        assert account_id == ACCOUNT_ID
+
+    def test_account_id_in_args_only(self):
+        """
+        Scenario: account_id is provided in args only (no zone_id in args or client).
+        Given:
+         - args contains account_id.
+         - Client has no zone_id.
+        When:
+         - _resolve_scope_ids is called.
+        Then:
+         - Returns (None, account_id_from_args).
+        """
+        from CloudflareWAF import _resolve_scope_ids
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        zone_id, account_id = _resolve_scope_ids({"account_id": "arg_account"}, client_no_zone)
+
+        assert zone_id is None
+        assert account_id == "arg_account"
+
+    def test_zone_id_from_client(self, mock_client):
+        """
+        Scenario: zone_id is not in args but client has zone_id.
+        Given:
+         - args is empty.
+         - Client has zone_id and account_id.
+        When:
+         - _resolve_scope_ids is called.
+        Then:
+         - Returns (client.zone_id, client.account_id).
+        """
+        from CloudflareWAF import _resolve_scope_ids
+
+        zone_id, account_id = _resolve_scope_ids({}, mock_client)
+
+        assert zone_id == ZONE_ID
+        assert account_id == ACCOUNT_ID
+
+    def test_account_id_from_client(self):
+        """
+        Scenario: No zone_id in args or client; account_id falls back to client.account_id.
+        Given:
+         - args is empty.
+         - Client has no zone_id but has account_id.
+        When:
+         - _resolve_scope_ids is called.
+        Then:
+         - Returns (None, client.account_id).
+        """
+        from CloudflareWAF import _resolve_scope_ids
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        zone_id, account_id = _resolve_scope_ids({}, client_no_zone)
+
+        assert zone_id is None
+        assert account_id == ACCOUNT_ID
+
+
+class TestRulesetRuleCommands:
+    """Tests for the cloudflare-waf-ruleset-rule-* commands."""
+
+    def test_ruleset_rule_create_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: Create a ruleset rule using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - A valid rule JSON string.
+        When:
+         - cloudflare_waf_ruleset_rule_create_command is called.
+        Then:
+         - The POST request hits the zone-scoped rules URL.
+         - The outputs prefix is CloudflareWAF.Ruleset.
+         - A sample rules[] value matches the mock response.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_create_command
+
+        ruleset_id = "ruleset_id_1"
+        mock_response = load_mock_response("create_ruleset_rule.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/rules"
+        requests_mock.post(url, json=mock_response)
+
+        args = {
+            "ruleset_id": ruleset_id,
+            "rule": '{"action": "challenge", "expression": "(ip.src eq 120.2.2.8)", "description": "Challenge suspicious IP"}',
+        }
+
+        result = cloudflare_waf_ruleset_rule_create_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/{ruleset_id}/rules"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert result.outputs["rules"][1]["id"] == "new_rule_id"
+        assert result.outputs["rules"][1]["action"] == "challenge"
+
+    def test_ruleset_rule_create_account_scope_override(self, requests_mock):
+        """
+        Scenario: Create a ruleset rule using an account_id argument override.
+        Given:
+         - A client configured WITHOUT a zone_id.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_rule_create_command is called.
+        Then:
+         - The POST request hits the account-scoped rules URL.
+         - No zone segment is present in the request path.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_rule_create_command
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        ruleset_id = "ruleset_id_1"
+        arg_account = "arg_account"
+        mock_response = load_mock_response("create_ruleset_rule.json")
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/{ruleset_id}/rules"
+        requests_mock.post(url, json=mock_response)
+
+        args = {
+            "ruleset_id": ruleset_id,
+            "account_id": arg_account,
+            "rule": '{"action": "block", "expression": "(ip.src eq 192.0.2.1)"}',
+        }
+
+        result = cloudflare_waf_ruleset_rule_create_command(client_no_zone, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/accounts/{arg_account}/rulesets/{ruleset_id}/rules"
+        assert "zones" not in requests_mock.last_request.path
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+    def test_ruleset_rule_create_invalid_json(self, mock_client):
+        """
+        Scenario: Create a ruleset rule with an invalid rule JSON string.
+        Given:
+         - A rule argument that is not valid JSON.
+        When:
+         - cloudflare_waf_ruleset_rule_create_command is called.
+        Then:
+         - A ValueError with message "Failed to parse rule JSON" is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_create_command
+
+        args = {"ruleset_id": "ruleset_id_1", "rule": "{not valid json"}
+
+        with pytest.raises(ValueError, match="Failed to parse rule JSON"):
+            cloudflare_waf_ruleset_rule_create_command(mock_client, args)
+
+    def test_ruleset_rule_create_dry_run(self, requests_mock, mock_client):
+        """
+        Scenario: Create a ruleset rule with dry_run=true.
+        Given:
+         - dry_run set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_rule_create_command is called.
+        Then:
+         - The request includes the dry_run=true query parameter.
+         - The readable output is a dry-run message (not a success message).
+         - No context output is set.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_create_command
+
+        ruleset_id = "ruleset_id_1"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/rules"
+        requests_mock.post(url, json={"result": None, "success": True, "errors": [], "messages": []})
+
+        args = {
+            "ruleset_id": ruleset_id,
+            "rule": '{"action": "block", "expression": "(ip.src eq 192.0.2.1)"}',
+            "dry_run": "true",
+        }
+
+        result = cloudflare_waf_ruleset_rule_create_command(mock_client, args)
+
+        assert requests_mock.last_request.qs.get("dry_run") == ["true"]
+        assert "Dry run" in result.readable_output
+        assert result.outputs is None
+
+    def test_ruleset_rule_create_mutually_exclusive(self, mock_client):
+        """
+        Scenario: Create a ruleset rule with BOTH zone_id and account_id in args.
+        Given:
+         - args contains both zone_id and account_id.
+        When:
+         - cloudflare_waf_ruleset_rule_create_command is called.
+        Then:
+         - A ValueError matching "mutually exclusive" is raised by _resolve_scope_ids.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_create_command
+
+        args = {
+            "ruleset_id": "ruleset_id_1",
+            "rule": '{"action": "block", "expression": "(ip.src eq 192.0.2.1)"}',
+            "zone_id": "arg_zone",
+            "account_id": "arg_account",
+        }
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            cloudflare_waf_ruleset_rule_create_command(mock_client, args)
+
+    def test_ruleset_rule_update_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: Update a ruleset rule using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - A valid full rule JSON string.
+        When:
+         - cloudflare_waf_ruleset_rule_update_command is called.
+        Then:
+         - The PATCH request hits the zone-scoped rule URL with the rule_id.
+         - The outputs prefix is CloudflareWAF.Ruleset.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_update_command
+
+        ruleset_id = "ruleset_id_1"
+        rule_id = "rule_id_1"
+        mock_response = load_mock_response("update_ruleset_rule.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/rules/{rule_id}"
+        requests_mock.patch(url, json=mock_response)
+
+        args = {
+            "ruleset_id": ruleset_id,
+            "rule_id": rule_id,
+            "rule": '{"action": "log", "expression": "(ip.src eq 192.0.2.1)", "description": "Log bad IP instead of block"}',
+        }
+
+        result = cloudflare_waf_ruleset_rule_update_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/{ruleset_id}/rules/{rule_id}"
+        assert requests_mock.last_request.method == "PATCH"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert result.outputs["rules"][0]["action"] == "log"
+
+    def test_ruleset_rule_update_dry_run(self, requests_mock, mock_client):
+        """
+        Scenario: Update a ruleset rule with dry_run=true.
+        Given:
+         - dry_run set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_rule_update_command is called.
+        Then:
+         - The request includes the dry_run=true query parameter.
+         - The readable output is a dry-run message and no context output is set.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_update_command
+
+        ruleset_id = "ruleset_id_1"
+        rule_id = "rule_id_1"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/rules/{rule_id}"
+        requests_mock.patch(url, json={"result": None, "success": True, "errors": [], "messages": []})
+
+        args = {
+            "ruleset_id": ruleset_id,
+            "rule_id": rule_id,
+            "rule": '{"action": "log", "expression": "(ip.src eq 192.0.2.1)"}',
+            "dry_run": "true",
+        }
+
+        result = cloudflare_waf_ruleset_rule_update_command(mock_client, args)
+
+        assert requests_mock.last_request.qs.get("dry_run") == ["true"]
+        assert "Dry run" in result.readable_output
+        assert result.outputs is None
+
+    def test_ruleset_rule_update_invalid_json(self, mock_client):
+        """
+        Scenario: Update a ruleset rule with an invalid rule JSON string.
+        Given:
+         - A rule argument that is not valid JSON.
+        When:
+         - cloudflare_waf_ruleset_rule_update_command is called.
+        Then:
+         - A ValueError with message "Failed to parse rule JSON" is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_update_command
+
+        args = {"ruleset_id": "ruleset_id_1", "rule_id": "rule_id_1", "rule": "{not valid json"}
+
+        with pytest.raises(ValueError, match="Failed to parse rule JSON"):
+            cloudflare_waf_ruleset_rule_update_command(mock_client, args)
+
+    def test_ruleset_rule_delete_readable_output(self, requests_mock, mock_client):
+        """
+        Scenario: Delete a ruleset rule using the zone scope.
+        Given:
+         - A client configured with a zone_id.
+        When:
+         - cloudflare_waf_ruleset_rule_delete_command is called.
+        Then:
+         - The readable_output matches the expected deletion message.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_delete_command
+
+        ruleset_id = "ruleset_id_1"
+        rule_id = "rule_id_1"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/rules/{rule_id}"
+        requests_mock.delete(url, json=load_mock_response("delete_ruleset_rule.json"))
+
+        args = {"ruleset_id": ruleset_id, "rule_id": rule_id}
+
+        result = cloudflare_waf_ruleset_rule_delete_command(mock_client, args)
+
+        assert result.readable_output == f"Rule {rule_id} was successfully deleted from ruleset {ruleset_id}."
+
+    def test_ruleset_rule_delete_dry_run(self, requests_mock, mock_client):
+        """
+        Scenario: Delete a ruleset rule with dry_run=true.
+        Given:
+         - dry_run set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_rule_delete_command is called.
+        Then:
+         - The request includes the dry_run=true query parameter.
+         - The readable output is a dry-run message, not a success message.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_delete_command
+
+        ruleset_id = "ruleset_id_1"
+        rule_id = "rule_id_1"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/rules/{rule_id}"
+        requests_mock.delete(url, json=load_mock_response("delete_ruleset_rule.json"))
+
+        args = {"ruleset_id": ruleset_id, "rule_id": rule_id, "dry_run": "true"}
+
+        result = cloudflare_waf_ruleset_rule_delete_command(mock_client, args)
+
+        assert requests_mock.last_request.qs.get("dry_run") == ["true"]
+        assert "Dry run" in result.readable_output
+
+    def test_ruleset_rule_delete_account_scope_override(self, requests_mock):
+        """
+        Scenario: Delete a ruleset rule using an account_id argument override.
+        Given:
+         - A client configured WITHOUT a zone_id.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_rule_delete_command is called.
+        Then:
+         - The DELETE request hits the account-scoped rule URL with no zone segment.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_rule_delete_command
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        ruleset_id = "ruleset_id_1"
+        rule_id = "rule_id_1"
+        arg_account = "arg_account"
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/{ruleset_id}/rules/{rule_id}"
+        requests_mock.delete(url, json=load_mock_response("delete_ruleset_rule.json"))
+
+        args = {"ruleset_id": ruleset_id, "rule_id": rule_id, "account_id": arg_account}
+
+        result = cloudflare_waf_ruleset_rule_delete_command(client_no_zone, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/accounts/{arg_account}/rulesets/{ruleset_id}/rules/{rule_id}"
+        assert "zones" not in requests_mock.last_request.path
+        assert result.readable_output == f"Rule {rule_id} was successfully deleted from ruleset {ruleset_id}."
+
+
+class TestRulesetEntrypointCommands:
+    """Tests for the cloudflare-waf-ruleset-entrypoint-* commands."""
+
+    def test_ruleset_entrypoint_get_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: Get the entry point ruleset using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - A valid phase argument.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_get_command is called.
+        Then:
+         - The GET request hits the zone-scoped entrypoint URL.
+         - The outputs prefix is CloudflareWAF.Ruleset.
+         - A sample rules[] value matches the mock response.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_get_command
+
+        phase = "http_request_firewall_managed"
+        mock_response = load_mock_response("get_entrypoint_ruleset.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase}
+
+        result = cloudflare_waf_ruleset_entrypoint_get_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert result.outputs["rules"][0]["action"] == "execute"
+        assert result.outputs["rules"][0]["action_parameters"]["id"] == "efb7b8c949ac4650a09736fc376e9aee"
+        assert result.outputs["rules"][1]["action"] == "block"
+
+    def test_ruleset_entrypoint_get_account_scope_override(self, requests_mock):
+        """
+        Scenario: Get the entry point ruleset using an account_id argument override.
+        Given:
+         - A client configured WITHOUT a zone_id.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_get_command is called.
+        Then:
+         - The GET request hits the account-scoped entrypoint URL.
+         - No zone segment is present in the request path.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_entrypoint_get_command
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        phase = "http_request_firewall_managed"
+        arg_account = "arg_account"
+        mock_response = load_mock_response("get_entrypoint_ruleset.json")
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/phases/{phase}/entrypoint"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase, "account_id": arg_account}
+
+        result = cloudflare_waf_ruleset_entrypoint_get_command(client_no_zone, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/accounts/{arg_account}/rulesets/phases/{phase}/entrypoint"
+        assert "zones" not in requests_mock.last_request.path
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+    def test_ruleset_entrypoint_get_missing_phase(self, mock_client):
+        """
+        Scenario: Get the entry point ruleset without a phase argument.
+        Given:
+         - args does not contain phase.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_get_command is called.
+        Then:
+         - A ValueError with message "phase is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_get_command
+
+        with pytest.raises(ValueError, match="phase is required."):
+            cloudflare_waf_ruleset_entrypoint_get_command(mock_client, {})
+
+    def test_ruleset_entrypoint_get_mutually_exclusive(self, mock_client):
+        """
+        Scenario: Get the entry point ruleset with BOTH zone_id and account_id in args.
+        Given:
+         - args contains both zone_id and account_id.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_get_command is called.
+        Then:
+         - A ValueError matching "mutually exclusive" is raised by _resolve_scope_ids.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_get_command
+
+        args = {
+            "phase": "http_request_firewall_managed",
+            "zone_id": "arg_zone",
+            "account_id": "arg_account",
+        }
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            cloudflare_waf_ruleset_entrypoint_get_command(mock_client, args)
+
+    def test_ruleset_entrypoint_update_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: Update the entry point ruleset using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - name, description and a valid rules JSON array.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_update_command is called.
+        Then:
+         - The PUT request hits the zone-scoped entrypoint URL.
+         - The outputs prefix is CloudflareWAF.Ruleset.
+         - The request json body contains the provided name/description/rules.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_update_command
+
+        phase = "http_request_firewall_managed"
+        mock_response = load_mock_response("update_entrypoint_ruleset.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+        requests_mock.put(url, json=mock_response)
+
+        args = {
+            "phase": phase,
+            "name": "updated entry point",
+            "description": "Updated entry point ruleset",
+            "rules": '[{"action": "challenge", "expression": "(ip.src eq 192.0.2.1)", "description": "Challenge IP"}]',
+        }
+
+        result = cloudflare_waf_ruleset_entrypoint_update_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+        assert requests_mock.last_request.method == "PUT"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+        body = requests_mock.last_request.json()
+        assert body["name"] == "updated entry point"
+        assert body["description"] == "Updated entry point ruleset"
+        assert body["rules"][0]["action"] == "challenge"
+
+    def test_ruleset_entrypoint_update_name_description_only(self, requests_mock, mock_client):
+        """
+        Scenario: Update the entry point ruleset with only name and description (no rules).
+        Given:
+         - A client configured with a zone_id.
+         - name and description but no rules argument.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_update_command is called.
+        Then:
+         - The request body has NO "rules" key (remove_empty_elements dropped it).
+         - The command succeeds with the CloudflareWAF.Ruleset outputs prefix.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_update_command
+
+        phase = "http_request_firewall_managed"
+        mock_response = load_mock_response("update_entrypoint_ruleset.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+        requests_mock.put(url, json=mock_response)
+
+        args = {
+            "phase": phase,
+            "name": "renamed entry point",
+            "description": "Only metadata changed",
+        }
+
+        result = cloudflare_waf_ruleset_entrypoint_update_command(mock_client, args)
+
+        body = requests_mock.last_request.json()
+        assert "rules" not in body
+        assert body["name"] == "renamed entry point"
+        assert body["description"] == "Only metadata changed"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+    def test_ruleset_entrypoint_update_dry_run(self, requests_mock, mock_client):
+        """
+        Scenario: Update the entry point ruleset with dry_run=true.
+        Given:
+         - dry_run set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_update_command is called.
+        Then:
+         - The request includes the dry_run=true query parameter.
+         - The readable output is a dry-run message.
+         - No context output is set.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_update_command
+
+        phase = "http_request_firewall_managed"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+        requests_mock.put(url, json={"result": None, "success": True, "errors": [], "messages": []})
+
+        args = {
+            "phase": phase,
+            "name": "dry run name",
+            "dry_run": "true",
+        }
+
+        result = cloudflare_waf_ruleset_entrypoint_update_command(mock_client, args)
+
+        assert requests_mock.last_request.qs.get("dry_run") == ["true"]
+        assert "Dry run" in result.readable_output
+        assert result.outputs is None
+
+    def test_ruleset_entrypoint_update_invalid_json(self, mock_client):
+        """
+        Scenario: Update the entry point ruleset with an invalid rules JSON string.
+        Given:
+         - A rules argument that is not valid JSON.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_update_command is called.
+        Then:
+         - A ValueError with message "Failed to parse rules JSON" is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_update_command
+
+        args = {"phase": "http_request_firewall_managed", "rules": "{not valid json"}
+
+        with pytest.raises(ValueError, match="Failed to parse rules JSON"):
+            cloudflare_waf_ruleset_entrypoint_update_command(mock_client, args)
+
+
+class TestRulesetVersionCommands:
+    """Tests for the cloudflare-waf-ruleset-version-* commands."""
+
+    def test_ruleset_version_list_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: List ruleset versions using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - A valid ruleset_id argument.
+        When:
+         - cloudflare_waf_ruleset_version_list_command is called.
+        Then:
+         - The GET request hits the zone-scoped versions URL.
+         - The outputs prefix is CloudflareWAF.Ruleset.
+         - All three versions are returned and a sample version value matches.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_list_command
+
+        ruleset_id = "ruleset_id_1"
+        mock_response = load_mock_response("list_ruleset_versions.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id}
+
+        result = cloudflare_waf_ruleset_version_list_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/{ruleset_id}/versions"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert len(result.outputs) == 3
+        assert result.outputs[0]["version"] == "1"
+        assert result.outputs[2]["version"] == "3"
+
+    def test_ruleset_version_list_limit_truncation(self, requests_mock, mock_client):
+        """
+        Scenario: List ruleset versions with a limit smaller than the result count.
+        Given:
+         - A mock response with three versions.
+         - limit set to 2 in args.
+        When:
+         - cloudflare_waf_ruleset_version_list_command is called.
+        Then:
+         - Only the first two versions are returned (client-side truncation).
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_list_command
+
+        ruleset_id = "ruleset_id_1"
+        mock_response = load_mock_response("list_ruleset_versions.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "limit": "2"}
+
+        result = cloudflare_waf_ruleset_version_list_command(mock_client, args)
+
+        assert len(result.outputs) == 2
+        assert result.outputs[0]["version"] == "1"
+        assert result.outputs[1]["version"] == "2"
+
+    def test_ruleset_version_list_all_results_overrides_limit(self, requests_mock, mock_client):
+        """
+        Scenario: List ruleset versions with all_results=true and a small limit.
+        Given:
+         - A mock response with three versions.
+         - limit set to 2 but all_results set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_version_list_command is called.
+        Then:
+         - All three versions are returned (limit is overridden).
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_list_command
+
+        ruleset_id = "ruleset_id_1"
+        mock_response = load_mock_response("list_ruleset_versions.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "limit": "2", "all_results": "true"}
+
+        result = cloudflare_waf_ruleset_version_list_command(mock_client, args)
+
+        assert len(result.outputs) == 3
+
+    def test_ruleset_version_list_account_scope_override(self, requests_mock):
+        """
+        Scenario: List ruleset versions using an account_id argument override.
+        Given:
+         - A client configured WITHOUT a zone_id.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_version_list_command is called.
+        Then:
+         - The GET request hits the account-scoped versions URL.
+         - No zone segment is present in the request path.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_version_list_command
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        ruleset_id = "ruleset_id_1"
+        arg_account = "arg_account"
+        mock_response = load_mock_response("list_ruleset_versions.json")
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/{ruleset_id}/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "account_id": arg_account}
+
+        result = cloudflare_waf_ruleset_version_list_command(client_no_zone, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/accounts/{arg_account}/rulesets/{ruleset_id}/versions"
+        assert "zones" not in requests_mock.last_request.path
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+    def test_ruleset_version_list_mutually_exclusive(self, mock_client):
+        """
+        Scenario: List ruleset versions with BOTH zone_id and account_id in args.
+        Given:
+         - args contains both zone_id and account_id.
+        When:
+         - cloudflare_waf_ruleset_version_list_command is called.
+        Then:
+         - A ValueError matching "mutually exclusive" is raised by _resolve_scope_ids.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_list_command
+
+        args = {"ruleset_id": "ruleset_id_1", "zone_id": "arg_zone", "account_id": "arg_account"}
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            cloudflare_waf_ruleset_version_list_command(mock_client, args)
+
+    def test_ruleset_version_get_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: Get a specific ruleset version using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - Valid ruleset_id and version arguments.
+        When:
+         - cloudflare_waf_ruleset_version_get_command is called.
+        Then:
+         - The GET request hits the zone-scoped version URL including the version segment.
+         - The outputs prefix is CloudflareWAF.Ruleset.
+         - The managed rule's categories survive into outputs (missing expression tolerated).
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_get_command
+
+        ruleset_id = "ruleset_id_1"
+        version = "2"
+        mock_response = load_mock_response("get_ruleset_version.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/versions/{version}"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "version": version}
+
+        result = cloudflare_waf_ruleset_version_get_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/{ruleset_id}/versions/{version}"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert result.outputs["version"] == "2"
+        assert result.outputs["rules"][0]["categories"] == ["wordpress", "php"]
+        assert "expression" not in result.outputs["rules"][0]
+
+    def test_ruleset_version_get_missing_version(self, mock_client):
+        """
+        Scenario: Get a ruleset version without providing the version argument.
+        Given:
+         - args contains ruleset_id but no version.
+        When:
+         - cloudflare_waf_ruleset_version_get_command is called.
+        Then:
+         - A ValueError with message "version is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_get_command
+
+        args = {"ruleset_id": "ruleset_id_1"}
+
+        with pytest.raises(ValueError, match="version is required."):
+            cloudflare_waf_ruleset_version_get_command(mock_client, args)
+
+    def test_ruleset_version_delete_readable_output(self, requests_mock, mock_client):
+        """
+        Scenario: Delete a ruleset version using the zone scope.
+        Given:
+         - A client configured with a zone_id.
+        When:
+         - cloudflare_waf_ruleset_version_delete_command is called.
+        Then:
+         - The readable_output matches the expected deletion message.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_delete_command
+
+        ruleset_id = "ruleset_id_1"
+        version = "2"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/versions/{version}"
+        requests_mock.delete(url, json=load_mock_response("delete_ruleset_version.json"))
+
+        args = {"ruleset_id": ruleset_id, "version": version}
+
+        result = cloudflare_waf_ruleset_version_delete_command(mock_client, args)
+
+        assert result.readable_output == f"Version {version} of ruleset {ruleset_id} was successfully deleted."
+
+    def test_ruleset_version_delete_dry_run(self, requests_mock, mock_client):
+        """
+        Scenario: Delete a ruleset version with dry_run=true.
+        Given:
+         - dry_run set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_version_delete_command is called.
+        Then:
+         - The request includes the dry_run=true query parameter.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_version_delete_command
+
+        ruleset_id = "ruleset_id_1"
+        version = "2"
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/{ruleset_id}/versions/{version}"
+        requests_mock.delete(url, json=load_mock_response("delete_ruleset_version.json"))
+
+        args = {"ruleset_id": ruleset_id, "version": version, "dry_run": "true"}
+
+        result = cloudflare_waf_ruleset_version_delete_command(mock_client, args)
+
+        assert requests_mock.last_request.qs.get("dry_run") == ["true"]
+        assert "Dry run" in result.readable_output
+
+    def test_ruleset_version_delete_account_scope_override(self, requests_mock):
+        """
+        Scenario: Delete a ruleset version using an account_id argument override.
+        Given:
+         - A client configured WITHOUT a zone_id.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_version_delete_command is called.
+        Then:
+         - The DELETE request hits the account-scoped version URL with no zone segment.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_version_delete_command
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        ruleset_id = "ruleset_id_1"
+        version = "2"
+        arg_account = "arg_account"
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/{ruleset_id}/versions/{version}"
+        requests_mock.delete(url, json=load_mock_response("delete_ruleset_version.json"))
+
+        args = {"ruleset_id": ruleset_id, "version": version, "account_id": arg_account}
+
+        result = cloudflare_waf_ruleset_version_delete_command(client_no_zone, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/accounts/{arg_account}/rulesets/{ruleset_id}/versions/{version}"
+        assert "zones" not in requests_mock.last_request.path
+        assert result.readable_output == f"Version {version} of ruleset {ruleset_id} was successfully deleted."
+
+
+class TestRulesetEntrypointVersionAndTagCommands:
+    """Tests for the entrypoint-version-* and rule-list-by-tag commands."""
+
+    def test_entrypoint_version_list_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: List entry point ruleset versions using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - A valid phase argument.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_list_command is called.
+        Then:
+         - The GET request hits the zone-scoped entrypoint versions URL.
+         - The outputs prefix is CloudflareWAF.Ruleset and all three versions are returned.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_list_command
+
+        phase = "http_request_firewall_managed"
+        mock_response = load_mock_response("list_entrypoint_versions.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase}
+
+        result = cloudflare_waf_ruleset_entrypoint_version_list_command(mock_client, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint/versions"
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert len(result.outputs) == 3
+        assert result.outputs[0]["version"] == "1"
+        assert result.outputs[2]["version"] == "3"
+
+    def test_entrypoint_version_list_limit_truncation(self, requests_mock, mock_client):
+        """
+        Scenario: List entry point ruleset versions with a limit smaller than the result count.
+        Given:
+         - A mock response with three versions.
+         - limit set to 2 in args.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_list_command is called.
+        Then:
+         - Only the first two versions are returned (client-side truncation).
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_list_command
+
+        phase = "http_request_firewall_managed"
+        mock_response = load_mock_response("list_entrypoint_versions.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase, "limit": "2"}
+
+        result = cloudflare_waf_ruleset_entrypoint_version_list_command(mock_client, args)
+
+        assert len(result.outputs) == 2
+        assert result.outputs[0]["version"] == "1"
+        assert result.outputs[1]["version"] == "2"
+
+    def test_entrypoint_version_list_all_results_overrides_limit(self, requests_mock, mock_client):
+        """
+        Scenario: List entry point ruleset versions with all_results=true and a small limit.
+        Given:
+         - A mock response with three versions.
+         - limit set to 2 but all_results set to 'true' in args.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_list_command is called.
+        Then:
+         - All three versions are returned (limit is overridden).
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_list_command
+
+        phase = "http_request_firewall_managed"
+        mock_response = load_mock_response("list_entrypoint_versions.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase, "limit": "2", "all_results": "true"}
+
+        result = cloudflare_waf_ruleset_entrypoint_version_list_command(mock_client, args)
+
+        assert len(result.outputs) == 3
+
+    def test_entrypoint_version_list_account_scope_override(self, requests_mock):
+        """
+        Scenario: List entry point ruleset versions using an account_id argument override.
+        Given:
+         - A client configured WITHOUT a zone_id.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_list_command is called.
+        Then:
+         - The GET request hits the account-scoped entrypoint versions URL with no zone segment.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_entrypoint_version_list_command
+
+        client_no_zone = Client(
+            account_id=ACCOUNT_ID, zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        phase = "http_request_firewall_managed"
+        arg_account = "arg_account"
+        mock_response = load_mock_response("list_entrypoint_versions.json")
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/phases/{phase}/entrypoint/versions"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase, "account_id": arg_account}
+
+        result = cloudflare_waf_ruleset_entrypoint_version_list_command(client_no_zone, args)
+
+        assert requests_mock.last_request.path == f"/client/v4/accounts/{arg_account}/rulesets/phases/{phase}/entrypoint/versions"
+        assert "zones" not in requests_mock.last_request.path
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+    def test_entrypoint_version_list_mutually_exclusive(self, mock_client):
+        """
+        Scenario: List entry point ruleset versions with BOTH zone_id and account_id in args.
+        Given:
+         - args contains both zone_id and account_id.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_list_command is called.
+        Then:
+         - A ValueError matching "mutually exclusive" is raised by _resolve_scope_ids.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_list_command
+
+        args = {"phase": "http_request_firewall_managed", "zone_id": "arg_zone", "account_id": "arg_account"}
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            cloudflare_waf_ruleset_entrypoint_version_list_command(mock_client, args)
+
+    def test_entrypoint_version_list_missing_phase(self, mock_client):
+        """
+        Scenario: List entry point ruleset versions without providing the phase argument.
+        Given:
+         - args contains no phase.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_list_command is called.
+        Then:
+         - A ValueError with message "phase is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_list_command
+
+        with pytest.raises(ValueError, match="phase is required."):
+            cloudflare_waf_ruleset_entrypoint_version_list_command(mock_client, {})
+
+    def test_entrypoint_version_get_zone_scope(self, requests_mock, mock_client):
+        """
+        Scenario: Get a specific entry point ruleset version using the zone scope (default from client).
+        Given:
+         - A client configured with a zone_id.
+         - Valid phase and version arguments.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_get_command is called.
+        Then:
+         - The GET request hits the zone-scoped entrypoint version URL including the version segment.
+         - The outputs prefix is CloudflareWAF.Ruleset and a rules[] sample matches.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_get_command
+
+        phase = "http_request_firewall_managed"
+        version = "2"
+        mock_response = load_mock_response("get_entrypoint_version.json")
+        url = f"{BASE_URL}zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint/versions/{version}"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"phase": phase, "version": version}
+
+        result = cloudflare_waf_ruleset_entrypoint_version_get_command(mock_client, args)
+
+        assert (
+            requests_mock.last_request.path == f"/client/v4/zones/{ZONE_ID}/rulesets/phases/{phase}/entrypoint/versions/{version}"
+        )
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert result.outputs["version"] == "2"
+        assert result.outputs["rules"][0]["action"] == "execute"
+        assert result.outputs["rules"][0]["action_parameters"]["id"] == "managed_ruleset_id_1"
+
+    def test_entrypoint_version_get_missing_version(self, mock_client):
+        """
+        Scenario: Get an entry point ruleset version without providing the version argument.
+        Given:
+         - args contains phase but no version.
+        When:
+         - cloudflare_waf_ruleset_entrypoint_version_get_command is called.
+        Then:
+         - A ValueError with message "version is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_entrypoint_version_get_command
+
+        args = {"phase": "http_request_firewall_managed"}
+
+        with pytest.raises(ValueError, match="version is required."):
+            cloudflare_waf_ruleset_entrypoint_version_get_command(mock_client, args)
+
+    def test_by_tag_match(self, requests_mock, mock_client):
+        """
+        Scenario: List managed ruleset rules by tag when the tag matches rules.
+        Given:
+         - A client configured with an account_id.
+         - Valid ruleset_id, version and tag arguments.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - The GET request hits the account-scoped by_tag URL.
+         - The matched rule's categories survive into outputs and the HR shows "Matched rules".
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        ruleset_id = "managed_ruleset_id_1"
+        version = "2"
+        tag = "wordpress"
+        mock_response = load_mock_response("by_tag_match.json")
+        url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "version": version, "tag": tag}
+
+        result = cloudflare_waf_ruleset_rule_list_by_tag_command(mock_client, args)
+
+        assert (
+            requests_mock.last_request.path
+            == f"/client/v4/accounts/{ACCOUNT_ID}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        )
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+        assert result.outputs["rules"][0]["categories"] == ["wordpress", "php"]
+        assert "Managed ruleset" in result.readable_output
+        assert "Matched rules" in result.readable_output
+
+    def test_by_tag_no_match(self, requests_mock, mock_client):
+        """
+        Scenario: List managed ruleset rules by tag when the tag matches no rules.
+        Given:
+         - A mock response with no rules key.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - The command succeeds, outputs has no "rules", and the HR shows the header
+           table but NOT "Matched rules".
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        ruleset_id = "managed_ruleset_id_1"
+        version = "2"
+        tag = "no-match-tag"
+        mock_response = load_mock_response("by_tag_no_match.json")
+        url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "version": version, "tag": tag}
+
+        result = cloudflare_waf_ruleset_rule_list_by_tag_command(mock_client, args)
+
+        assert not result.outputs.get("rules")
+        assert "Managed ruleset" in result.readable_output
+        assert "Matched rules" not in result.readable_output
+
+    def test_by_tag_account_id_override(self, requests_mock):
+        """
+        Scenario: List managed ruleset rules by tag using an account_id argument override.
+        Given:
+         - A client whose account_id differs from the argument.
+         - account_id passed via args.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - The GET request uses the argument account id, not the client's.
+        """
+        from CloudflareWAF import Client, cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        client_other = Client(
+            account_id="instance_account", zone_id=None, credentials=CREDENTIALS, base_url=BASE_URL, proxy=False, insecure=True
+        )
+
+        ruleset_id = "managed_ruleset_id_1"
+        version = "2"
+        tag = "wordpress"
+        arg_account = "arg_account"
+        mock_response = load_mock_response("by_tag_match.json")
+        url = f"{BASE_URL}accounts/{arg_account}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "version": version, "tag": tag, "account_id": arg_account}
+
+        result = cloudflare_waf_ruleset_rule_list_by_tag_command(client_other, args)
+
+        assert (
+            requests_mock.last_request.path
+            == f"/client/v4/accounts/{arg_account}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        )
+        assert "instance_account" not in requests_mock.last_request.path
+        assert result.outputs_prefix == "CloudflareWAF.Ruleset"
+
+    def test_by_tag_ignores_zone_id(self, requests_mock, mock_client):
+        """
+        Scenario: List managed ruleset rules by tag when a stray zone_id appears in args.
+        Given:
+         - args contains ruleset_id, version, tag AND a zone_id.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - The built path is always account-scoped; the zone_id is ignored (no zone routing).
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        ruleset_id = "managed_ruleset_id_1"
+        version = "2"
+        tag = "wordpress"
+        mock_response = load_mock_response("by_tag_match.json")
+        url = f"{BASE_URL}accounts/{ACCOUNT_ID}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        requests_mock.get(url, json=mock_response)
+
+        args = {"ruleset_id": ruleset_id, "version": version, "tag": tag, "zone_id": "stray_zone"}
+
+        cloudflare_waf_ruleset_rule_list_by_tag_command(mock_client, args)
+
+        assert (
+            requests_mock.last_request.path
+            == f"/client/v4/accounts/{ACCOUNT_ID}/rulesets/{ruleset_id}/versions/{version}/by_tag/{tag}"
+        )
+        assert "zones" not in requests_mock.last_request.path
+
+    def test_by_tag_missing_tag(self, mock_client):
+        """
+        Scenario: List managed ruleset rules by tag without providing the tag argument.
+        Given:
+         - args contains ruleset_id and version but no tag.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - A ValueError with message "tag is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        args = {"ruleset_id": "managed_ruleset_id_1", "version": "2"}
+
+        with pytest.raises(ValueError, match="tag is required."):
+            cloudflare_waf_ruleset_rule_list_by_tag_command(mock_client, args)
+
+    def test_by_tag_missing_ruleset_id(self, mock_client):
+        """
+        Scenario: List managed ruleset rules by tag without providing the ruleset_id argument.
+        Given:
+         - args contains version and tag but no ruleset_id.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - A ValueError with message "ruleset_id is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        args = {"version": "2", "tag": "wordpress"}
+
+        with pytest.raises(ValueError, match="ruleset_id is required."):
+            cloudflare_waf_ruleset_rule_list_by_tag_command(mock_client, args)
+
+    def test_by_tag_missing_version(self, mock_client):
+        """
+        Scenario: List managed ruleset rules by tag without providing the version argument.
+        Given:
+         - args contains ruleset_id and tag but no version.
+        When:
+         - cloudflare_waf_ruleset_rule_list_by_tag_command is called.
+        Then:
+         - A ValueError with message "version is required." is raised.
+        """
+        from CloudflareWAF import cloudflare_waf_ruleset_rule_list_by_tag_command
+
+        args = {"ruleset_id": "managed_ruleset_id_1", "tag": "wordpress"}
+
+        with pytest.raises(ValueError, match="version is required."):
+            cloudflare_waf_ruleset_rule_list_by_tag_command(mock_client, args)

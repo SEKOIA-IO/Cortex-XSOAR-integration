@@ -1,35 +1,36 @@
-import demistomock as demisto
 import base64
+import json
+
+import dateparser
+import demistomock as demisto
 import pytest
 from GooglePubSub import (
-    GoogleNameParser,
-    convert_datetime_to_iso_str,
-    message_to_incident,
-    attribute_pairs_to_dict,
-    get_publish_body,
-    extract_acks_and_msgs,
-    try_pull_unique_messages,
-    setup_subscription_last_run,
-    publish_message_command,
-    pull_messages_command,
-    subscriptions_list_command,
-    get_subscription_command,
-    create_subscription_command,
-    update_subscription_command,
-    topics_list_command,
-    create_topic_command,
-    delete_topic_command,
-    update_topic_command,
-    seek_message_command,
-    snapshot_list_command,
-    snapshot_create_command,
-    snapshot_update_command,
-    snapshot_delete_command,
     LAST_RUN_FETCHED_KEY,
     LAST_RUN_TIME_KEY,
+    GoogleNameParser,
+    attribute_pairs_to_dict,
+    convert_datetime_to_iso_str,
+    create_subscription_command,
+    create_topic_command,
+    delete_topic_command,
+    extract_acks_and_msgs,
+    get_publish_body,
+    get_subscription_command,
+    message_to_incident,
+    publish_message_command,
+    pull_messages_command,
+    seek_message_command,
+    setup_subscription_last_run,
+    snapshot_create_command,
+    snapshot_delete_command,
+    snapshot_list_command,
+    snapshot_update_command,
+    subscriptions_list_command,
+    topics_list_command,
+    try_pull_unique_messages,
+    update_subscription_command,
+    update_topic_command,
 )
-import dateparser
-import json
 
 
 class TestGoogleNameParser:
@@ -61,9 +62,7 @@ class TestGoogleNameParser:
             - GoogleNameParser should parse it in the expected format
         """
         expected = f"projects/{self.DFLT_PROJECT_ID}/topics/{self.DFLT_TOPIC_ID}"
-        assert expected == GoogleNameParser.get_topic_name(
-            self.DFLT_PROJECT_ID, self.DFLT_TOPIC_ID
-        )
+        assert expected == GoogleNameParser.get_topic_name(self.DFLT_PROJECT_ID, self.DFLT_TOPIC_ID)
 
     def test_get_full_subscription_project_name(self):
         """
@@ -76,9 +75,7 @@ class TestGoogleNameParser:
             - GoogleNameParser should parse it in the expected format
         """
         expected = f"projects/{self.DFLT_PROJECT_ID}/subscriptions/{self.DFLT_SUB_ID}"
-        assert expected == GoogleNameParser.get_subscription_project_name(
-            self.DFLT_PROJECT_ID, self.DFLT_SUB_ID
-        )
+        assert expected == GoogleNameParser.get_subscription_project_name(self.DFLT_PROJECT_ID, self.DFLT_SUB_ID)
 
     def test_get_full_subscription_topic_name(self):
         """
@@ -107,16 +104,12 @@ class TestGoogleNameParser:
             - GoogleNameParser should parse it in the expected format
         """
         expected = f"projects/{self.DFLT_PROJECT_ID}/snapshots/{self.DFLT_SNAPSHOT_ID}"
-        assert expected == GoogleNameParser.get_snapshot_project_name(
-            self.DFLT_PROJECT_ID, self.DFLT_SNAPSHOT_ID
-        )
+        assert expected == GoogleNameParser.get_snapshot_project_name(self.DFLT_PROJECT_ID, self.DFLT_SNAPSHOT_ID)
 
 
 class TestHelperFunctions:
     DECODED_B64_MESSAGE = "decoded message"
-    ENCODED_B64_MESSAGE = str(base64.b64encode(DECODED_B64_MESSAGE.encode("utf8")))[
-        2:-1
-    ]
+    ENCODED_B64_MESSAGE = str(base64.b64encode(DECODED_B64_MESSAGE.encode("utf8")))[2:-1]
     DATE_NO_MS = "2020-01-01T11:11:11Z"
     DATE_WITH_MS = "2020-01-01T11:11:11.123000Z"
     MOCK_MESSAGE = {"messageId": "123", "publishTime": DATE_WITH_MS}
@@ -132,12 +125,10 @@ class TestHelperFunctions:
             - convert_datetime_to_iso_str should convert the dates to the same string
         """
         datetime_no_ms = dateparser.parse(self.DATE_NO_MS)
-        assert f"{self.DATE_NO_MS[:-1]}.000000Z" == convert_datetime_to_iso_str(
-            datetime_no_ms
-        )
+        assert f"{self.DATE_NO_MS[:-1]}.000000Z" == convert_datetime_to_iso_str(datetime_no_ms)
 
         datetime_with_ms = dateparser.parse(self.DATE_WITH_MS)
-        assert self.DATE_WITH_MS == convert_datetime_to_iso_str(datetime_with_ms)
+        assert convert_datetime_to_iso_str(datetime_with_ms) == self.DATE_WITH_MS
 
     def test_message_to_incident(self):
         """
@@ -149,11 +140,8 @@ class TestHelperFunctions:
             - message_to_incident should convert it correctly
         """
         incident = message_to_incident(self.MOCK_MESSAGE)
-        assert self.DATE_WITH_MS == incident.get("occurred")
-        assert (
-            f'Google PubSub Message {self.MOCK_MESSAGE.get("messageId")}'
-            == incident.get("name")
-        )
+        assert incident.get("occurred") == self.DATE_WITH_MS
+        assert f'Google PubSub Message {self.MOCK_MESSAGE.get("messageId")}' == incident.get("name")
         assert json.dumps(self.MOCK_MESSAGE) == incident.get("rawJSON")
 
     class TestGetPublishBody:
@@ -214,11 +202,11 @@ class TestHelperFunctions:
             attrs_str = f"{key_1}={val_1},{key_2}={val_2}"
             expected_attributes = {key_1: val_1, key_2: val_2}
             expected_data = TestHelperFunctions.ENCODED_B64_MESSAGE
-            expected = {
-                "messages": [{"data": expected_data, "attributes": expected_attributes}]
-            }
+            expected = {"messages": [{"data": expected_data, "attributes": expected_attributes}]}
             assert expected == get_publish_body(
-                attrs_str, TestHelperFunctions.DECODED_B64_MESSAGE, delim_char=",",
+                attrs_str,
+                TestHelperFunctions.DECODED_B64_MESSAGE,
+                delim_char=",",
             )
 
     class TestAttributePairsToDict:
@@ -247,7 +235,7 @@ class TestHelperFunctions:
             Then:
                 - return attribute pairs
             """
-            assert "" == attribute_pairs_to_dict("")
+            assert attribute_pairs_to_dict("") == ""
             assert attribute_pairs_to_dict(None) is None
 
         def test_attribute_pairs_to_dict__single(self):
@@ -418,9 +406,9 @@ class TestCommands:
         def ack_messages(self, a, b):
             return ""
 
-    with open("test_data/commands_outputs.json", "r") as f:
+    with open("test_data/commands_outputs.json") as f:
         COMMAND_OUTPUTS = json.load(f)
-    with open("test_data/raw_responses.json", "r") as f:
+    with open("test_data/raw_responses.json") as f:
         RAW_RESPONSES = json.load(f)
 
     TEST_COMMANDS_LIST = [
@@ -555,9 +543,7 @@ class TestCommands:
         ),
     ]
 
-    @pytest.mark.parametrize(
-        "command_name,command_func,client_func,args, ", TEST_COMMANDS_LIST
-    )
+    @pytest.mark.parametrize("command_name,command_func,client_func,args, ", TEST_COMMANDS_LIST)
     def test_commands(self, command_name, command_func, client_func, args, mocker):
         """
         Given:
@@ -602,9 +588,7 @@ class TestCommands:
             res_msg_ids,
             res_acks,
             res_max_publish_time,
-        ) = try_pull_unique_messages(
-            client, sub_name, previous_msg_ids, last_run_time, retry_times=1
-        )
+        ) = try_pull_unique_messages(client, sub_name, previous_msg_ids, last_run_time, False, retry_times=1)
         assert debug_mock.call_count == 0
         assert res_msgs is None
         assert res_msg_ids is None
@@ -628,18 +612,14 @@ class TestCommands:
         sub_name = "test_sub_2"
         previous_msg_ids = set()
         last_run_time = "2020-04-25T08:36:30.242Z"
-        mocker.patch.object(
-            client, "pull_messages", return_value={"receivedMessages": []}
-        )
+        mocker.patch.object(client, "pull_messages", return_value={"receivedMessages": []})
         debug_mock = mocker.patch.object(demisto, "debug")
         (
             res_msgs,
             res_msg_ids,
             res_acks,
             res_max_publish_time,
-        ) = try_pull_unique_messages(
-            client, sub_name, previous_msg_ids, last_run_time, retry_times=1
-        )
+        ) = try_pull_unique_messages(client, sub_name, previous_msg_ids, last_run_time, False, retry_times=1)
         assert debug_mock.call_count == 0
         assert res_msgs is None
         assert res_msg_ids is None
@@ -671,10 +651,8 @@ class TestCommands:
             res_msg_ids,
             res_acks,
             res_max_publish_time,
-        ) = try_pull_unique_messages(
-            client, sub_name, previous_msg_ids, last_run_time, retry_times=1
-        )
-        assert not any(call.args[0].startswith('GCP_PUBSUB_MSG') for call in debug_mock.call_args_list)
+        ) = try_pull_unique_messages(client, sub_name, previous_msg_ids, last_run_time, False, retry_times=1)
+        assert not any(call.args[0].startswith("GCP_PUBSUB_MSG") for call in debug_mock.call_args_list)
         assert res_msgs == [
             {
                 "ackId": "321",
@@ -715,10 +693,8 @@ class TestCommands:
             res_msg_ids,
             res_acks,
             res_max_publish_time,
-        ) = try_pull_unique_messages(
-            client, sub_name, previous_msg_ids, last_run_time, retry_times=1
-        )
-        assert len(list(filter(lambda x: x.args[0].startswith('GCP_PUBSUB_MSG'), debug_mock.call_args_list))) == 1
+        ) = try_pull_unique_messages(client, sub_name, previous_msg_ids, last_run_time, False, retry_times=1)
+        assert len(list(filter(lambda x: x.args[0].startswith("GCP_PUBSUB_MSG"), debug_mock.call_args_list))) == 1
         assert res_msgs == [
             {
                 "ackId": "654",
@@ -756,10 +732,8 @@ class TestCommands:
             res_msg_ids,
             res_acks,
             res_max_publish_time,
-        ) = try_pull_unique_messages(
-            client, sub_name, previous_msg_ids, last_run_time, retry_times=1
-        )
-        assert not any(call.args[0].startswith('GCP_PUBSUB_MSG') for call in debug_mock.call_args_list)
+        ) = try_pull_unique_messages(client, sub_name, previous_msg_ids, last_run_time, False, retry_times=1)
+        assert not any(call.args[0].startswith("GCP_PUBSUB_MSG") for call in debug_mock.call_args_list)
         assert res_msgs == [
             {
                 "ackId": "654",
@@ -849,3 +823,314 @@ class TestCommands:
         assert sub_seek_mock.call_count == 1
         assert last_run_fetched_ids == {"123"}
         assert last_run_time is not None
+
+
+SA_KEY = {"type": "service_account", "project_id": "sa-project", "client_email": "sa@sa-project.iam.gserviceaccount.com"}
+WIF_CONFIG = {
+    "type": "external_account",
+    "audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pool/providers/provider",
+    "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+    "token_url": "https://sts.googleapis.com/v1/token",
+    "credential_source": {"file": "/var/run/secrets/token", "format": {"type": "text"}},
+}
+WIF_AWS_CONFIG = {**WIF_CONFIG, "subject_token_type": "urn:ietf:params:aws:token-type:aws4_request"}
+IMPERSONATION_URL = (
+    "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/embedded@p.iam.gserviceaccount.com:generateAccessToken"
+)
+TARGET_SA = "target-sa@my-project.iam.gserviceaccount.com"
+
+
+class TestAuthentication:
+    @pytest.fixture
+    def credential_mocks(self, mocker):
+        return {
+            "service_account": mocker.patch("GooglePubSub.service_account.Credentials.from_service_account_info"),
+            "identity_pool": mocker.patch("GooglePubSub.identity_pool.Credentials.from_info"),
+            "aws": mocker.patch("GooglePubSub.aws.Credentials.from_info"),
+            "impersonated": mocker.patch("GooglePubSub.impersonated_credentials.Credentials"),
+        }
+
+    def test_build_credentials_service_account_key(self, credential_mocks):
+        """
+        Given: A Service Account key dict and no impersonation target.
+        When: build_credentials is called.
+        Then: Service account credentials are loaded and not wrapped with impersonation (backward compatibility).
+        """
+        from GooglePubSub import SCOPES, BaseGoogleClient
+
+        result = BaseGoogleClient.build_credentials(SA_KEY, SCOPES)
+
+        credential_mocks["service_account"].assert_called_once_with(SA_KEY, scopes=SCOPES)
+        credential_mocks["impersonated"].assert_not_called()
+        assert result == credential_mocks["service_account"].return_value
+
+    @pytest.mark.parametrize(
+        "wif_config, expected_loader",
+        [(WIF_CONFIG, "identity_pool"), (WIF_AWS_CONFIG, "aws")],
+    )
+    def test_build_credentials_wif(self, credential_mocks, wif_config, expected_loader):
+        """
+        Given: A Workload Identity Federation configuration (OIDC or AWS) and no impersonation target.
+        When: build_credentials is called.
+        Then: The matching external account credentials class is used with the full configuration.
+        """
+        from GooglePubSub import SCOPES, BaseGoogleClient
+
+        result = BaseGoogleClient.build_credentials(wif_config, SCOPES)
+
+        credential_mocks[expected_loader].assert_called_once_with(wif_config, scopes=SCOPES)
+        credential_mocks["service_account"].assert_not_called()
+        credential_mocks["impersonated"].assert_not_called()
+        assert result == credential_mocks[expected_loader].return_value
+
+    def test_build_credentials_wif_embedded_impersonation_kept(self, credential_mocks):
+        """
+        Given: A WIF configuration embedding service_account_impersonation_url and no impersonation parameter.
+        When: build_credentials is called.
+        Then: The embedded impersonation URL is passed through unchanged and no extra wrapping is applied.
+        """
+        from GooglePubSub import SCOPES, BaseGoogleClient
+
+        config = {**WIF_CONFIG, "service_account_impersonation_url": IMPERSONATION_URL}
+        BaseGoogleClient.build_credentials(config, SCOPES)
+
+        assert credential_mocks["identity_pool"].call_args[0][0]["service_account_impersonation_url"] == IMPERSONATION_URL
+        credential_mocks["impersonated"].assert_not_called()
+
+    def test_build_credentials_impersonation_overrides_embedded_url(self, credential_mocks):
+        """
+        Given: A WIF configuration embedding service_account_impersonation_url and an impersonation parameter.
+        When: build_credentials is called.
+        Then: The embedded URL is removed and the base credentials are wrapped to impersonate the parameter target.
+        """
+        from GooglePubSub import SCOPES, BaseGoogleClient
+
+        config = {**WIF_CONFIG, "service_account_impersonation_url": IMPERSONATION_URL}
+        result = BaseGoogleClient.build_credentials(config, SCOPES, TARGET_SA)
+
+        assert "service_account_impersonation_url" not in credential_mocks["identity_pool"].call_args[0][0]
+        assert "service_account_impersonation_url" in config  # original config is not mutated
+        credential_mocks["impersonated"].assert_called_once_with(
+            source_credentials=credential_mocks["identity_pool"].return_value,
+            target_principal=TARGET_SA,
+            target_scopes=SCOPES,
+        )
+        assert result == credential_mocks["impersonated"].return_value
+
+    def test_build_credentials_service_account_with_impersonation(self, credential_mocks):
+        """
+        Given: A Service Account key and an impersonation target.
+        When: build_credentials is called.
+        Then: The service account credentials are wrapped with impersonated credentials.
+        """
+        from GooglePubSub import SCOPES, BaseGoogleClient
+
+        result = BaseGoogleClient.build_credentials(SA_KEY, SCOPES, TARGET_SA)
+
+        credential_mocks["impersonated"].assert_called_once_with(
+            source_credentials=credential_mocks["service_account"].return_value,
+            target_principal=TARGET_SA,
+            target_scopes=SCOPES,
+        )
+        assert result == credential_mocks["impersonated"].return_value
+
+    def test_get_base_credential_config_service_account(self):
+        """
+        Given: Only a Service Account key JSON.
+        When: get_base_credential_config is called.
+        Then: The parsed Service Account dict is returned.
+        """
+        from GooglePubSub import get_base_credential_config
+
+        assert get_base_credential_config(json.dumps(SA_KEY), None) == SA_KEY
+
+    def test_get_base_credential_config_wif(self):
+        """
+        Given: Only a WIF configuration JSON.
+        When: get_base_credential_config is called.
+        Then: The parsed WIF dict is returned.
+        """
+        from GooglePubSub import get_base_credential_config
+
+        assert get_base_credential_config(None, json.dumps(WIF_CONFIG)) == WIF_CONFIG
+
+    def test_get_base_credential_config_service_account_with_literal_newlines(self):
+        """
+        Given: A Service Account key JSON whose private_key contains literal (unescaped) line breaks.
+        When: get_base_credential_config is called.
+        Then: The key is parsed leniently and the private_key keeps its line breaks.
+        """
+        from GooglePubSub import get_base_credential_config
+
+        raw_key = '{"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"}'
+
+        result = get_base_credential_config(raw_key, None)
+
+        assert result["private_key"] == "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+
+    @pytest.mark.parametrize(
+        "service_account_key, wif_config, expected_error",
+        [
+            (json.dumps(SA_KEY), json.dumps(WIF_CONFIG), "Provide exactly one of them"),
+            (None, None, "No base credential is configured"),
+            ("not-json", None, "Failed to parse Service Account Private Key"),
+            (None, "not-json", "Failed to parse the Workload Identity Federation configuration"),
+            (json.dumps(WIF_CONFIG), None, "Move it to the 'Workload Identity Federation configuration"),
+            (None, json.dumps(SA_KEY), "must contain a credential configuration of type 'external_account'"),
+        ],
+    )
+    def test_get_base_credential_config_errors(self, service_account_key, wif_config, expected_error):
+        """
+        Given: An invalid base credential combination (both, neither, invalid JSON, or credential in the wrong field).
+        When: get_base_credential_config is called.
+        Then: A readable configuration error is raised.
+        """
+        from CommonServerPython import DemistoException
+        from GooglePubSub import get_base_credential_config
+
+        with pytest.raises(DemistoException, match=expected_error):
+            get_base_credential_config(service_account_key, wif_config)
+
+    @pytest.mark.parametrize(
+        "params, expected_secret, expected_impersonation",
+        [
+            ({"credentials": {"password": json.dumps(SA_KEY)}}, SA_KEY, None),
+            ({"service_account_json": json.dumps(SA_KEY)}, SA_KEY, None),
+            (
+                {"wif_credentials": {"password": json.dumps(WIF_CONFIG)}, "impersonate_service_account": f" {TARGET_SA} "},
+                WIF_CONFIG,
+                TARGET_SA,
+            ),
+            ({"credentials": {"password": json.dumps(SA_KEY)}, "impersonate_service_account": ""}, SA_KEY, None),
+        ],
+    )
+    def test_init_google_client(self, mocker, params, expected_secret, expected_impersonation):
+        """
+        Given: Integration params with a single base credential and an optional impersonation target.
+        When: init_google_client is called.
+        Then: PubSubClient is created with the parsed base credential and the stripped impersonation target.
+        """
+        from GooglePubSub import init_google_client
+
+        client_mock = mocker.patch("GooglePubSub.PubSubClient")
+        init_google_client(
+            default_subscription="sub", default_project="proj", default_max_msgs="50", insecure=False, proxy=False, **params
+        )
+
+        call_kwargs = client_mock.call_args[1]
+        assert call_kwargs["client_secret"] == expected_secret
+        assert call_kwargs["impersonate_service_account"] == expected_impersonation
+
+    def test_init_google_client_impersonation_only_fails(self):
+        """
+        Given: Only the impersonation parameter is configured, without a base credential.
+        When: init_google_client is called.
+        Then: A readable error stating impersonation cannot be used on its own is raised.
+        """
+        from CommonServerPython import DemistoException
+        from GooglePubSub import init_google_client
+
+        with pytest.raises(DemistoException, match="cannot be used on its own"):
+            init_google_client(
+                default_subscription="sub",
+                default_project="proj",
+                default_max_msgs="50",
+                insecure=False,
+                proxy=False,
+                impersonate_service_account=TARGET_SA,
+            )
+
+    @pytest.mark.parametrize(
+        "raw_value, expected",
+        [
+            (None, None),
+            ("", None),
+            ("   ", None),
+            (f"  {TARGET_SA}  ", TARGET_SA),
+            ("my-sa@my-project.iam.gserviceaccount.com", "my-sa@my-project.iam.gserviceaccount.com"),
+            ("123456789-compute@developer.gserviceaccount.com", "123456789-compute@developer.gserviceaccount.com"),
+        ],
+    )
+    def test_get_impersonation_target_valid(self, raw_value, expected):
+        """
+        Given: An empty or valid service account email for the impersonation parameter.
+        When: get_impersonation_target is called.
+        Then: None is returned for empty values and the stripped email is returned otherwise.
+        """
+        from GooglePubSub import get_impersonation_target
+
+        assert get_impersonation_target(raw_value) == expected
+
+    @pytest.mark.parametrize(
+        "raw_value",
+        [
+            "user@example.com",
+            "target-sa",
+            "@my-project.iam.gserviceaccount.com",
+            json.dumps(SA_KEY),
+        ],
+    )
+    def test_get_impersonation_target_invalid(self, raw_value):
+        """
+        Given: An impersonation value that is not a service account email (user email, bare name, missing local part, key file).
+        When: get_impersonation_target is called.
+        Then: A readable error stating it must be a service account email is raised.
+        """
+        from CommonServerPython import DemistoException
+        from GooglePubSub import get_impersonation_target
+
+        with pytest.raises(DemistoException, match="must be a service account email"):
+            get_impersonation_target(raw_value)
+
+    def test_init_google_client_invalid_impersonation_email(self, mocker):
+        """
+        Given: A valid base credential and an impersonation value that is not a service account email.
+        When: init_google_client is called.
+        Then: A readable error is raised before the client is created.
+        """
+        from CommonServerPython import DemistoException
+        from GooglePubSub import init_google_client
+
+        client_mock = mocker.patch("GooglePubSub.PubSubClient")
+        with pytest.raises(DemistoException, match="must be a service account email"):
+            init_google_client(
+                default_subscription="sub",
+                default_project="proj",
+                default_max_msgs="50",
+                insecure=False,
+                proxy=False,
+                credentials={"password": json.dumps(SA_KEY)},
+                impersonate_service_account="user@example.com",
+            )
+        client_mock.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "params, expected_hint_present",
+        [
+            ({"credentials": {"password": json.dumps(SA_KEY)}}, False),
+            ({"credentials": {"password": json.dumps(SA_KEY)}, "impersonate_service_account": TARGET_SA}, True),
+        ],
+    )
+    def test_init_google_client_refresh_error(self, mocker, params, expected_hint_present):
+        """
+        Given: A base credential (optionally with an impersonation target) that fails to obtain an access token.
+        When: init_google_client is called and the client creation raises RefreshError.
+        Then: A readable error with the refresh reason is raised, including the Token Creator hint only when impersonating.
+        """
+        from CommonServerPython import DemistoException
+        from google.auth.exceptions import RefreshError
+        from GooglePubSub import init_google_client
+
+        mocker.patch(
+            "GooglePubSub.PubSubClient", side_effect=RefreshError("Permission 'iam.serviceAccounts.getAccessToken' denied")
+        )
+
+        with pytest.raises(DemistoException) as e:
+            init_google_client(
+                default_subscription="sub", default_project="proj", default_max_msgs="50", insecure=False, proxy=False, **params
+            )
+
+        error_message = str(e.value)
+        assert "Failed to obtain an access token" in error_message
+        assert "Reason: Permission 'iam.serviceAccounts.getAccessToken' denied" in error_message
+        assert ("roles/iam.serviceAccountTokenCreator" in error_message) == expected_hint_present

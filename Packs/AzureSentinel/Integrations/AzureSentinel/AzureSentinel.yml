@@ -1,5 +1,6 @@
 category: Analytics & SIEM
-sectionOrder:
+provider: Microsoft
+sectionorder:
 - Connect
 - Collect
 commonfields:
@@ -28,6 +29,7 @@ configuration:
   required: false
   defaultvalue: '20'
   display: Maximum number of incidents per fetch.
+  additionalinfo: The maximum number of incidents to fetch each time. The maximum allowed value is 50.
 - name: creds_tenant_id
   type: 9
   section: Connect
@@ -40,11 +42,19 @@ configuration:
   section: Connect
   required: false
   hidden: true
-- display: Client ID
+- displaypassword: Client ID
+  name: creds_client_id
+  hiddenusername: true
+  type: 9
+  section: Connect
+  required: false
+  additionalinfo: The Application (Client) ID of the Azure app registration.
+- displaypassword: Client Secret
   name: credentials
   type: 9
   section: Connect
   required: false
+  hiddenusername: true
 - additionalinfo: Used for certificate authentication. As appears in the "Certificates & secrets" page of the app.
   display: Certificate Thumbprint
   name: creds_certificate
@@ -169,6 +179,7 @@ configuration:
   type: 15
   hidden:
   - marketplacev2
+  - platform
   section: Collect
   required: false
   options:
@@ -183,6 +194,7 @@ configuration:
   type: 8
   hidden:
   - marketplacev2
+  - platform
   section: Collect
   advanced: true
   required: false
@@ -193,9 +205,50 @@ configuration:
   type: 8
   hidden:
   - marketplacev2
+  - platform
   section: Collect
   advanced: true
   required: false
+- additionalinfo: 'The statuses of the incidents that will be fetched. If no status is provided then incidents of all the statuses will be fetched.'
+  display: Incident Statuses to Fetch
+  name: statuses_to_fetch
+  options:
+  - New
+  - Active
+  - Closed
+  type: 16
+  section: Collect
+  advanced: true
+  required: false
+- defaultvalue: '1'
+  display: Incidents Fetch Interval
+  name: incidentFetchInterval
+  required: false
+  type: 19
+  section: Collect
+  advanced: true
+- defaultvalue: 0
+  display: Minutes to look back when fetching
+  additionalinfo: The lookback time window for incidents/issues created before the last run time that did not initially match the query. Small values (for example, 1-5 minutes) are recommended to avoid performance issues.
+  name: look_back
+  type: 0
+  advanced: true
+  required: false
+  section: Collect
+- display: Incident Titles to Not Fetch
+  additionalinfo: A comma-separated list of case-sensitive titles of the incidents that will not be fetched. This will also match if the title provided is contained in the incident's title. If no title is provided then all incidents will be fetched.
+  name: titles_to_not_fetch
+  type: 0
+  required: false
+  section: Collect
+  advanced: true
+- display: Alert Product Names to Not Fetch
+  additionalinfo: 'A comma-separated list of alert product names of the incidents that will not be fetched. For example: "Microsoft Entra ID Protection, Microsoft Sentinel". If no alert product name is provided then incidents will be fetched normally.'
+  name: alert_product_names_to_not_fetch
+  type: 0
+  required: false
+  section: Collect
+  advanced: true
 description: "Microsoft Sentinel is a scalable, cloud-native solution that provides: Security information and event management (SIEM) Security orchestration, automation, and response (SOAR)."
 display: Microsoft Sentinel
 name: Azure Sentinel
@@ -1326,9 +1379,10 @@ script:
     - description: The value of the indicator.
       name: value
       required: true
-    - description: The display name of the indicator.
+    - description: Deprecated. This argument is no longer supported by the Microsoft API and will be ignored. The display name of the indicator.
       name: display_name
-      required: true
+      hidden: true
+      deprecated: true
     - description: The description of the threat indicator.
       name: description
     - auto: PREDEFINED
@@ -2381,7 +2435,107 @@ script:
     execution: false
     name: azure-sentinel-auth-reset
     arguments: []
-  dockerimage: demisto/crypto:1.0.0.94037
+  - arguments:
+    - name: title
+      description: The incident's title.
+      required: true
+    - auto: PREDEFINED
+      description: The incident severity.
+      name: severity
+      predefined:
+      - High
+      - Medium
+      - Low
+      - Informational
+    - auto: PREDEFINED
+      description: The incident status.
+      name: status
+      predefined:
+      - New
+      - Active
+      - Closed
+      required: true
+    - description: The incident description.
+      name: description
+    - description: Incident labels. Note that all labels will be set as labelType='User'.
+      isArray: true
+      name: labels
+    description: Create a sentinel incident.
+    name: azure-sentinel-create-incident
+    outputs:
+    - contextPath: AzureSentinel.Incident.ID
+      description: The incident ID.
+      type: String
+    - contextPath: AzureSentinel.Incident.Title
+      description: The incident's title.
+      type: String
+    - contextPath: AzureSentinel.Incident.Description
+      description: Description of the incident.
+      type: String
+    - contextPath: AzureSentinel.Incident.Severity
+      description: The incident severity.
+      type: String
+    - contextPath: AzureSentinel.Incident.Status
+      description: The incident status.
+      type: String
+    - contextPath: AzureSentinel.Incident.AssigneeName
+      description: The name of the incident assignee.
+      type: String
+    - contextPath: AzureSentinel.Incident.AssigneeEmail
+      description: The email address of the incident assignee.
+      type: String
+    - contextPath: AzureSentinel.Incident.AssigneeObjectID
+      description: The object ID of the incident assignee.
+      type: string
+    - contextPath: AzureSentinel.Incident.AssigneeUPN
+      description: The user principal name of the incident assignee.
+      type: string
+    - contextPath: AzureSentinel.Incident.Label.Name
+      description: The name of the incident label.
+      type: String
+    - contextPath: AzureSentinel.Incident.Label.Type
+      description: The incident label type.
+      type: String
+    - contextPath: AzureSentinel.Incident.FirstActivityTimeUTC
+      description: The date and time of the incident's first activity.
+      type: Date
+    - contextPath: AzureSentinel.Incident.LastActivityTimeUTC
+      description: The date and time of the incident's last activity.
+      type: Date
+    - contextPath: AzureSentinel.Incident.LastModifiedTimeUTC
+      description: The date and time the incident was last modified.
+      type: Date
+    - contextPath: AzureSentinel.Incident.CreatedTimeUTC
+      description: The date and time the incident was created.
+      type: Date
+    - contextPath: AzureSentinel.Incident.IncidentNumber
+      description: The incident number.
+      type: Number
+    - contextPath: AzureSentinel.Incident.AlertsCount
+      description: The number of the alerts in the incident.
+      type: Number
+    - contextPath: AzureSentinel.Incident.BookmarkCount
+      description: The number of bookmarks in the incident.
+      type: Number
+    - contextPath: AzureSentinel.Incident.CommentCount
+      description: The number of comments in the incident.
+      type: Number
+    - contextPath: AzureSentinel.Incident.AlertProductNames
+      description: The alert product names of the incident.
+      type: String
+    - contextPath: AzureSentinel.Incident.Tactics
+      description: The incident's tactics.
+      type: String
+    - contextPath: AzureSentinel.Incident.FirstActivityTimeGenerated
+      description: The incident's generated first activity time.
+      type: Date
+    - contextPath: AzureSentinel.Incident.LastActivityTimeGenerated
+      description: The incident's generated last activity time.
+      type: Date
+    - contextPath: AzureSentinel.Incident.Etag
+      description: The Etag of the incident.
+      type: String
+  dockerimage: demisto/crypto:1.0.0.10120494
   isfetch: true
   runonce: false
   script: '-'

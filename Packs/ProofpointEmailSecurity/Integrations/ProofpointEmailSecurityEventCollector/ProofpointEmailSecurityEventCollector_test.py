@@ -1,19 +1,36 @@
+import logging
+import threading
 import uuid
+from contextlib import ExitStack, contextmanager
+from http import HTTPStatus
+
+import ProofpointEmailSecurityEventCollector
 import pytest
+from freezegun import freeze_time
+from CommonServerPython import arg_to_datetime
 from ProofpointEmailSecurityEventCollector import (
+    EVENT_TYPES,
+    Connection,
+    DemistoException,
+    EventConnection,
+    datetime,
+    demisto,
+    exceptions,
     fetch_events,
     json,
-    demisto,
-    EventType,
-    datetime,
+    long_running_execution_command,
+    perform_long_running_loop,
+    time,
     timedelta,
     websocket_connections,
-    perform_long_running_loop,
-    DemistoException,
-    Connection
+    MAX_RECONNECT_ATTEMPTS,
+    calculate_backoff_delay,
+    PING_TIMEOUT,
+    CLOSE_TIMEOUT,
+    OPEN_TIMEOUT,
+    PING_INTERVAL,
+    MAX_MESSAGE_SIZE,
 )
-import ProofpointEmailSecurityEventCollector
-from freezegun import freeze_time
 
 CURRENT_TIME: datetime | None = None
 
@@ -37,7 +54,7 @@ def connection():
     return MockConnection()
 
 
-class MockConnection:
+class MockConnection(Connection):
     def __init__(
         self,
     ):
@@ -45,6 +62,8 @@ class MockConnection:
         self.id = uuid.uuid4()
         self.events = EVENTS
         self.index = 0
+        self.pongs = 0
+        self.create_time = datetime.now()
 
     def recv(self, timeout):
         global CURRENT_TIME
@@ -57,6 +76,12 @@ class MockConnection:
         event = self.events[self.index]
         self.index += 1
         return json.dumps(event)
+
+    def pong(self):
+        self.pongs += 1
+
+    def close(self, *args, **kwargs):
+        self.closed = True
 
 
 def test_fetch_events(mocker, connection):
@@ -73,11 +98,17 @@ def test_fetch_events(mocker, connection):
         - Ensure that the function returns the events collected in the interval until events finished
     """
 
+    # Mock the connect method to return the mock connection
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+
     # We set fetch_interval to 7 to get this first two events (as we "wait" 4 seconds between each event)
     fetch_interval = 7
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={})
     mocker.patch.object(ProofpointEmailSecurityEventCollector, "is_interval_passed", side_effect=is_interval_passed)
     debug_logs = mocker.patch.object(demisto, "debug")
-    events = fetch_events(event_type=EventType.MESSAGE, connection=connection, fetch_interval=fetch_interval)
+    events = fetch_events(
+        connection=event_connection, fetch_interval=fetch_interval, integration_context={}, should_skip_sleeping=[]
+    )
 
     assert len(events) == 2
     assert events[0]["message"] == "Test message 1"
@@ -87,19 +118,19 @@ def test_fetch_events(mocker, connection):
     assert events[1]["_time"] == "2023-08-14T11:24:12.147573+00:00"
     assert events[1]["event_type"] == "message"
 
-    assert debug_logs.call_args_list[0][0][0] == "Fetched 2 events of type message"
-    assert debug_logs.call_args_list[1][0][0] == "The fetched events ids are: 1, 2"
+    debug_logs.assert_any_call("[message] Fetched events IDs: 1, 2.")
     # Now we want to freeze the time, so we will get the next interval
     with freeze_time(CURRENT_TIME):
         debug_logs = mocker.patch.object(demisto, "debug")
-        events = fetch_events(event_type=EventType.MESSAGE, connection=connection, fetch_interval=fetch_interval)
+        events = fetch_events(
+            connection=event_connection, fetch_interval=fetch_interval, integration_context={}, should_skip_sleeping=[]
+        )
     assert len(events) == 1
     assert events[0]["message"] == "Test message 3"
     assert events[0]["_time"] == "2023-08-12T13:24:11.147573+00:00"
     assert events[0]["event_type"] == "message"
 
-    assert debug_logs.call_args_list[0][0][0] == "Fetched 1 events of type message"
-    assert debug_logs.call_args_list[1][0][0] == "The fetched events ids are: 3"
+    debug_logs.assert_any_call("[message] Fetched events IDs: 3.")
 
 
 @freeze_time("2023-08-16T13:24:12.147573+0100")
@@ -118,38 +149,40 @@ def test_connects_to_websocket(mocker):
     connect_mock = mocker.patch.object(ProofpointEmailSecurityEventCollector, "connect")
 
     # Call the websocket_connections function without since_time and to_time
-    with websocket_connections("wss://host", "cluster_id", "api_key") as (message_connection, maillog_connection):
+    with websocket_connections("wss://host", "cluster_id", "api_key", since_time="2023-08-16T12:24:12.147573"):
         pass
 
-    assert connect_mock.call_count == 2
-    assert (
-        connect_mock.call_args_list[0][0][0]
-        == "wss://host/v1/stream?cid=cluster_id&type=message&sinceTime=2023-08-16T12:24:12.147573"
-    )
-    assert (
-        connect_mock.call_args_list[1][0][0]
-        == "wss://host/v1/stream?cid=cluster_id&type=maillog&sinceTime=2023-08-16T12:24:12.147573"
-    )
-    assert connect_mock.call_args_list[0][1]["additional_headers"]["Authorization"] == "Bearer api_key"
-    assert connect_mock.call_args_list[1][1]["additional_headers"]["Authorization"] == "Bearer api_key"
+    assert connect_mock.call_count == len(EVENT_TYPES)
+    for event_type in EVENT_TYPES:
+        connect_mock.assert_any_call(
+            f"wss://host/v1/stream?cid=cluster_id&type={event_type}&sinceTime=2023-08-16T12:24:12.147573",
+            additional_headers={"Authorization": "Bearer api_key"},
+            open_timeout=OPEN_TIMEOUT,
+            close_timeout=CLOSE_TIMEOUT,
+            ping_interval=PING_INTERVAL,
+            ping_timeout=PING_TIMEOUT,
+            max_size=MAX_MESSAGE_SIZE,
+        )
 
     connect_mock = mocker.patch.object(ProofpointEmailSecurityEventCollector, "connect")
 
     # Call the websocket_connections function with since_time and to_time
     with websocket_connections(
         "wss://host", "cluster_id", "api_key", since_time="2023-08-14T12:24:12.147573", to_time="2023-08-16T12:24:12.147573"
-    ) as (message_connection, maillog_connection):
+    ):
         pass
 
-    assert connect_mock.call_count == 2
-    assert (
-        connect_mock.call_args_list[0][0][0]
-        == "wss://host/v1/stream?cid=cluster_id&type=message&sinceTime=2023-08-14T12:24:12.147573&toTime=2023-08-16T12:24:12.147573"  # noqa: E501
-    )
-    assert (
-        connect_mock.call_args_list[1][0][0]
-        == "wss://host/v1/stream?cid=cluster_id&type=maillog&sinceTime=2023-08-14T12:24:12.147573&toTime=2023-08-16T12:24:12.147573"  # noqa: E501
-    )
+    assert connect_mock.call_count == len(EVENT_TYPES)
+    for event_type in EVENT_TYPES:
+        connect_mock.assert_any_call(
+            f"wss://host/v1/stream?cid=cluster_id&type={event_type}&sinceTime=2023-08-14T12:24:12.147573&toTime=2023-08-16T12:24:12.147573",
+            additional_headers={"Authorization": "Bearer api_key"},
+            open_timeout=OPEN_TIMEOUT,
+            close_timeout=CLOSE_TIMEOUT,
+            ping_interval=PING_INTERVAL,
+            ping_timeout=PING_TIMEOUT,
+            max_size=MAX_MESSAGE_SIZE,
+        )
 
 
 def test_handle_failures_of_send_events(mocker, capfd):
@@ -163,8 +196,9 @@ def test_handle_failures_of_send_events(mocker, capfd):
     Then:
         - Add the failing events to the context, and try again in the next run.
     """
-    def fetch_events_mock(event_type: EventType, connection: Connection, fetch_interval: int):
-        if event_type == EventType.MESSAGE:
+
+    def fetch_events_mock(connection: EventConnection, fetch_interval: int, integration_context, should_skip_sleeping):
+        if connection.event_type == "message":
             return EVENTS[:2]
         return EVENTS[2:]
 
@@ -173,18 +207,727 @@ def test_handle_failures_of_send_events(mocker, capfd):
 
     mocker.patch.object(ProofpointEmailSecurityEventCollector, "fetch_events", side_effect=fetch_events_mock)
     mocker.patch.object(ProofpointEmailSecurityEventCollector, "send_events_to_xsiam", side_effect=sends_events_to_xsiam_mock)
+
+    # Mock the connect method to return the mock connection
+    mocker.patch.object(EventConnection, "connect", return_value=MockConnection())
     with capfd.disabled():
-        perform_long_running_loop(MockConnection(), MockConnection(), 60)
+        perform_long_running_loop(
+            [
+                EventConnection("message", url="wss://test", headers={}),
+                EventConnection("maillog", url="wss://test", headers={}),
+            ],
+            60,
+            [],
+        )
     context = demisto.getIntegrationContext()
-    assert context["message_events"] == EVENTS[:2]
-    assert context["maillog_events"] == EVENTS[2:]
+    assert context["message"] == EVENTS[:2]
+    assert context["maillog"] == EVENTS[2:]
 
     second_try_send_events_mock = mocker.patch.object(ProofpointEmailSecurityEventCollector, "send_events_to_xsiam")
     with capfd.disabled():
-        perform_long_running_loop(MockConnection(), MockConnection(), 60)
+        perform_long_running_loop(
+            [
+                EventConnection("message", url="wss://test", headers={}),
+                EventConnection("maillog", url="wss://test", headers={}),
+            ],
+            60,
+            [],
+        )
     context = demisto.getIntegrationContext()
-    # check the the context is cleared
-    assert not context
+    # check the context is cleared
+    for event in EVENTS:
+        assert str(event) not in str(context)
     # check that the events failed events were sent to xsiam
     for event in EVENTS:
         assert event in second_try_send_events_mock.call_args_list[0][0][0]
+
+
+def test_heartbeat(mocker, connection):
+    """
+    Given:
+        - A connection object with scarce messages
+
+    When:
+        - The long running execution loop runs
+
+    Then:
+        - Periodic keep-alive messages (pongs) are sent to the websocket connection to prevent it from closing.
+
+    """
+    idle_timeout = 3
+
+    @contextmanager
+    def mock_websocket_connections(
+        host, cluster_id, api_key, since_time=None, to_time=None, fetch_interval=60, event_types=["audit"]
+    ):
+        with ExitStack():
+            yield [
+                EventConnection("audit", url="wss://test", headers={}, fetch_interval=fetch_interval, idle_timeout=idle_timeout)
+            ]
+
+    def mock_perform_long_running_loop(connections, interval, should_skip_sleeping):
+        # This mock will raise exceptions to stop the long running loop
+        # StopIteration exception marks success
+        connection = connections[0].connection
+        if connection.pongs:
+            raise StopIteration(f"Sent {connections[0].connection.pongs} pongs")
+        if datetime.now() > connection.create_time + timedelta(seconds=idle_timeout + 2):
+            # Heartbeat should've been sent already
+            raise TimeoutError(f"No heartbeat sent within {idle_timeout} seconds")
+
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "websocket_connections", side_effect=mock_websocket_connections)
+    mocker.patch.object(
+        ProofpointEmailSecurityEventCollector, "perform_long_running_loop", side_effect=mock_perform_long_running_loop
+    )
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "support_multithreading")
+    mocker.patch.object(demisto, "error", side_effect=StopIteration("Interrupted execution"))  # to break endless loop.
+
+    with pytest.raises(StopIteration):
+        long_running_execution_command("host", "cid", "key", 60, ["audit"])
+
+    assert connection.pongs > 0
+
+
+def test_route_websockets_logs_to_debug(mocker, capfd, caplog):
+    """
+    Given:
+        - The websockets library logging an error with a traceback (e.g. "keepalive ping failed").
+
+    When:
+        - route_websockets_logs_to_debug was called (twice, to verify it is idempotent).
+
+    Then:
+        - The record is sent to demisto.debug and nothing is written to stderr.
+        - Only one handler is attached.
+        - The library's DEBUG records (handshake headers and per-frame noise) are not logged.
+    """
+    websockets_logger = logging.getLogger("websockets.sync.connection")
+    parent_logger = logging.getLogger(ProofpointEmailSecurityEventCollector.WEBSOCKETS_LOGGER_NAME)
+    original_handlers, original_propagate = list(parent_logger.handlers), parent_logger.propagate
+    original_level = parent_logger.level
+    parent_logger.handlers = []
+    parent_logger.propagate = True
+    debug_mock = mocker.patch.object(demisto, "debug")
+    try:
+        ProofpointEmailSecurityEventCollector.route_websockets_logs_to_debug()
+        ProofpointEmailSecurityEventCollector.route_websockets_logs_to_debug()
+        caplog.clear()
+        logging.getLogger("websockets.client").debug("> %s: %s", "Authorization", "Bearer secret-api-key")
+        try:
+            raise TimeoutError("timed out while closing connection")
+        except TimeoutError:
+            websockets_logger.exception("keepalive ping failed")
+
+        assert [type(handler) for handler in parent_logger.handlers] == [ProofpointEmailSecurityEventCollector.DemistoHandler]
+        assert parent_logger.propagate is False
+        assert caplog.records == []  # nothing reached the root logger (and its stderr last-resort handler)
+        assert any("keepalive ping failed" in call.args[0] for call in debug_mock.call_args_list)
+        assert not any("secret-api-key" in str(call.args) for call in debug_mock.call_args_list)
+        assert parent_logger.level == logging.INFO
+        assert capfd.readouterr().err == ""
+    finally:
+        parent_logger.handlers = original_handlers
+        parent_logger.propagate = original_propagate
+        parent_logger.setLevel(original_level)
+
+
+def test_recovering_execution(mocker, connection):
+    """
+    Running long_running_execution_command and throwing error every time mock_perform_long_running_loop is
+    called to ensure it is being called more than once (i.e, can recover from the failure)
+    """
+    idle_timeout = 3
+
+    execution_count = 0
+
+    def count_iterations(msg):
+        nonlocal execution_count
+        execution_count += 1
+        if execution_count > 1:
+            raise StopIteration("Interrupted execution")
+
+    @contextmanager
+    def mock_websocket_connections(
+        host, cluster_id, api_key, since_time=None, to_time=None, fetch_interval=60, event_types=["audit"]
+    ):
+        with ExitStack():
+            yield [
+                EventConnection("audit", url="wss://test", headers={}, fetch_interval=fetch_interval, idle_timeout=idle_timeout)
+            ]
+
+    def mock_perform_long_running_loop(connections, interval, should_skip_sleeping):
+        # This mock will raise exceptions to stop the long running loop
+        # StopIteration exception marks success
+        raise StopIteration(f"Sent {connections[0].connection.pongs} pongs")
+
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "websocket_connections", side_effect=mock_websocket_connections)
+    mocker.patch.object(
+        ProofpointEmailSecurityEventCollector, "perform_long_running_loop", side_effect=mock_perform_long_running_loop
+    )
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "support_multithreading")
+    mocker.patch.object(time, "sleep")  # skip the backoff wait between attempts
+    demisto_error_mocker = mocker.patch.object(demisto, "error", side_effect=count_iterations)  # to break endless loop.
+
+    with pytest.raises(StopIteration):
+        long_running_execution_command("host", "cid", "key", 60, ["audit"])
+
+    assert demisto_error_mocker.call_count > 1
+
+
+@pytest.mark.parametrize(
+    "args, expected_since, expected_to",
+    [
+        pytest.param(
+            {"since_time": "2023-01-01T10:00:00", "to_time": "2023-01-01T11:00:00", "timezone_offset": "-5"},
+            "2023-01-01T10:00:00-0500",
+            "2023-01-01T11:00:00-0500",
+            id="Negative timezone offset",
+        ),
+        pytest.param(
+            {"since_time": "2023-02-01T00:00:00", "to_time": "2023-02-01T01:00:00"},
+            "2023-02-01T00:00:00+0000",
+            "2023-02-01T01:00:00+0000",
+            id="No timezone offset (default to UTC)",
+        ),
+        pytest.param(
+            {"since_time": "2023-03-01T12:00:00", "to_time": "2023-03-01T13:00:00", "timezone_offset": "3"},
+            "2023-03-01T12:00:00+0300",
+            "2023-03-01T13:00:00+0300",
+            id="Positive timezone offset",
+        ),
+        pytest.param(
+            {"since_time": "3 days ago", "to_time": "2 days ago"},
+            "2024-10-22T12:00:00+0000",
+            "2024-10-23T12:00:00+0000",
+            id="Relative time",
+        ),
+    ],
+)
+@freeze_time("2024-10-25T12:00:00Z")
+def test_get_events_command(mocker, connection, args, expected_since, expected_to):
+    """
+    Given:
+        - A request to get historical events with a specified time range.
+
+    When:
+        - The get_events_command is called.
+
+    Then:
+        - Ensure the command processes the arguments correctly.
+        - Ensure it calls websocket_connections with correctly formatted time strings.
+        - Ensure it returns the list of events fetched.
+    """
+    mock_events = [{"event": 1}, {"event": 2}]
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "fetch_events", return_value=mock_events)
+
+    @contextmanager
+    def mock_websocket_connections(host, cluster_id, api_key, **kwargs):
+        with ExitStack():
+            yield [EventConnection("audit", url="wss://test", headers={}, check_heartbeat=False)]
+
+    websocket_connections_mocker = mocker.patch.object(
+        ProofpointEmailSecurityEventCollector,
+        "websocket_connections",
+        side_effect=mock_websocket_connections,
+    )
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+
+    events, _ = ProofpointEmailSecurityEventCollector.get_events_command("host", "cid", "key", args)
+
+    assert events == mock_events
+
+    websocket_connections_kwargs = websocket_connections_mocker.call_args.kwargs
+    assert websocket_connections_kwargs["since_time"] == expected_since
+    assert websocket_connections_kwargs["to_time"] == expected_to
+
+
+def test_receive_event(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection to the websocket with a valid event
+
+    When:
+        - Calling receive_event function to process a single event
+
+    Then:
+        - Ensure that the function returns the event with proper metadata
+        - Ensure that the timestamp is in ISO format and converted to UTC
+        - Ensure that the event_type is added to the event
+    """
+    event_type = "message"
+    received_event = {"ts": "2023-08-16T13:24:12.147573+0100", "message": "Test message", "id": 123}
+
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(EventConnection, "receive", return_value=received_event)
+    event_connection = EventConnection(event_type, url="wss://testing", headers={})
+
+    event = ProofpointEmailSecurityEventCollector.receive_event(event_connection, timeout=1)
+
+    assert event["message"] == received_event["message"]
+    assert event["id"] == received_event["id"]
+    assert event["_time"] == arg_to_datetime(received_event["ts"]).isoformat()
+    assert event["event_type"] == event_type
+
+
+def test_receive_events_after_disconnection(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection that has been disconnected with in-transit events
+
+    When:
+        - Calling receive_events_after_disconnection to collect remaining events
+
+    Then:
+        - Ensure that all in-transit events are collected
+        - Ensure that the function stops when no more events are available
+    """
+    in_transit_events = [
+        {"ts": "2023-08-16T13:24:12.147573+0100", "message": "In-transit 1", "id": 10},
+        {"ts": "2023-08-16T13:24:13.147573+0100", "message": "In-transit 2", "id": 11},
+    ]
+
+    call_count = 0
+
+    def mock_receive_event(conn, timeout=1):
+        nonlocal call_count
+        if call_count < len(in_transit_events):
+            event = in_transit_events[call_count].copy()
+            event["_time"] = "2023-08-16T12:24:12.147573+00:00"
+            event["event_type"] = conn.event_type
+            call_count += 1
+            return event
+        raise TimeoutError("No more events from websocket")
+
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "receive_event", side_effect=mock_receive_event)
+
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={})
+
+    events = ProofpointEmailSecurityEventCollector.receive_events_after_disconnection(event_connection)
+
+    assert len(events) == 2
+    assert events[0]["message"] == "In-transit 1"
+    assert events[1]["message"] == "In-transit 2"
+
+
+def _make_invalid_status(status_code):
+    """Build a websockets InvalidStatus exception carrying the given HTTP status code."""
+    response = type("Resp", (), {"status_code": status_code})()
+    return exceptions.InvalidStatus(response)
+
+
+def test_reconnect_success_after_conflict(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection whose first reconnect attempt fails with an HTTP 409 (session conflict)
+          and whose second attempt succeeds.
+
+    When:
+        - Calling reconnect().
+
+    Then:
+        - Ensure the backoff wait is applied once and the connection is re-established
+          without raising.
+    """
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "error")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={}, check_heartbeat=False)
+
+    conflict = _make_invalid_status(HTTPStatus.CONFLICT)
+    connect_mock = mocker.patch.object(EventConnection, "connect", side_effect=[conflict, connection])
+    wait_mock = mocker.patch.object(event_connection.stop_event, "wait")
+
+    event_connection.reconnect()
+
+    assert connect_mock.call_count == 2
+    wait_mock.assert_called_once_with(calculate_backoff_delay(1))  # one backoff wait before the successful retry
+    assert event_connection.connection is connection
+
+
+def test_reconnect_raises_on_non_conflict_status(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection whose reconnect attempt fails with a non-409 InvalidStatus (e.g. 401).
+
+    When:
+        - Calling reconnect().
+
+    Then:
+        - Ensure the exception is raised immediately without retrying or sleeping.
+    """
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "error")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={}, check_heartbeat=False)
+
+    unauthorized = _make_invalid_status(HTTPStatus.UNAUTHORIZED)
+    connect_mock = mocker.patch.object(EventConnection, "connect", side_effect=unauthorized)
+    wait_mock = mocker.patch.object(event_connection.stop_event, "wait")
+
+    with pytest.raises(exceptions.InvalidStatus):
+        event_connection.reconnect()
+
+    assert connect_mock.call_count == 1  # no retry on non-conflict status
+    assert wait_mock.call_count == 0
+
+
+def test_reconnect_gives_up_after_max_attempts(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection whose reconnect attempts always fail with HTTP 409 (session conflict).
+
+    When:
+        - Calling reconnect().
+
+    Then:
+        - Ensure the retry loop is bounded by MAX_RECONNECT_ATTEMPTS and does not loop forever.
+    """
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "error")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={}, check_heartbeat=False)
+
+    conflict = _make_invalid_status(HTTPStatus.CONFLICT)
+    connect_mock = mocker.patch.object(EventConnection, "connect", side_effect=conflict)
+    mocker.patch.object(event_connection.stop_event, "wait")
+
+    event_connection.reconnect()
+
+    assert connect_mock.call_count == MAX_RECONNECT_ATTEMPTS
+
+
+@pytest.mark.parametrize("attempt, expected_delay", [(1, 2), (2, 4), (3, 8), (5, 32), (6, 60), (50, 60)])
+def test_calculate_backoff_delay(attempt, expected_delay):
+    """
+    Given:
+        - A 1-based attempt number, including a very large one.
+
+    When:
+        - Calling calculate_backoff_delay.
+
+    Then:
+        - Ensure the delay doubles from BASE_BACKOFF_SECONDS and is capped at MAX_BACKOFF_SECONDS.
+    """
+    assert calculate_backoff_delay(attempt) == expected_delay
+
+
+def test_reconnect_aborts_when_closed_during_backoff(mocker, connection: MockConnection):
+    """
+    Given:
+        - A heartbeat-triggered reconnect() that got HTTP 409 and is waiting in its backoff.
+
+    When:
+        - close() is called from another thread while reconnect() is waiting.
+
+    Then:
+        - Ensure the backoff wait is interrupted immediately (not slept out).
+        - Ensure no further connection attempt is made, so no new session is leaked.
+    """
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "error")
+    mocker.patch.object(demisto, "debug")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={}, check_heartbeat=False)
+
+    conflict = _make_invalid_status(HTTPStatus.CONFLICT)
+    connect_mock = mocker.patch.object(EventConnection, "connect", side_effect=conflict)
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "calculate_backoff_delay", return_value=30)
+
+    reconnect_thread = threading.Thread(target=event_connection.reconnect)
+    started = time.monotonic()
+    reconnect_thread.start()
+    while connect_mock.call_count == 0:  # wait until reconnect() is in its backoff
+        time.sleep(0.01)
+    event_connection.close()
+    reconnect_thread.join(timeout=5)
+
+    assert not reconnect_thread.is_alive()
+    assert time.monotonic() - started < 5  # the 30 seconds backoff was interrupted by close()
+    assert connect_mock.call_count == 1  # no reconnection attempt after close()
+
+
+def test_reconnect_closes_connection_opened_after_close(mocker, connection: MockConnection):
+    """
+    Given:
+        - A reconnect() whose connect() call completes after close() was requested.
+
+    When:
+        - reconnect() receives the new connection.
+
+    Then:
+        - Ensure the new connection is closed instead of being left open (which would cause HTTP 409 on next start).
+    """
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "debug")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={}, check_heartbeat=False)
+
+    new_connection = MockConnection()
+    new_connection_close = mocker.patch.object(new_connection, "close")
+
+    def connect_then_close_requested():
+        event_connection.stop_event.set()  # close() requested while the handshake was in progress
+        return new_connection
+
+    mocker.patch.object(EventConnection, "connect", side_effect=connect_then_close_requested)
+
+    event_connection.reconnect()
+
+    new_connection_close.assert_called_once()
+
+
+def test_recover_after_disconnection_with_reconnect(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection that has been disconnected
+        - Some events already collected
+        - In-transit events available
+
+    When:
+        - Calling recover_after_disconnection with reconnect=True
+
+    Then:
+        - Ensure that in-transit events are collected
+        - Ensure that events and event_ids are updated
+        - Ensure that reconnect is called
+    """
+    existing_events = [{"id": "1", "message": "Event 1"}]
+    existing_event_ids = {"1"}
+
+    in_transit_events = [
+        {"id": "2", "message": "In-transit 1", "_time": "2023-08-16T12:00:00+00:00", "event_type": "message"},
+        {"guid": "3", "message": "In-transit 2", "_time": "2023-08-16T12:00:01+00:00", "event_type": "message"},
+    ]
+
+    mocker.patch.object(
+        ProofpointEmailSecurityEventCollector, "receive_events_after_disconnection", return_value=in_transit_events
+    )
+
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    reconnect_mock = mocker.patch.object(EventConnection, "reconnect")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={})
+
+    ProofpointEmailSecurityEventCollector.recover_after_disconnection(
+        connection=event_connection,
+        events=existing_events,
+        event_ids=existing_event_ids,
+        reconnect=True,
+    )
+
+    assert len(existing_events) == 3
+    assert existing_events[1]["message"] == "In-transit 1"
+    assert existing_events[2]["message"] == "In-transit 2"
+    assert "2" in existing_event_ids
+    assert "3" in existing_event_ids
+    assert reconnect_mock.call_count == 1  # Should be called once because reconnect=True
+
+
+def test_recover_after_disconnection_without_reconnect(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection that has been disconnected
+        - Some events already collected
+
+    When:
+        - Calling recover_after_disconnection with reconnect=False
+
+    Then:
+        - Ensure that in-transit events are collected
+        - Ensure that reconnect is NOT called
+    """
+    existing_events = []
+    existing_event_ids = set()
+
+    in_transit_events = [{"id": 1, "message": "In-transit", "_time": "2023-08-16T12:00:00+00:00", "event_type": "audit"}]
+
+    mocker.patch.object(
+        ProofpointEmailSecurityEventCollector,
+        "receive_events_after_disconnection",
+        return_value=in_transit_events,
+    )
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    reconnect_mock = mocker.patch.object(EventConnection, "reconnect")
+    event_connection = EventConnection(event_type="audit", url="wss://testing", headers={})
+
+    ProofpointEmailSecurityEventCollector.recover_after_disconnection(
+        event_connection, existing_events, existing_event_ids, reconnect=False
+    )
+
+    assert len(existing_events) == 1
+    assert 1 in existing_event_ids
+    assert reconnect_mock.call_count == 0  # Should not be called because reconnect=False
+
+
+def test_recover_after_disconnection_reconnect_failure(mocker, connection: MockConnection):
+    """
+    Given:
+        - A connection that has been disconnected
+        - No in-transit events to receive
+        - reconnect() raises an exception (e.g. the Proofpoint server is unreachable)
+
+    When:
+        - Calling recover_after_disconnection with reconnect=True
+
+    Then:
+        - Ensure the exception is re-raised so the long-running loop can restart the connection
+        - Ensure the reconnection failure is logged via demisto.error
+    """
+    existing_events: list[dict] = []
+    existing_event_ids: set[str] = set()
+
+    mocker.patch.object(
+        ProofpointEmailSecurityEventCollector,
+        "receive_events_after_disconnection",
+        return_value=[],
+    )
+    mocker.patch.object(EventConnection, "connect", return_value=connection)
+    reconnect_mock = mocker.patch.object(
+        EventConnection, "reconnect", side_effect=DemistoException("[Errno 104] Connection reset by peer")
+    )
+    error_mock = mocker.patch.object(demisto, "error")
+    event_connection = EventConnection(event_type="message", url="wss://testing", headers={})
+
+    with pytest.raises(DemistoException, match="Connection reset by peer"):
+        ProofpointEmailSecurityEventCollector.recover_after_disconnection(
+            connection=event_connection,
+            events=existing_events,
+            event_ids=existing_event_ids,
+            reconnect=True,
+        )
+
+    assert reconnect_mock.call_count == 1
+    assert error_mock.called
+    assert "Failed to reconnect after disconnection" in error_mock.call_args[0][0]
+
+
+def test_websocket_connections_closes_opened_connections_on_partial_failure(mocker):
+    """
+    Given:
+        - Three event types where the first connects successfully and the second fails with HTTP 502.
+
+    When:
+        - Opening websocket_connections.
+
+    Then:
+        - Ensure the already-opened connection is closed (no leaked session that would cause HTTP 409 on retry).
+        - Ensure its heartbeat is signalled to stop.
+        - Ensure a DemistoException is raised.
+    """
+    opened = MockConnection()
+    bad_gateway = _make_invalid_status(HTTPStatus.BAD_GATEWAY)
+    mocker.patch.object(EventConnection, "connect", side_effect=[opened, bad_gateway])
+    created: list[EventConnection] = []
+    original_init = EventConnection.__init__
+
+    def tracking_init(self, *args, **kwargs):
+        created.append(self)
+        original_init(self, *args, **kwargs)
+
+    mocker.patch.object(EventConnection, "__init__", tracking_init)
+
+    with pytest.raises(DemistoException, match="502"), websocket_connections("wss://host", "cid", "key", check_heartbeat=False):
+        pass
+
+    assert getattr(opened, "closed", False) is True
+    assert created[0].stop_event.is_set()
+
+
+def test_websocket_connections_closes_connections_on_exit(mocker):
+    """
+    Given:
+        - All event type connections open successfully.
+
+    When:
+        - The websocket_connections context exits because the body raised.
+
+    Then:
+        - Ensure every connection is closed.
+    """
+    mock_connections = [MockConnection() for _ in EVENT_TYPES]
+    mocker.patch.object(EventConnection, "connect", side_effect=mock_connections)
+
+    with pytest.raises(DemistoException), websocket_connections("wss://host", "cid", "key", check_heartbeat=False):
+        raise ValueError("loop failure")
+
+    assert all(getattr(conn, "closed", False) for conn in mock_connections)
+
+
+def test_long_running_backoff_on_repeated_connection_failures(mocker):
+    """
+    Given:
+        - Opening the websocket connections keeps failing (e.g. HTTP 502 from Proofpoint).
+
+    When:
+        - Running long_running_execution_command.
+
+    Then:
+        - Ensure an exponential backoff (2, 4, 8, ...) is applied between attempts instead of a tight retry loop.
+    """
+    from ProofpointEmailSecurityEventCollector import BASE_BACKOFF_SECONDS, MAX_BACKOFF_SECONDS
+
+    attempts = 0
+
+    @contextmanager
+    def failing_websocket_connections(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise DemistoException("server rejected WebSocket connection: HTTP 502")
+        yield  # pragma: no cover
+
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "websocket_connections", side_effect=failing_websocket_connections)
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "support_multithreading")
+    mocker.patch.object(demisto, "updateModuleHealth")
+    mocker.patch.object(demisto, "error")
+    sleep_calls: list[float] = []
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) >= 7:
+            raise StopIteration("stop loop")
+
+    mocker.patch.object(time, "sleep", side_effect=fake_sleep)
+
+    with pytest.raises(StopIteration):
+        long_running_execution_command("host", "cid", "key", 60, ["audit"])
+
+    assert sleep_calls == [min(MAX_BACKOFF_SECONDS, BASE_BACKOFF_SECONDS * 2**i) for i in range(7)]
+    assert attempts == 7
+
+
+def test_fetch_events_and_last_run_results_per_event_type(mocker):
+    """
+    Given:
+        - "message" connection returns events and "audit" connection returns none.
+
+    When:
+        - fetch_events runs for both types, then proofpoint-es-get-last-run-results is called.
+
+    Then:
+        - Ensure the output reports results for every event type, not only the last one fetched.
+    """
+    context: dict = {}
+    mocker.patch.object(demisto, "getIntegrationContext", side_effect=lambda: dict(context))
+    mocker.patch.object(demisto, "setIntegrationContext", side_effect=lambda ctx: context.update(ctx))
+
+    message_conn = MockConnection()
+    audit_conn = MockConnection()
+    audit_conn.events = []
+    mocker.patch.object(EventConnection, "connect", side_effect=[message_conn, audit_conn])
+    mocker.patch.object(ProofpointEmailSecurityEventCollector, "is_interval_passed", return_value=False)
+
+    global CURRENT_TIME
+    CURRENT_TIME = datetime.now()
+    for event_type in ("message", "audit"):
+        fetch_events(
+            EventConnection(event_type, url="wss://test", headers={}, check_heartbeat=False),
+            fetch_interval=60,
+            integration_context={},
+            should_skip_sleeping=[],
+        )
+
+    output = ProofpointEmailSecurityEventCollector.get_last_run_results_command().readable_output
+    assert "[message] Got from connection 3 events" in output
+    assert "[audit] Got from connection 0 events" in output

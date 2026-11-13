@@ -1,8 +1,9 @@
 {
-    "name": "CTM360 CyberBlindspot",
+    "name": "CTM360",
+    "created": "2024-02-04T14:36:26Z",
     "description": "Take action on incidents derived from threat intelligence that is directly linked to your organization.",
     "support": "partner",
-    "currentVersion": "1.0.0",
+    "currentVersion": "2.4.0",
     "author": "CTM360",
     "url": "https://www.ctm360.com",
     "email": "xsoar@ctm360.com",
@@ -18,13 +19,22 @@
         "Threat Intelligence"
     ],
     "useCases": [],
-    "keywords": [],
+    "keywords": [
+        "CTM360",
+        "HackerView",
+        "CyberBlindspot"
+    ],
     "marketplaces": [
         "xsoar",
-        "marketplacev2"
+        "marketplacev2",
+        "platform"
     ],
     "devEmail": [
         "xsoar@ctm360.com"
     ],
-    "githubUser": []
+    "githubUser": [],
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

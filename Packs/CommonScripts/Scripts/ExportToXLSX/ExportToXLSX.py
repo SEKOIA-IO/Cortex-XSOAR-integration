@@ -1,13 +1,43 @@
+import json
+from typing import Any
+
 import demistomock as demisto  # noqa: F401
 from CommonServerPython import *  # noqa: F401
-from typing import List, Optional, Union
-
 from xlsxwriter import Workbook
 from xlsxwriter.format import Format
 
 
-def write_data(sheet: str, data_item: Union[dict, list], data_headers: Optional[list], workbook: Workbook, bold: Format,
-               border: Format):
+def format_list_item(list_item: Any) -> str:
+    """Converts a single list element to a string suitable for a spreadsheet cell.
+
+    Args:
+        list_item: An element of a list value (may be of any JSON-compatible type).
+
+    Returns:
+        str: JSON for dicts/lists, an empty string for None, otherwise str() of the element.
+    """
+    if list_item is None:
+        return ""
+    if isinstance(list_item, (dict, list)):
+        return json.dumps(list_item)
+    return str(list_item)
+
+
+def format_cell_value(item_value: Any) -> str:
+    """Converts a context value to a string suitable for a spreadsheet cell.
+
+    Args:
+        item_value: The value to write (may be of any JSON-compatible type).
+
+    Returns:
+        str: A comma-separated string for lists, otherwise str() of the value.
+    """
+    if isinstance(item_value, list):
+        return ", ".join(format_list_item(list_item) for list_item in item_value)
+    return str(item_value)
+
+
+def write_data(sheet: str, data_item: dict | list, data_headers: list | None, workbook: Workbook, bold: Format, border: Format):
     if not isinstance(data_item, list):
         data_item = [data_item]
 
@@ -28,15 +58,12 @@ def write_data(sheet: str, data_item: Union[dict, list], data_headers: Optional[
             row += 1
             for header in data_headers:
                 item_value = item.get(header)
-                if item_value:
-                    if isinstance(item_value, list):
-                        worksheet.write(row, col, ', '.join(item_value), border)
-                    else:
-                        worksheet.write(row, col, str(item_value), border)
+                if item_value not in (None, "", []):
+                    worksheet.write(row, col, format_cell_value(item_value), border)
                 col += 1
 
 
-def parse_data(data: Union[str, dict, list], sheets: list):
+def parse_data(data: str | dict | list, sheets: list):
     if isinstance(data, str):  # Indicates that the data is a comma-separated list of context keys.
         data_list = json.loads("[" + data + "]")
         if len(sheets) != len(data_list):
@@ -65,7 +92,7 @@ def main():
         data = args.get("data")
         file_name = args.get("file_name")
         if not is_filename_valid(file_name):  # pragma: no cover
-            raise DemistoException('The file name contains invalid characters')
+            raise DemistoException("The file name contains invalid characters")
         sheet_name = args.get("sheet_name")
         headers = args.get("headers")
         is_bold = argToBoolean(args.get("bold", "true"))
@@ -83,10 +110,9 @@ def main():
             headers_list = None
 
         with Workbook(file_name) as workbook:
-
             bold, border = prepare_bold_and_border(workbook, is_bold, is_border)
 
-            multi_header_list: List[Optional[List]] = []
+            multi_header_list: list[list | None] = []
             if headers_list:  # Can be 1 item in case there is one sheet, or multiple items in case there are multiple
                 # sheets
                 for header_list in headers_list:
@@ -99,8 +125,8 @@ def main():
         return_results(file_result_existing_file(file_name))
 
     except Exception as ex:
-        return_error(f'Failed to execute ExportToXLSX script. Error: {str(ex)}')
+        return_error(f"Failed to execute ExportToXLSX script. Error: {ex!s}")
 
 
-if __name__ in ('__main__', '__builtin__', 'builtins'):
+if __name__ in ("__main__", "__builtin__", "builtins"):
     main()

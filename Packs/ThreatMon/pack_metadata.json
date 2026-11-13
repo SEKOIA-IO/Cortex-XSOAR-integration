@@ -1,0 +1,48 @@
+{
+    "name": "ThreatMon Incident Management",
+    "description": "Brings ThreatMon digital risk protection into Cortex: alarms become incidents with their findings and screenshots, the alarm status is mirrored in both directions, and playbooks can submit takedowns and data removals, enrich CVEs with ThreatMon Vulnerability Knowledge, analyse files in the ThreatMon sandbox, list the company attack surface and manage MSSP customers.",
+    "support": "community",
+    "currentVersion": "2.0.0",
+    "author": "ThreatMon",
+    "url": "https://www.threatmon.io",
+    "email": "support@threatmonit.io",
+    "categories": [
+        "Data Enrichment & Threat Intelligence"
+    ],
+    "tags": [
+        "Threat Intelligence",
+        "Dark Web",
+        "Alerts",
+        "Incident Handling",
+        "Malware"
+    ],
+    "useCases": [
+        "Threat Intelligence Management",
+        "Phishing",
+        "Incident Response",
+        "Vulnerability Management",
+        "Asset Management",
+        "Malware"
+    ],
+    "certification": "certified",
+    "keywords": [
+        "ThreatMon",
+        "Digital Risk Protection",
+        "Takedown",
+        "Brand Protection",
+        "Dark Web",
+        "Attack Surface",
+        "CVE",
+        "Sandbox",
+        "MSSP"
+    ],
+    "premium": false,
+    "marketplaces": [
+        "xsoar",
+        "marketplacev2",
+        "platform"
+    ],
+    "itemPrefix": [
+        "ThreatMon"
+    ]
+}

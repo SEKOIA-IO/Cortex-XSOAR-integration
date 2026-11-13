@@ -3,5 +3,7 @@ id: okta_modeling_rule
 name: Okta Modeling Rule
 rules: ''
 schema: ''
+supportedModules:
+- xsiam
 tags: okta
 toversion: 6.9.9

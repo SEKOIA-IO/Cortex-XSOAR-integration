@@ -31,7 +31,7 @@
 <li>Click<span> </span><strong>Test</strong><span> </span>to validate the URLs, token, and connection.</li>
 </ol>
 
-Note: in versions preceding 1.1.0, URL escaping was performed as default. The `Escape URLs` param allows disabling the escaping when necessary by setting it to `true`. 
+Note: in versions preceding 1.1.0, URL escaping was performed as default. The `Escape URLs` param allows disabling the escaping when necessary by setting it to `true`.
 
 <h2>Commands</h2>
 <p>You can execute these commands from the Cortex XSOAR CLI, as part of an automation, or in a playbook. After you successfully execute a command, a DBot message appears in the War Room with the command details.</p>
@@ -98,6 +98,16 @@ Note: in versions preceding 1.1.0, URL escaping was performed as default. The `E
 <td style="width: 482px;">Define as "true" to run the search using receipt time. By default, searches do not run by receipt time.</td>
 <td style="width: 71px;">Optional</td>
 </tr>
+<tr>
+<td style="width: 187px;">waitForSearchComplete</td>
+<td style="width: 482px;">If "true", the search will wait for the query to iterate over all messages before returning results. This is useful when working with aggregate records, as otherwise the query may return partial values.</td>
+<td style="width: 71px;">Optional</td>
+</tr>
+<tr>
+<td style="width: 187px;">requiresRawMessages</td>
+<td style="width: 482px;">Whether the search job retains raw messages so they can be retrieved alongside aggregate records. Set to "false" to improve performance for aggregate-only queries where raw messages are not needed.</td>
+<td style="width: 71px;">Optional</td>
+</tr>
 </tbody>
 </table>
 <p> </p>
@@ -131,93 +141,93 @@ Note: in versions preceding 1.1.0, URL escaping was performed as default. The `E
     "Search": {
         "Messages": [
             {
-                "_messageid": "-9223372036854375794", 
-                "_collectorid": "162683374", 
-                "_blockid": "-9223372036854745796", 
-                "_source": "macOS System", 
-                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss", 
-                "_sourcename": "/private/var/log/system.log", 
-                "_sourcecategory": "macos/system", 
-                "_sourcehost": "TLVMAC30YCJG5H", 
-                "_messagetime": "1562255587000", 
-                "_sourceid": "753908607", 
-                "_raw": "Jul  4 15:53:07 TLVMAC30YCJG5H com.apple.xpc.launchd[1] (com.mine.cnmaint): Service only ran for 0 seconds. Pushing respawn out by 10 seconds.", 
-                "_size": "142", 
-                "_collector": "TLVMAC30YCJG5H", 
-                "_messagecount": "2", 
-                "_receipttime": "1562244826549", 
+                "_messageid": "-9223372036854375794",
+                "_collectorid": "162683374",
+                "_blockid": "-9223372036854745796",
+                "_source": "macOS System",
+                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss",
+                "_sourcename": "/private/var/log/system.log",
+                "_sourcecategory": "macos/system",
+                "_sourcehost": "TLVMAC30YCJG5H",
+                "_messagetime": "1562255587000",
+                "_sourceid": "753908607",
+                "_raw": "Jul  4 15:53:07 TLVMAC30YCJG5H com.apple.xpc.launchd[1] (com.mine.cnmaint): Service only ran for 0 seconds. Pushing respawn out by 10 seconds.",
+                "_size": "142",
+                "_collector": "TLVMAC30YCJG5H",
+                "_messagecount": "2",
+                "_receipttime": "1562244826549",
                 "_view": ""
-            }, 
+            },
             {
-                "_messageid": "-9223372036854375795", 
-                "_collectorid": "162683374", 
-                "_blockid": "-9223372036854745797", 
-                "_source": "macOS System", 
-                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss", 
-                "_sourcename": "/private/var/log/system.log", 
-                "_sourcecategory": "macos/system", 
-                "_sourcehost": "TLVMAC30YCJG5H", 
-                "_messagetime": "1562255551000", 
-                "_sourceid": "753908607", 
-                "_raw": "Jul  4 15:52:31 TLVMAC30YCJG5H syslogd[46]: ASL Sender Statistics", 
-                "_size": "65", 
-                "_collector": "TLVMAC30YCJG5H", 
-                "_messagecount": "1", 
-                "_receipttime": "1562244789356", 
+                "_messageid": "-9223372036854375795",
+                "_collectorid": "162683374",
+                "_blockid": "-9223372036854745797",
+                "_source": "macOS System",
+                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss",
+                "_sourcename": "/private/var/log/system.log",
+                "_sourcecategory": "macos/system",
+                "_sourcehost": "TLVMAC30YCJG5H",
+                "_messagetime": "1562255551000",
+                "_sourceid": "753908607",
+                "_raw": "Jul  4 15:52:31 TLVMAC30YCJG5H syslogd[46]: ASL Sender Statistics",
+                "_size": "65",
+                "_collector": "TLVMAC30YCJG5H",
+                "_messagecount": "1",
+                "_receipttime": "1562244789356",
                 "_view": ""
-            }, 
+            },
             {
-                "_messageid": "-9223372036854375796", 
-                "_collectorid": "162683374", 
-                "_blockid": "-9223372036854745798", 
-                "_source": "macOS System", 
-                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss", 
-                "_sourcename": "/private/var/log/system.log", 
-                "_sourcecategory": "macos/system", 
-                "_sourcehost": "TLVMAC30YCJG5H", 
-                "_messagetime": "1562255501000", 
-                "_sourceid": "753908607", 
-                "_raw": "Jul  4 15:51:41 TLVMAC30YCJG5H com.apple.xpc.launchd[1] (com.mine.cnmaint): Service only ran for 0 seconds. Pushing respawn out by 10 seconds.", 
-                "_size": "142", 
-                "_collector": "TLVMAC30YCJG5H", 
-                "_messagecount": "0", 
-                "_receipttime": "1562244754298", 
+                "_messageid": "-9223372036854375796",
+                "_collectorid": "162683374",
+                "_blockid": "-9223372036854745798",
+                "_source": "macOS System",
+                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss",
+                "_sourcename": "/private/var/log/system.log",
+                "_sourcecategory": "macos/system",
+                "_sourcehost": "TLVMAC30YCJG5H",
+                "_messagetime": "1562255501000",
+                "_sourceid": "753908607",
+                "_raw": "Jul  4 15:51:41 TLVMAC30YCJG5H com.apple.xpc.launchd[1] (com.mine.cnmaint): Service only ran for 0 seconds. Pushing respawn out by 10 seconds.",
+                "_size": "142",
+                "_collector": "TLVMAC30YCJG5H",
+                "_messagecount": "0",
+                "_receipttime": "1562244754298",
                 "_view": ""
-            }, 
+            },
             {
-                "_messageid": "-9223372036854425618", 
-                "_collectorid": "162683374", 
-                "_blockid": "-9223372036854750767", 
-                "_source": "macOS System", 
-                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss", 
-                "_sourcename": "/private/var/log/system.log", 
-                "_sourcecategory": "macos/system", 
-                "_sourcehost": "TLVMAC30YCJG5H", 
-                "_messagetime": "1562255066000", 
-                "_sourceid": "753908607", 
-                "_raw": "Jul  4 15:44:26 TLVMAC30YCJG5H com.apple.xpc.launchd[1] (com.apple.quicklook[57770]): Endpoint has been activated through legacy launch(3) APIs. Please switch to XPC or bootstrap_check_in(): com.apple.quicklook", 
-                "_size": "210", 
-                "_collector": "TLVMAC30YCJG5H", 
-                "_messagecount": "2", 
-                "_receipttime": "1562244306570", 
+                "_messageid": "-9223372036854425618",
+                "_collectorid": "162683374",
+                "_blockid": "-9223372036854750767",
+                "_source": "macOS System",
+                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss",
+                "_sourcename": "/private/var/log/system.log",
+                "_sourcecategory": "macos/system",
+                "_sourcehost": "TLVMAC30YCJG5H",
+                "_messagetime": "1562255066000",
+                "_sourceid": "753908607",
+                "_raw": "Jul  4 15:44:26 TLVMAC30YCJG5H com.apple.xpc.launchd[1] (com.apple.quicklook[57770]): Endpoint has been activated through legacy launch(3) APIs. Please switch to XPC or bootstrap_check_in(): com.apple.quicklook",
+                "_size": "210",
+                "_collector": "TLVMAC30YCJG5H",
+                "_messagecount": "2",
+                "_receipttime": "1562244306570",
                 "_view": ""
-            }, 
+            },
             {
-                "_messageid": "-9223372036854375797", 
-                "_collectorid": "162683374", 
-                "_blockid": "-9223372036854745799", 
-                "_source": "macOS System", 
-                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss", 
-                "_sourcename": "/private/var/log/system.log", 
-                "_sourcecategory": "macos/system", 
-                "_sourcehost": "TLVMAC30YCJG5H", 
-                "_messagetime": "1562254946000", 
-                "_sourceid": "753908607", 
-                "_raw": "Jul  4 15:42:26 TLVMAC30YCJG5H syslogd[46]: ASL Sender Statistics", 
-                "_size": "65", 
-                "_collector": "TLVMAC30YCJG5H", 
-                "_messagecount": "1", 
-                "_receipttime": "1562244217085", 
+                "_messageid": "-9223372036854375797",
+                "_collectorid": "162683374",
+                "_blockid": "-9223372036854745799",
+                "_source": "macOS System",
+                "_format": "t:cache:o:0:l:15:p:MMM dd HH:mm:ss",
+                "_sourcename": "/private/var/log/system.log",
+                "_sourcecategory": "macos/system",
+                "_sourcehost": "TLVMAC30YCJG5H",
+                "_messagetime": "1562254946000",
+                "_sourceid": "753908607",
+                "_raw": "Jul  4 15:42:26 TLVMAC30YCJG5H syslogd[46]: ASL Sender Statistics",
+                "_size": "65",
+                "_collector": "TLVMAC30YCJG5H",
+                "_messagecount": "1",
+                "_receipttime": "1562244217085",
                 "_view": ""
             }
         ]

@@ -1,0 +1,14038 @@
+import demistomock as demisto
+import urllib3
+from CommonServerPython import *
+from CommonServerUserPython import *  # noqa
+from MicrosoftApiModule import *  # noqa: E402
+from COOCApiModule import *
+from requests.exceptions import ConnectionError, Timeout
+import datetime as dt
+import itertools
+import hmac
+import hashlib
+import base64
+import defusedxml.ElementTree as defused_ET
+import urllib.parse
+from urllib.parse import parse_qs, urlparse, urlencode, urlunparse
+from datetime import UTC
+
+
+# Disable insecure warnings
+urllib3.disable_warnings()
+
+""" CONSTANTS """
+
+BLOB_SERVICE_PREFIX = "blob.core.windows.net"
+TABLE_SERVICE_PREFIX = "table.core.windows.net"
+TABLE_NAME_REGEX = "^[A-Za-z][A-Za-z0-9]{2,62}$"
+# The Azure Table data-plane returns entity Timestamps with up to 7 fractional-second digits and a
+# trailing "Z" (e.g. "2021-08-16T14:52:20.7422729Z"). Python's %f directive only supports up to 6
+# fractional digits, so the raw value is trimmed to 6 digits (matching the legacy AzureStorageTable
+# pack) before it is parsed with this fractional-second format.
+TABLE_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+# The Azure Table data-plane caps the number of results a single query can return via the $top parameter.
+TABLE_MAX_PAGE_SIZE = 1000
+
+DEFAULT_LIMIT = "50"
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+STORAGE_DATE_FORMAT = "%a, %d %b %Y %H:%M:%S GMT"
+API_VERSION = "2022-09-01"
+# Azure Storage data-plane (Blob service) REST API version, used for both the x-ms-version
+# request header and the SAS token signed version (sv) so the two always stay in sync.
+STORAGE_API_VERSION = "2023-11-03"
+NEW_API_VERSION_PARAMS = {"api-version": "2024-05-01"}
+BLOB_CONTAINERS_MAX_PAGE_SIZE = 5000
+RESOURCE_GRAPH_API_VERSION = "2024-04-01"
+RESOURCE_GRAPH_MAX_PAGE_SIZE = 1000
+
+GRANT_BY_CONNECTION = {
+    "Device Code": DEVICE_CODE,
+    "Authorization Code": AUTHORIZATION_CODE,
+    "Client Credentials": CLIENT_CREDENTIALS,
+}
+SCOPE_BY_CONNECTION = {
+    "Device Code": "https://management.azure.com/user_impersonation offline_access user.read",
+    "Authorization Code": "https://management.azure.com/.default",
+    "Client Credentials": "https://management.azure.com/.default",
+}
+DEFAULT_SCOPE = "https://management.azure.com/.default"
+DEFAULT_RESOURCE = "https://management.azure.com/"
+STORAGE_SCOPE = "https://storage.azure.com/.default"
+STORAGE_RESOURCE = "https://storage.azure.com/"
+DEFAULT_AZURE_AD_ENDPOINT = "https://login.microsoftonline.com"
+
+PERMISSIONS_TO_COMMANDS = {
+    "Microsoft.ResourceGraph/operations/read": ["azure-rg-list-operations", "azure-rg-operations-list"],
+    "Microsoft.ResourceGraph/resources/read": ["azure-rg-query"],
+    "Microsoft.Network/networkSecurityGroups/read": ["azure-nsg-security-groups-list", "azure-vn-security-groups-list"],
+    "Microsoft.Network/networkSecurityGroups/securityRules/read": [
+        "azure-nsg-security-rule-update",
+        "azure-nsg-security-rule-create",
+        "azure-nsg-security-rules-list",
+        "azure-nsg-security-rule-get",
+        "azure-vn-security-rule-create",
+        "azure-vn-security-rule-get",
+        "azure-vn-security-rule-update",
+        "azure-vn-security-rules-list",
+    ],
+    "Microsoft.Network/networkSecurityGroups/securityRules/write": [
+        "azure-nsg-security-rule-update",
+        "azure-nsg-security-rule-create",
+        "azure-vn-security-rule-create",
+        "azure-vn-security-rule-update",
+    ],
+    "Microsoft.Network/networkSecurityGroups/securityRules/delete": [
+        "azure-nsg-security-rule-delete",
+        "azure-nsg-security-rule-delete-quick-action",
+        "azure-vn-security-rule-delete",
+    ],
+    "Microsoft.Storage/storageAccounts/read": [
+        "azure-storage-accounts-list",
+        "azure-storage-account-update",
+        "azure-storage-allow-access-quick-action",
+        "azure-storage-disable-cross-tenant-replication-quick-action",
+        "azure-storage-disable-storage-account-public-access-quick-action",
+        "azure-network-disable-storage-account-access-quick-action",
+        "azure-set-storage-account-https-only-quick-action",
+    ],
+    "Microsoft.Storage/storageAccounts/write": [
+        "azure-storage-account-update",
+        "azure-storage-allow-access-quick-action",
+        "azure-storage-disable-cross-tenant-replication-quick-action",
+        "azure-storage-disable-storage-account-public-access-quick-action",
+        "azure-network-disable-storage-account-access-quick-action",
+        "azure-set-storage-account-https-only-quick-action",
+    ],
+    "Microsoft.Network/networkInterfaces/read": [
+        "azure-nsg-network-interfaces-list",
+        "azure-vm-network-interface-details-get",
+        "azure-vn-network-interface-update",
+        "azure-vn-network-interfaces-list",
+        "azure-vn-network-interface-get",
+    ],
+    "Microsoft.Network/networkInterfaces/write": [
+        "azure-vn-network-interface-update",
+        "azure-vn-network-interface-create",
+    ],
+    "Microsoft.Network/publicIPAddresses/read": [
+        "azure-nsg-public-ip-addresses-list",
+        "azure-vm-public-ip-details-get",
+        "azure-vn-public-ip-addresses-list",
+        "azure-vn-public-ip-address-get",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/write": [
+        "azure-storage-blob-containers-update",
+        "azure-storage-blob-container-update",
+        "azure-storage-container-create",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/setAcl/action": ["azure-storage-container-public-access-block"],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/read": [
+        "azure-storage-container-property-get",
+        "azure-storage-blob-containers-list",
+        "azure-storage-containers-list",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/delete": ["azure-storage-container-delete"],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write": [
+        "azure-storage-container-blob-create",
+        "azure-storage-blob-create",
+        "azure-storage-container-blob-property-set",
+        "azure-storage-blob-property-set",
+        "azure-storage-blob-update",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read": [
+        "azure-storage-container-blob-get",
+        "azure-storage-blob-get",
+        "azure-storage-container-blob-property-get",
+        "azure-storage-blob-property-get",
+        "azure-storage-blobs-list",
+        "azure-storage-blob-update",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete": ["azure-storage-blob-delete"],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/read": [
+        "azure-storage-container-blob-tag-get",
+        "azure-storage-blob-tag-get",
+        "azure-storage-container-blob-tag-set",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/write": [
+        "azure-storage-container-blob-tag-set",
+        "azure-storage-blob-tag-set",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/read": [
+        "azure-storage-blob-service-properties-set",
+        "azure-storage-blob-service-properties-get",
+        "azure-storage-blob-enable-soft-delete-quick-action",
+        "azure-storage-blob-service-property-get",
+        "azure-storage-blob-service-property-set",
+        "azure-storage-blob-soft-deletion-enable-quick-action",
+    ],
+    "Microsoft.Storage/storageAccounts/blobServices/write": [
+        "azure-storage-blob-service-properties-set",
+        "azure-storage-blob-service-properties-get",
+        "azure-storage-blob-enable-soft-delete-quick-action",
+        "azure-storage-blob-service-property-set",
+        "azure-storage-blob-soft-deletion-enable-quick-action",
+    ],
+    "Microsoft.Authorization/policyAssignments/read": [
+        "azure-policy-assignment-create",
+        "azure-policy-assignment-create-quick-action",
+    ],
+    "Microsoft.Authorization/policyAssignments/write": [
+        "azure-policy-assignment-create",
+        "azure-policy-assignment-create-quick-action",
+    ],
+    "Microsoft.DBforPostgreSQL/servers/read": [
+        "azure-postgres-server-update",
+        "azure-postgres-server-update-ssl-enforcement-quick-action",
+    ],
+    "Microsoft.DBforPostgreSQL/servers/write": [
+        "azure-postgres-server-update",
+        "azure-postgres-server-update-ssl-enforcement-quick-action",
+    ],
+    "Microsoft.DBforPostgreSQL/servers/configurations/read": [
+        "azure-postgres-config-set",
+        "azure-postgres-config-set-disconnection-logging-quick-action",
+        "azure-postgres-config-set-checkpoint-logging-quick-action",
+        "azure-postgres-config-set-connection-throttling-quick-action",
+        "azure-postgres-config-set-session-connection-logging-quick-action",
+        "azure-postgres-config-set-log-retention-period-quick-action",
+        "azure-postgres-config-set-statement-logging-quick-action",
+    ],
+    "Microsoft.DBforPostgreSQL/servers/configurations/write": [
+        "azure-postgres-config-set",
+        "azure-postgres-config-set-disconnection-logging-quick-action",
+        "azure-postgres-config-set-checkpoint-logging-quick-action",
+        "azure-postgres-config-set-connection-throttling-quick-action",
+        "azure-postgres-config-set-session-connection-logging-quick-action",
+        "azure-postgres-config-set-log-retention-period-quick-action",
+        "azure-postgres-config-set-statement-logging-quick-action",
+    ],
+    "Microsoft.Web/sites/config/read": [
+        "azure-webapp-config-set",
+        "azure-webapp-auth-update",
+        "azure-webapp-set-http2-quick-action",
+        "azure-set-function-app-http-version2-0-quick-action",
+        "azure-webapp-disable-remote-debugging-quick-action",
+        "azure-webapp-auth-update-quick-action",
+        "azure-webapp-set-min-tls-version-quick-action",
+        "azure-function-app-set-min-tls-version-quick-action",
+        "azure-appservice-webapp-auth-settings-update",
+        "azure-appservice-webapp-auth-settings-update-quick-action",
+        "azure-appservice-webapp-config-update",
+        "azure-appservice-webapp-config-update-http2-quick-action",
+        "azure-appservice-webapp-config-disable-remote-debugging-quick-action",
+        "azure-appservice-webapp-config-update-min-tls-version-quick-action",
+    ],
+    "Microsoft.Web/sites/config/write": [
+        "azure-webapp-config-set",
+        "azure-webapp-auth-update",
+        "azure-webapp-set-http2-quick-action",
+        "azure-set-function-app-http-version2-0-quick-action",
+        "azure-webapp-disable-remote-debugging-quick-action",
+        "azure-webapp-auth-update-quick-action",
+        "azure-webapp-set-min-tls-version-quick-action",
+        "azure-function-app-set-min-tls-version-quick-action",
+        "azure-appservice-webapp-auth-settings-update",
+        "azure-appservice-webapp-auth-settings-update-quick-action",
+        "azure-appservice-webapp-config-update",
+        "azure-appservice-webapp-config-update-http2-quick-action",
+        "azure-appservice-webapp-config-disable-remote-debugging-quick-action",
+        "azure-appservice-webapp-config-update-min-tls-version-quick-action",
+    ],
+    "Microsoft.Web/sites/read": [
+        "azure-webapp-update",
+        "azure-webapp-assign-managed-identity-quick-action",
+        "azure-webapp-update-assign-managed-identity-quick-action",
+        "azure-webapp-set-webapp-to-https-only-quick-action",
+        "azure-webapp-enable-client-cert-quick-action",
+        "azure-appservice-webapp-update",
+        "azure-appservice-webapp-update-quick-action",
+    ],
+    "Microsoft.Web/sites/write": [
+        "azure-webapp-update",
+        "azure-webapp-assign-managed-identity-quick-action",
+        "azure-webapp-update-assign-managed-identity-quick-action",
+        "azure-webapp-set-webapp-to-https-only-quick-action",
+        "azure-webapp-enable-client-cert-quick-action",
+        "azure-appservice-webapp-update",
+        "azure-appservice-webapp-update-quick-action",
+    ],
+    "Microsoft.DBforPostgreSQL/flexibleServers/configurations/write": [
+        "azure-postgres-flexible-server-configuration-update",
+        "azure-postgres-flexible-server-set-disconnection-logging-quick-action",
+        "azure-postgres-flexible-server-set-checkpoint-logging-quick-action",
+        "azure-postgres-flexible-server-set-connection-throttling-quick-action",
+        "azure-postgres-flexible-server-set-session-connection-logging-quick-action",
+        "azure-postgres-flexible-server-set-log-retention-period-quick-action",
+        "azure-postgres-flexible-server-set-statement-logging-quick-action",
+        "azure-postgres-flexible-server-set-secure-transport-quick-action",
+    ],
+    "Microsoft.DBforMySQL/flexibleServers/configurations/read": [
+        "azure-mysql-flexible-server-param-set",
+        "azure-mysql-set-secure-transport-quick-action",
+    ],
+    "Microsoft.DBforMySQL/flexibleServers/configurations/write": [
+        "azure-mysql-flexible-server-param-set",
+        "azure-mysql-set-secure-transport-quick-action",
+    ],
+    "Microsoft.Insights/logprofiles/read": [
+        "azure-monitor-log-profile-update",
+        "azure-monitor-log-retention-period-quick-action",
+    ],
+    "Microsoft.Insights/logprofiles/write": [
+        "azure-monitor-log-profile-update",
+        "azure-monitor-log-retention-period-quick-action",
+    ],
+    "Microsoft.Compute/disks/read": [
+        "azure-disk-update",
+        "azure-disable-public-private-access-vm-disk-quick-action",
+        "azure-disk-set-data-access-ad-quick-action",
+        "azure-compute-disk-update",
+        "azure-disable-public-n-private-access-vm-disk-quick-action",
+        "azure-compute-disk-update-data-access-ad-quick-action",
+    ],
+    "Microsoft.Compute/disks/write": [
+        "azure-disk-update",
+        "azure-disable-public-private-access-vm-disk-quick-action",
+        "azure-disk-set-data-access-ad-quick-action",
+        "azure-compute-disk-update",
+        "azure-disable-public-n-private-access-vm-disk-quick-action",
+        "azure-compute-disk-update-data-access-ad-quick-action",
+    ],
+    "Microsoft.Compute/virtualMachines/read": [
+        "azure-vm-instance-details-get",
+        "azure-vm-instance-start",
+        "azure-vm-instance-power-off",
+        "azure-compute-vm-get",
+    ],
+    "Microsoft.Compute/virtualMachines/start/action": ["azure-vm-instance-start", "azure-compute-vm-start"],
+    "Microsoft.Compute/virtualMachines/poweroff/action": ["azure-vm-instance-power-off", "azure-compute-vm-power-off"],
+    "Microsoft.Compute/virtualMachines/write": ["azure-compute-vm-create"],
+    "Microsoft.Compute/virtualMachines/deallocate/action": ["azure-compute-vm-delete"],
+    "Microsoft.Compute/virtualMachines/delete": ["azure-compute-vm-delete"],
+    "Microsoft.ContainerRegistry/registries/read": [
+        "azure-acr-update",
+        "azure-acr-disable-public-private-access-quick-action",
+        "azure-acr-disable-authentication-as-arm-quick-action",
+        "azure-acr-disable-anonymous-pull-quick-action",
+        "azure-cr-registry-update",
+        "azure-cr-disable-authentication-as-arm-quick-action",
+        "azure-cr-disable-public-private-access-quick-action",
+        "azure-cr-disable-anonymous-pull-quick-action",
+    ],
+    "Microsoft.ContainerRegistry/registries/write": [
+        "azure-acr-update",
+        "azure-acr-disable-public-private-access-quick-action",
+        "azure-acr-disable-authentication-as-arm-quick-action",
+        "azure-acr-disable-anonymous-pull-quick-action",
+        "azure-cr-registry-update",
+        "azure-cr-disable-authentication-as-arm-quick-action",
+        "azure-cr-disable-public-private-access-quick-action",
+        "azure-cr-disable-anonymous-pull-quick-action",
+    ],
+    "Microsoft.KeyVault/vaults/read": [
+        "azure-key-vault-update",
+        "azure-key-vault-purge-and-soft-delete-enable-quick-action",
+        "azure-keyvault-vault-update",
+    ],
+    "Microsoft.KeyVault/vaults/write": [
+        "azure-key-vault-update",
+        "azure-key-vault-purge-and-soft-delete-enable-quick-action",
+        "azure-keyvault-vault-update",
+    ],
+    "Microsoft.Sql/servers/read": [
+        "azure-sqldb-servers-list",
+        "azure-sqldb-databases-list",
+    ],
+    "Microsoft.Sql/servers/databases/read": [
+        "azure-sqldb-databases-list",
+        "azure-sqldb-server-auditing-settings-list",
+        "azure-sqldb-security-alert-policy-create",
+    ],
+    "Microsoft.Sql/servers/databases/auditingSettings/read": [
+        "azure-sqldb-server-auditing-settings-list",
+        "azure-sqldb-audit-policy-create-update",
+    ],
+    "Microsoft.Sql/servers/databases/auditingSettings/write": [
+        "azure-sqldb-audit-policy-create-update",
+    ],
+    "Microsoft.Sql/servers/databases/securityAlertPolicies/write": [
+        "azure-sqldb-security-alert-policy-create",
+        "azure-sql-db-threat-policy-update",
+        "azure-sql-db-threat-policy-update-quick-action",
+        "azure-sqldb-security-alert-policy-update",
+    ],
+    "Microsoft.Sql/servers/firewallRules/read": [
+        "azure-sqldb-firewall-rules-list",
+    ],
+    "Microsoft.Sql/servers/firewallRules/write": [
+        "azure-sqldb-firewall-rule-create-update",
+        "azure-sqldb-firewall-rule-replace",
+    ],
+    "Microsoft.Sql/servers/firewallRules/delete": [
+        "azure-sqldb-firewall-rule-delete",
+    ],
+    "Microsoft.Sql/servers/databases/securityAlertPolicies/read": [
+        "azure-sql-db-threat-policy-update",
+        "azure-sql-db-threat-policy-update-quick-action",
+        "azure-sqldb-security-alert-policy-update",
+    ],
+    "Microsoft.DocumentDB/databaseAccounts/read": [
+        "azure-cosmos-db-update",
+        "azure-cosmos-db-disable-key-quick-action",
+        "azure-cosmosdb-db-account-update",
+    ],
+    "Microsoft.DocumentDB/databaseAccounts/write": [
+        "azure-cosmos-db-update",
+        "azure-cosmos-db-disable-key-quick-action",
+        "azure-cosmosdb-db-account-update",
+    ],
+    "Microsoft.Sql/servers/databases/transparentDataEncryption/read": [
+        "azure-sql-db-transparent-data-encryption-set",
+        "azure-sql-db-transparent-data-encryption-enable-tde-quick-action",
+    ],
+    "Microsoft.Sql/servers/databases/transparentDataEncryption/write": [
+        "azure-sql-db-transparent-data-encryption-set",
+        "azure-sql-db-transparent-data-encryption-enable-tde-quick-action",
+    ],
+    "Microsoft.ContainerService/managedClusters/read": [
+        "azure-aks-managed-clusters-list",
+        "azure-aks-managed-cluster-addon-update",
+    ],
+    "Microsoft.ContainerService/managedClusters/write": ["azure-aks-managed-cluster-addon-update"],
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/read": [
+        "azure-vn-firewall-policy-rule-collection-groups-list",
+        "azure-firewall-rules-list",
+        "azure-firewall-rule-get",
+        "azure-vn-firewall-policy-rule-collection-groups-create",
+        "azure-vn-firewall-policy-rule-collection-groups-update",
+        "azure-vn-firewall-policy-network-rule-create",
+        "azure-vn-firewall-policy-network-rule-update",
+        "azure-vn-firewall-policy-network-rule-delete",
+        "azure-vn-firewall-policy-rule-collection-groups-delete",
+    ],
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/write": [
+        "azure-vn-firewall-policy-rule-collection-groups-create",
+        "azure-vn-firewall-policy-rule-collection-groups-update",
+        "azure-vn-firewall-policy-network-rule-create",
+        "azure-vn-firewall-policy-network-rule-update",
+        "azure-vn-firewall-policy-network-rule-delete",
+    ],
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/delete": ["azure-vn-firewall-policy-rule-collection-groups-delete"],
+    "Microsoft.Network/locations/serviceTagDetails/read": ["azure-firewall-service-tags-information-list"],
+    "Microsoft.Consumption/usageDetails/read": ["azure-billing-usage-list"],
+    "Microsoft.Consumption/budgets/read": ["azure-billing-budgets-list"],
+    "Microsoft.CostManagement/forecast/read": ["azure-billing-forecast-list"],
+    "Microsoft.Network/networkSecurityGroups/write": ["create_network_security_group"],
+    "Microsoft.Network/virtualNetworks/subnets/join/action": ["azure-vn-network-interface-update"],
+    "Microsoft.Network/publicIPAddresses/join/action": ["azure-vn-network-interface-update"],
+    "Microsoft.Network/networkSecurityGroups/join/action": ["azure-vn-network-interface-update"],
+    "Microsoft.Network/loadBalancers/backendAddressPools/join/action": ["azure-vn-network-interface-update"],
+    "Microsoft.Resources/subscriptions/resourceGroups/read": ["azure-nsg-resource-group-list", "azure-rm-resource-groups-list"],
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/read": [
+        "azure-application-gateway-waf-policy-get",
+        "azure-application-gateway-waf-policies-list",
+    ],
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/write": [
+        "azure-application-gateway-waf-policy-create-or-update"
+    ],
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/delete": ["azure-application-gateway-waf-policy-delete"],
+    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/read": [
+        "azure-front-door-policy-get",
+        "azure-front-door-policies-list",
+    ],
+    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/write": ["azure-front-door-policy-create-or-update"],
+    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/delete": ["azure-front-door-policy-delete"],
+    "Microsoft.Network/firewallPolicies/read": [
+        "azure-vn-firewall-policy-get",
+        "azure-vn-firewall-policy-list",
+        "azure-vn-firewall-policy-update",
+    ],
+    "Microsoft.Network/firewallPolicies/write": [
+        "azure-vn-firewall-policy-create",
+        "azure-vn-firewall-policy-update",
+    ],
+    "Microsoft.Network/firewallPolicies/delete": ["azure-vn-firewall-policy-delete"],
+    "Microsoft.Network/firewallPolicies/join/action": ["azure-firewall-policy-attach"],
+    "Microsoft.Network/azureFirewalls/read": [
+        "azure-firewall-policy-attach",
+        "azure-firewall-policy-detach",
+        "azure-firewall-list",
+        "azure-firewall-get",
+        "azure-firewall-rules-list",
+        "azure-firewall-rule-get",
+        "azure-firewall-rule-collection-groups-create",
+        "azure-firewall-rule-collection-groups-update",
+        "azure-firewall-rule-collection-groups-delete",
+        "azure-firewall-network-rule-create",
+        "azure-firewall-network-rule-update",
+        "azure-firewall-network-rule-delete",
+    ],
+    "Microsoft.Network/azureFirewalls/write": [
+        "azure-firewall-policy-attach",
+        "azure-firewall-policy-detach",
+        "azure-firewall-rule-collection-groups-create",
+        "azure-firewall-rule-collection-groups-update",
+        "azure-firewall-rule-collection-groups-delete",
+        "azure-firewall-network-rule-create",
+        "azure-firewall-network-rule-update",
+        "azure-firewall-network-rule-delete",
+    ],
+    "Microsoft.Storage/storageAccounts/tableServices/tables/write": ["azure-storage-table-create"],
+    "Microsoft.Storage/storageAccounts/tableServices/tables/delete": ["azure-storage-table-delete"],
+    "Microsoft.Storage/storageAccounts/tableServices/tables/read": ["azure-storage-tables-list"],
+    "Microsoft.Storage/storageAccounts/tableServices/tables/entities/write": [
+        "azure-storage-table-entity-insert",
+        "azure-storage-table-entity-update",
+        "azure-storage-table-entity-replace",
+    ],
+    "Microsoft.Storage/storageAccounts/tableServices/tables/entities/read": ["azure-storage-table-entity-query"],
+    "Microsoft.Storage/storageAccounts/tableServices/tables/entities/delete": ["azure-storage-table-entity-delete"],
+    "Microsoft.Network/ipGroups/read": [
+        "azure-vn-ip-group-get",
+        "azure-vn-ip-groups-list",
+        "azure-vn-ip-group-create",
+        "azure-vn-ip-group-update",
+    ],
+    "Microsoft.Network/ipGroups/write": ["azure-vn-ip-group-create", "azure-vn-ip-group-update"],
+    "Microsoft.Network/ipGroups/delete": ["azure-vn-ip-group-delete"],
+    "Microsoft.Network/virtualNetworks/read": ["azure-vn-virtual-networks-list"],
+    "Microsoft.Resources/subscriptions/read": ["azure-rm-subscriptions-list"],
+    "Microsoft.OperationalInsights/workspaces/savedSearches/read": [
+        "azure-log-analytics-saved-searches-list",
+        "azure-log-analytics-saved-search-get",
+    ],
+    "Microsoft.OperationalInsights/workspaces/savedSearches/write": [
+        "azure-log-analytics-saved-search-create-update",
+    ],
+    "Microsoft.OperationalInsights/workspaces/savedSearches/delete": [
+        "azure-log-analytics-saved-search-delete",
+    ],
+    "Microsoft.OperationalInsights/workspaces/read": [
+        "azure-log-analytics-workspaces-list",
+    ],
+    "Microsoft.OperationalInsights/workspaces/tables/read": [
+        "azure-log-analytics-table-get",
+    ],
+    "Microsoft.OperationalInsights/workspaces/tables/write": [
+        "azure-log-analytics-table-run",
+    ],
+    "Microsoft.OperationalInsights/workspaces/tables/delete": [
+        "azure-log-analytics-table-delete",
+    ],
+    "Microsoft.OperationalInsights/workspaces/searchJobs/write": ["azure-log-analytics-table-run"],
+}
+
+API_FUNCTION_TO_PERMISSIONS = {
+    "create_network_security_group": ["Microsoft.Network/networkSecurityGroups/write"],
+    "acr_update": ["Microsoft.ContainerRegistry/registries/read", "Microsoft.ContainerRegistry/registries/write"],
+    "cosmos_db_update": ["Microsoft.DocumentDB/databaseAccounts/read", "Microsoft.DocumentDB/databaseAccounts/write"],
+    "disk-update": ["Microsoft.Compute/disks/read", "Microsoft.Compute/disks/write"],
+    "update_key_vault_request": ["Microsoft.KeyVault/vaults/read", "Microsoft.KeyVault/vaults/write"],
+    "monitor_log_profile_update": ["Microsoft.Insights/logprofiles/read", "Microsoft.Insights/logprofiles/write"],
+    "flexible_server_param_set": [
+        "Microsoft.DBforMySQL/flexibleServers/configurations/read",
+        "Microsoft.DBforMySQL/flexibleServers/configurations/write",
+    ],
+    "list_networks_interfaces_request": ["Microsoft.Network/networkInterfaces/read"],
+    "list_public_ip_addresses_request": ["Microsoft.Network/publicIPAddresses/read"],
+    "list_resource_groups_request": ["Microsoft.Resources/subscriptions/resourceGroups/read"],
+    "list_network_security_groups": ["Microsoft.Network/networkSecurityGroups/read"],
+    "create_or_update_rule": [
+        "Microsoft.Network/networkSecurityGroups/securityRules/read",
+        "Microsoft.Network/networkSecurityGroups/securityRules/write",
+    ],
+    "delete_rule": ["Microsoft.Network/networkSecurityGroups/securityRules/delete"],
+    "create_policy_assignment": [
+        "Microsoft.Authorization/policyAssignments/read",
+        "Microsoft.Authorization/policyAssignments/write",
+    ],
+    "set_postgres_config": [
+        "Microsoft.DBforPostgreSQL/servers/configurations/read",
+        "Microsoft.DBforPostgreSQL/servers/configurations/write",
+    ],
+    "postgres_server_update": ["Microsoft.DBforPostgreSQL/servers/read", "Microsoft.DBforPostgreSQL/servers/write"],
+    "sql_servers_list": ["Microsoft.Sql/servers/read"],
+    "sql_db_list": ["Microsoft.Sql/servers/read", "Microsoft.Sql/servers/databases/read"],
+    "sql_db_server_auditing_settings_list": [
+        "Microsoft.Sql/servers/databases/read",
+        "Microsoft.Sql/servers/databases/auditingSettings/read",
+    ],
+    "sql_db_audit_policy_list": [
+        "Microsoft.Sql/servers/databases/read",
+        "Microsoft.Sql/servers/databases/auditingSettings/read",
+    ],
+    "sql_db_audit_policy_create_update": [
+        "Microsoft.Sql/servers/databases/auditingSettings/read",
+        "Microsoft.Sql/servers/databases/auditingSettings/write",
+    ],
+    "sql_firewall_rules_list": ["Microsoft.Sql/servers/firewallRules/read"],
+    "sql_firewall_rule_create_update": ["Microsoft.Sql/servers/firewallRules/write"],
+    "sql_firewall_rule_delete": ["Microsoft.Sql/servers/firewallRules/delete"],
+    "sql_firewall_rule_replace": ["Microsoft.Sql/servers/firewallRules/write"],
+    "postgres_flexible_server_configuration_update": ["Microsoft.DBforPostgreSQL/flexibleServers/configurations/write"],
+    "sql_db_threat_policy_update": [
+        "Microsoft.Sql/servers/databases/securityAlertPolicies/read",
+        "Microsoft.Sql/servers/databases/securityAlertPolicies/write",
+    ],
+    "sql_db_tde_set": [
+        "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+        "Microsoft.Sql/servers/databases/transparentDataEncryption/write",
+    ],
+    "storage_account_list_request": ["Microsoft.Storage/storageAccounts/read"],
+    "storage_blob_container_list_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/read"],
+    "storage_account_update_request": ["Microsoft.Storage/storageAccounts/read", "Microsoft.Storage/storageAccounts/write"],
+    "storage_blob_service_properties_set_request": [
+        "Microsoft.Storage/storageAccounts/blobServices/read",
+        "Microsoft.Storage/storageAccounts/blobServices/write",
+    ],
+    "aks_clusters_list": ["Microsoft.ContainerService/managedClusters/read"],
+    "aks_cluster_get": ["Microsoft.ContainerService/managedClusters/read"],
+    "aks_cluster_addon_update": [
+        "Microsoft.ContainerService/managedClusters/read",
+        "Microsoft.ContainerService/managedClusters/write",
+    ],
+    "storage_container_create_blob_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write"],
+    "get_storage_container_properties_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/read"],
+    "create_storage_container_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/write"],
+    "delete_storage_container_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/delete"],
+    "storage_container_blob_get_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read"],
+    "storage_container_blob_tag_get_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/read"],
+    "storage_container_blob_tags_set_request": [
+        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/read",
+        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/write",
+    ],
+    "storage_container_blob_property_get_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read"],
+    "storage_container_blob_properties_set_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write"],
+    "storage_container_block_public_access_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/setAcl/action"],
+    "storage_containers_list_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/read"],
+    "storage_container_blobs_list_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read"],
+    "storage_container_blob_delete_request": ["Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete"],
+    "get_rule": ["Microsoft.Network/networkSecurityGroups/securityRules/read"],
+    "update_webapp_auth": ["Microsoft.Web/sites/config/read", "Microsoft.Web/sites/config/write"],
+    "set_webapp_config": ["Microsoft.Web/sites/config/read", "Microsoft.Web/sites/config/write"],
+    "webapp_update": ["Microsoft.Web/sites/read", "Microsoft.Web/sites/write"],
+    "start_vm_request": ["Microsoft.Compute/virtualMachines/read", "Microsoft.Compute/virtualMachines/start/action"],
+    "poweroff_vm_request": ["Microsoft.Compute/virtualMachines/read", "Microsoft.Compute/virtualMachines/poweroff/action"],
+    "get_vm_request": ["Microsoft.Compute/virtualMachines/read"],
+    "list_vm_request": ["Microsoft.Compute/virtualMachines/read"],
+    "create_vm_request": ["Microsoft.Compute/virtualMachines/write"],
+    "delete_vm_request": [
+        "Microsoft.Compute/virtualMachines/deallocate/action",
+        "Microsoft.Compute/virtualMachines/delete",
+    ],
+    "create_network_interface_request": [
+        "Microsoft.Network/networkInterfaces/write",
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+        "Microsoft.Network/networkSecurityGroups/join/action",
+    ],
+    "get_network_interface_request": ["Microsoft.Network/networkInterfaces/read"],
+    "update_network_interface_request": [
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/networkInterfaces/write",
+        "Microsoft.Network/virtualNetworks/subnets/join/action",
+        "Microsoft.Network/publicIPAddresses/join/action",
+        "Microsoft.Network/networkSecurityGroups/join/action",
+        "Microsoft.Network/loadBalancers/backendAddressPools/join/action",
+    ],
+    "get_public_ip_details_request": ["Microsoft.Network/publicIPAddresses/read"],
+    "get_all_public_ip_details_request": ["Microsoft.Network/publicIPAddresses/read"],
+    "list_security_rules": ["Microsoft.Network/networkSecurityGroups/securityRules/read"],
+    "waf_policy_get": ["Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/read"],
+    "waf_policy_list": ["Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/read"],
+    "waf_policy_upsert": ["Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/write"],
+    "waf_policy_delete": ["Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/delete"],
+    "waf_front_door_policy_get": ["Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/read"],
+    "waf_front_door_policy_list": ["Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/read"],
+    "waf_front_door_policy_upsert": ["Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/write"],
+    "waf_front_door_policy_delete": ["Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/delete"],
+    "firewall_policy_create_or_update": [
+        "Microsoft.Network/firewallPolicies/read",
+        "Microsoft.Network/firewallPolicies/write",
+    ],
+    "firewall_policy_get": ["Microsoft.Network/firewallPolicies/read"],
+    "firewall_policy_delete": ["Microsoft.Network/firewallPolicies/delete"],
+    "firewall_policy_list": ["Microsoft.Network/firewallPolicies/read"],
+    "firewall_get": ["Microsoft.Network/azureFirewalls/read"],
+    "firewall_update": [
+        "Microsoft.Network/azureFirewalls/read",
+        "Microsoft.Network/azureFirewalls/write",
+        "Microsoft.Network/firewallPolicies/join/action",
+    ],
+    "create_table_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/write"],
+    "delete_table_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/delete"],
+    "list_tables_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/read"],
+    "insert_entity_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/entities/write"],
+    "update_entity_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/entities/write"],
+    "replace_entity_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/entities/write"],
+    "query_entity_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/entities/read"],
+    "delete_entity_request": ["Microsoft.Storage/storageAccounts/tableServices/tables/entities/delete"],
+    "ip_group_create": ["Microsoft.Network/ipGroups/write"],
+    "ip_group_update": ["Microsoft.Network/ipGroups/read", "Microsoft.Network/ipGroups/write"],
+    "ip_group_get": ["Microsoft.Network/ipGroups/read"],
+    "ip_group_list": ["Microsoft.Network/ipGroups/read"],
+    "ip_group_delete": ["Microsoft.Network/ipGroups/delete"],
+    "firewall_list_request": ["Microsoft.Network/azureFirewalls/read"],
+    "firewall_get_request": ["Microsoft.Network/azureFirewalls/read"],
+    "firewall_policy_rule_collection_list_request": ["Microsoft.Network/firewallPolicies/ruleCollectionGroups/read"],
+    "firewall_policy_rule_collection_get_request": ["Microsoft.Network/firewallPolicies/ruleCollectionGroups/read"],
+    "firewall_service_tag_list_request": ["Microsoft.Network/locations/serviceTagDetails/read"],
+    "resource_graph_list_operations": ["Microsoft.ResourceGraph/operations/read"],
+    "resource_graph_query_resources": ["Microsoft.ResourceGraph/resources/read"],
+    "list_virtual_networks_request": ["Microsoft.Network/virtualNetworks/read"],
+    "list_subscriptions_request": ["Microsoft.Resources/subscriptions/read"],
+    "firewall_policy_rule_collection_group_get": ["Microsoft.Network/firewallPolicies/ruleCollectionGroups/read"],
+    "firewall_policy_rule_collection_group_create_or_update": [
+        "Microsoft.Network/firewallPolicies/ruleCollectionGroups/read",
+        "Microsoft.Network/firewallPolicies/ruleCollectionGroups/write",
+    ],
+    "firewall_policy_rule_collection_group_delete": ["Microsoft.Network/firewallPolicies/ruleCollectionGroups/delete"],
+    "log_analytics_saved_searches_list": ["Microsoft.OperationalInsights/workspaces/savedSearches/read"],
+    "log_analytics_saved_search_get": ["Microsoft.OperationalInsights/workspaces/savedSearches/read"],
+    "log_analytics_saved_search_create_update": [
+        "Microsoft.OperationalInsights/workspaces/savedSearches/read",
+        "Microsoft.OperationalInsights/workspaces/savedSearches/write",
+    ],
+    "log_analytics_saved_search_delete": ["Microsoft.OperationalInsights/workspaces/savedSearches/delete"],
+    "log_analytics_workspaces_list": ["Microsoft.OperationalInsights/workspaces/read"],
+    "log_analytics_table_get": ["Microsoft.OperationalInsights/workspaces/tables/read"],
+    "log_analytics_table_run": [
+        "Microsoft.OperationalInsights/workspaces/tables/read",
+        "Microsoft.OperationalInsights/workspaces/tables/write",
+        "Microsoft.OperationalInsights/workspaces/searchJobs/write",
+    ],
+    "log_analytics_table_delete": ["Microsoft.OperationalInsights/workspaces/tables/delete"],
+}
+
+REQUIRED_ROLE_PERMISSIONS = [
+    "Microsoft.Network/networkSecurityGroups/read",
+    "Microsoft.Network/networkSecurityGroups/securityRules/read",
+    "Microsoft.Network/networkSecurityGroups/securityRules/write",
+    "Microsoft.Network/networkSecurityGroups/securityRules/delete",
+    "Microsoft.Network/networkInterfaces/read",
+    "Microsoft.Network/publicIPAddresses/read",
+    "Microsoft.Network/virtualNetworks/read",
+    "Microsoft.Storage/storageAccounts/read",
+    "Microsoft.Storage/storageAccounts/write",
+    "Microsoft.Storage/storageAccounts/blobServices/read",
+    "Microsoft.Storage/storageAccounts/blobServices/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/delete",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/delete",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/read",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/tags/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/write",
+    "Microsoft.Storage/storageAccounts/blobServices/containers/setAcl/action",
+    "Microsoft.Authorization/policyAssignments/read",
+    "Microsoft.Authorization/policyAssignments/write",
+    "Microsoft.DBforPostgreSQL/servers/read",
+    "Microsoft.DBforPostgreSQL/servers/write",
+    "Microsoft.DBforPostgreSQL/servers/configurations/read",
+    "Microsoft.DBforPostgreSQL/servers/configurations/write",
+    "Microsoft.DBforPostgreSQL/flexibleServers/configurations/write",
+    "Microsoft.Web/sites/config/read",
+    "Microsoft.Web/sites/config/write",
+    "Microsoft.Web/sites/read",
+    "Microsoft.Web/sites/write",
+    "Microsoft.DBforMySQL/flexibleServers/configurations/read",
+    "Microsoft.DBforMySQL/flexibleServers/configurations/write",
+    "Microsoft.Insights/logprofiles/read",
+    "Microsoft.Insights/logprofiles/write",
+    "Microsoft.Compute/disks/read",
+    "Microsoft.Compute/disks/write",
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Compute/virtualMachines/start/action",
+    "Microsoft.Compute/virtualMachines/poweroff/action",
+    "Microsoft.Compute/virtualMachines/write",
+    "Microsoft.Compute/virtualMachines/deallocate/action",
+    "Microsoft.Compute/virtualMachines/delete",
+    "Microsoft.Network/networkInterfaces/write",
+    "Microsoft.Network/virtualNetworks/subnets/join/action",
+    "Microsoft.Network/networkSecurityGroups/join/action",
+    "Microsoft.ContainerRegistry/registries/read",
+    "Microsoft.ContainerRegistry/registries/write",
+    "Microsoft.KeyVault/vaults/read",
+    "Microsoft.KeyVault/vaults/write",
+    "Microsoft.Sql/servers/databases/securityAlertPolicies/read",
+    "Microsoft.Sql/servers/databases/securityAlertPolicies/write",
+    "Microsoft.DocumentDB/databaseAccounts/read",
+    "Microsoft.DocumentDB/databaseAccounts/write",
+    "Microsoft.Sql/servers/databases/transparentDataEncryption/read",
+    "Microsoft.Sql/servers/databases/transparentDataEncryption/write",
+    "Microsoft.ContainerService/managedClusters/read",
+    "Microsoft.ContainerService/managedClusters/write",
+    "Microsoft.Resources/subscriptions/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/read",
+    "Microsoft.Network/locations/serviceTagDetails/read",
+    "Microsoft.Consumption/usageDetails/read",
+    "Microsoft.Consumption/budgets/read",
+    "Microsoft.CostManagement/forecast/read",
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/read",
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/write",
+    "Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/delete",
+    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/read",
+    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/write",
+    "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies/delete",
+    "Microsoft.Network/firewallPolicies/read",
+    "Microsoft.Network/firewallPolicies/write",
+    "Microsoft.Network/firewallPolicies/delete",
+    "Microsoft.Network/firewallPolicies/join/action",
+    "Microsoft.Network/azureFirewalls/read",
+    "Microsoft.Network/azureFirewalls/write",
+    "Microsoft.Storage/storageAccounts/tableServices/tables/read",
+    "Microsoft.Storage/storageAccounts/tableServices/tables/write",
+    "Microsoft.Storage/storageAccounts/tableServices/tables/delete",
+    "Microsoft.Storage/storageAccounts/tableServices/tables/entities/read",
+    "Microsoft.Storage/storageAccounts/tableServices/tables/entities/write",
+    "Microsoft.Storage/storageAccounts/tableServices/tables/entities/delete",
+    "Microsoft.Network/ipGroups/read",
+    "Microsoft.Network/ipGroups/write",
+    "Microsoft.Network/ipGroups/delete",
+    "Microsoft.ResourceGraph/operations/read",
+    "Microsoft.ResourceGraph/resources/read",
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/read",
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/write",
+    "Microsoft.Network/firewallPolicies/ruleCollectionGroups/delete",
+    "Microsoft.OperationalInsights/workspaces/read",
+    "Microsoft.OperationalInsights/workspaces/query/read",
+    "Microsoft.OperationalInsights/workspaces/savedSearches/read",
+    "Microsoft.OperationalInsights/workspaces/savedSearches/write",
+    "Microsoft.OperationalInsights/workspaces/savedSearches/delete",
+    "Microsoft.OperationalInsights/workspaces/tables/read",
+    "Microsoft.OperationalInsights/workspaces/tables/write",
+    "Microsoft.OperationalInsights/workspaces/tables/delete",
+    "Microsoft.OperationalInsights/workspaces/searchJobs/write",
+    "Microsoft.Sql/servers/read",
+    "Microsoft.Sql/servers/databases/read",
+    "Microsoft.Sql/servers/databases/auditingSettings/read",
+    "Microsoft.Sql/servers/databases/auditingSettings/write",
+    "Microsoft.Sql/servers/firewallRules/read",
+    "Microsoft.Sql/servers/firewallRules/write",
+    "Microsoft.Sql/servers/firewallRules/delete",
+]
+REQUIRED_API_PERMISSIONS = ["GroupMember.ReadWrite.All", "RoleManagement.ReadWrite.Directory"]
+
+PREFIX_URL_AZURE = "https://management.azure.com/subscriptions/"
+PREFIX_URL_MS_GRAPH = "https://graph.microsoft.com/v1.0"
+POLICY_ASSIGNMENT_API_VERSION = "2024-05-01"
+POSTGRES_API_VERSION = "2017-12-01"
+POSTGRES_FLEXIBLE_API_VERSION = "2025-08-01"
+WEBAPP_API_VERSION = "2024-04-01"
+FLEXIBLE_API_VERSION = "2023-12-30"
+MONITOR_API_VERSION = "2016-03-01"
+DISKS_API_VERSION = "2024-03-02"
+ACR_API_VERSION = "2023-07-01"
+KEY_VAULT_API_VERSION = "2022-07-01"
+SQL_DB_API_VERSION = "2025-01-01"
+COSMOS_DB_API_VERSION = "2024-11-15"
+PERMISSIONS_VERSION = "2022-04-01"
+VM_API_VERSION = "2023-03-01"
+NETWORK_INTERFACE_API_VERSION = "2026-01-01"
+NSG_API_VERSION = "2026-01-01"
+PUBLIC_IP_API_VERSION = "2026-01-01"
+BLOB_SERVICE_API_VERSION = "2026-09-01"
+RESOURCE_GROUPS_API_VERSION = "2021-04-01"
+# Application Gateway and Front Door WAF policies are served by two separate resource providers,
+# each with its own independently released API version, so these two versions intentionally differ.
+WAF_POLICY_API_VERSION = "2025-09-01"
+WAF_FRONT_DOOR_POLICY_API_VERSION = "2026-04-01"
+WAF_POLICY_PATH = "providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies"
+WAF_FRONT_DOOR_POLICY_PATH = "providers/Microsoft.Network/FrontDoorWebApplicationFirewallPolicies"
+# WAF policy arguments that carry a JSON object or array. Every other argument is a plain string
+# and must be sent as-is, since parsing it as JSON would coerce values such as "123" to a number,
+# "true" to a boolean, or strip the quotes from a quoted ETag.
+WAF_POLICY_JSON_ARGUMENTS = {"tags", "policy_settings", "custom_rules", "managed_rules"}
+# The columns displayed for both Application Gateway and Front Door WAF policies.
+WAF_POLICY_HEADERS = ["name", "id", "type", "location", "etag", "tags"]
+FIREWALL_API_VERSION = "2025-09-01"
+STORAGE_ACCOUNT_API_VERSION = "2026-06-01"
+AKS_API_VERSION = "2026-06-01"
+
+IP_GROUPS_API_VERSION = "2025-09-01"
+
+LOG_ANALYTICS_API_VERSION = "2026-03-01"
+LOG_ANALYTICS_TABLE_NAME_SUFFIX = "_SRCH"
+LOG_ANALYTICS_SAVED_SEARCH_HEADERS = [
+    "id",
+    "name",
+    "type",
+    "etag",
+]
+
+# Polling settings for the IP group and Azure Firewall polling commands.
+DEFAULT_INTERVAL_IN_SECONDS = 30  # Interval between polling attempts of the polling commands.
+DEFAULT_TIMEOUT_POLLING_COMMAND = 600  # Default timeout of the polling commands.
+PROVISIONING_STATE_SUCCEEDED = "Succeeded"  # The terminal success state of an Azure resource provisioning operation.
+PROVISIONING_STATE_FAILED = "Failed"  # The terminal failure state of an Azure resource provisioning operation.
+IP_GROUP_TABLE_HEADERS = ["name", "id", "location", "type"]
+
+# Image options to be used in the create_vm_command
+IMAGES = {
+    "ubuntu server 14.04 lts": {"publisher": "Canonical", "offer": "UbuntuServer", "sku": "14.04-LTS", "version": "latest"},
+    "ubuntu server 16.04 lts": {"publisher": "Canonical", "offer": "UbuntuServer", "sku": "16.04-LTS", "version": "latest"},
+    "ubuntu server 18.04 lts": {"publisher": "Canonical", "offer": "UbuntuServer", "sku": "18.04-LTS", "version": "latest"},
+    "red hat enterprise linux 7.6": {"publisher": "RedHat", "offer": "RHEL", "sku": "7-RAW", "version": "latest"},
+    "centos-based 7.5": {"publisher": "OpenLogic", "offer": "CentOS", "sku": "7.5", "version": "latest"},
+    "windows server 2012 r2 datacenter": {
+        "publisher": "MicrosoftWindowsServer",
+        "offer": "WindowsServer",
+        "sku": "2012-R2-Datacenter",
+        "version": "latest",
+    },
+    "windows server 2016 datacenter": {
+        "publisher": "MicrosoftWindowsServer",
+        "offer": "WindowsServer",
+        "sku": "2016-Datacenter",
+        "version": "latest",
+    },
+    "windows 10 pro version 1803": {
+        "publisher": "MicrosoftWindowsDesktop",
+        "offer": "Windows-10",
+        "sku": "rs4-pro",
+        "version": "latest",
+    },
+    "windows 10 pro version 1809": {
+        "publisher": "MicrosoftWindowsDesktop",
+        "offer": "Windows-10",
+        "sku": "rs5-pro",
+        "version": "latest",
+    },
+}
+SUBSCRIPTIONS_API_VERSION = "2022-12-01"
+VIRTUAL_NETWORKS_API_VERSION = "2026-01-01"
+
+# Maps the destination type of an Azure Firewall network rule to the Azure field holding the destinations.
+FIREWALL_NETWORK_RULE_DESTINATION_FIELDS = {
+    "ip_address": "destinationAddresses",
+    "ip_group": "destinationIpGroups",
+    "service_tag": "destinationAddresses",
+    "fqdn": "destinationFqdns",
+}
+
+FIREWALL_OUTPUTS_PREFIX = "Azure.Firewall.Firewalls"
+FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX = "Azure.VirtualNetworks.FirewallPolicyRuleCollectionGroups"
+
+# Azure Firewall resources and firewall policy rule collection groups are provisioned asynchronously. The commands
+# poll the provisioning state of the resource until it reaches one of these terminal states.
+FIREWALL_FAILED_PROVISIONING_STATE = "Failed"
+FIREWALL_TERMINAL_PROVISIONING_STATES = {"Succeeded", FIREWALL_FAILED_PROVISIONING_STATE}
+# Commands decorated with @polling_function. The decorator requires the command arguments to be passed as the
+# first positional argument, so main() dispatches these commands differently from the regular ones.
+POLLING_COMMANDS = {
+    "azure-vn-ip-group-create",
+    "azure-vn-ip-group-update",
+    "azure-firewall-rule-collection-groups-create",
+    "azure-firewall-rule-collection-groups-update",
+    "azure-firewall-rule-collection-groups-delete",
+    "azure-firewall-network-rule-create",
+    "azure-firewall-network-rule-update",
+    "azure-firewall-network-rule-delete",
+    "azure-vn-firewall-policy-rule-collection-groups-create",
+    "azure-vn-firewall-policy-rule-collection-groups-update",
+    "azure-vn-firewall-policy-rule-collection-groups-delete",
+    "azure-vn-firewall-policy-network-rule-create",
+    "azure-vn-firewall-policy-network-rule-update",
+    "azure-vn-firewall-policy-network-rule-delete",
+    "azure-log-analytics-table-run",
+}
+
+# The following commands required a scope, token and resource update as part of the functions get_command_resource and
+# get_command_and_token_scopes.
+STORAGE_BLOB_SPECIAL_COMMANDS = [
+    "azure-storage-blob-property-get",
+    "azure-storage-blob-property-set",
+    "azure-storage-blob-tag-get",
+    "azure-storage-blob-create",
+    "azure-storage-blob-get",
+    "azure-storage-blob-tag-set",
+    "azure-storage-table-create",
+    "azure-storage-table-delete",
+    "azure-storage-tables-list",
+    "azure-storage-table-entity-insert",
+    "azure-storage-table-entity-update",
+    "azure-storage-table-entity-replace",
+    "azure-storage-table-entity-query",
+    "azure-storage-table-entity-delete",
+    "azure-storage-blobs-list",
+    "azure-storage-blob-update",
+    "azure-storage-blob-delete",
+]
+
+COMMANDS_TO_OUTPUTS_PREFIX = {
+    "azure-storage-container-blob-property-get": "Azure.StorageContainer",
+    "azure-storage-blob-property-get": "Azure.Storage.Blob",
+    "azure-storage-container-blob-tag-get": "Azure.StorageContainer",
+    "azure-storage-blob-tag-get": "Azure.Storage.Blob",
+    "azure-vm-instance-details-get": "Azure.Compute",
+    "azure-compute-vm-get": "Azure.Compute.VirtualMachines",
+    "azure-vm-instance-power-off": "Azure.Compute",
+    "azure-compute-vm-power-off": "Azure.Compute.VirtualMachines",
+    "azure-vm-instance-start": "Azure.Compute",
+    "azure-compute-vm-start": "Azure.Compute.VirtualMachines",
+    "azure-compute-vm-create": "Azure.Compute.VirtualMachines",
+    "azure-vn-network-interface-create": "Azure.VirtualNetworks.NetworkInterfaces",
+    "azure-cosmos-db-update": "Azure.CosmosDB",
+    "azure-cosmosdb-db-account-update": "Azure.CosmosDB.DBAccounts",
+    "azure-key-vault-update": "Azure.KeyVault",
+    "azure-keyvault-vault-update": "Azure.KeyVault.Vault",
+    "azure-nsg-resource-group-list": "Azure.NSGResourceGroup",
+    "azure-rm-resource-groups-list": "Azure.ResourceManagement.ResourceGroups",
+    "azure-sql-db-threat-policy-update": "Azure.SqlDBThreatPolicy",
+    "azure-sqldb-security-alert-policy-update": "Azure.SqlDB.SecurityAlertPolicies",
+    "azure-storage-blob-containers-update": "Azure.StorageBlobContainer",
+    "azure-storage-blob-container-update": "Azure.Storage.BlobContainers",
+    "azure-nsg-network-interfaces-list": "Azure.NSGNetworkInterfaces",
+    "azure-vn-network-interfaces-list": "Azure.VirtualNetworks.NetworkInterfaces",
+    "azure-nsg-public-ip-addresses-list": "Azure.NSGPublicIPAddress",
+    "azure-vn-public-ip-addresses-list": "Azure.VirtualNetworks.PublicIPAddresses",
+    "azure-nsg-security-groups-list": "Azure.NSGSecurityGroup",
+    "azure-vn-security-groups-list": "Azure.VirtualNetworks.SecurityGroups",
+    "azure-nsg-security-rule-create": "Azure.NSGRule",
+    "azure-vn-security-rule-create": "Azure.VirtualNetworks.SecurityRules",
+    "azure-nsg-security-rule-get": "Azure.NSGRule",
+    "azure-vn-security-rule-get": "Azure.VirtualNetworks.SecurityRules",
+    "azure-nsg-security-rule-update": "Azure.NSGRule",
+    "azure-vn-security-rule-update": "Azure.VirtualNetworks.SecurityRules",
+    "azure-nsg-security-rules-list": "Azure.NSGRule",
+    "azure-vn-security-rules-list": "Azure.VirtualNetworks.SecurityRules",
+    "azure-vm-network-interface-details-get": "Azure.Network.Interfaces",
+    "azure-vn-network-interface-get": "Azure.VirtualNetworks.NetworkInterfaces",
+    "azure-vm-public-ip-details-get": "Azure.Network.IPConfigurations",
+    "azure-vn-public-ip-address-get": "Azure.VirtualNetworks.PublicIPAddresses",
+    "azure-webapp-config-set": "Azure.WebAppConfig",
+    "azure-webapp-set-http2-quick-action": "Azure.WebAppConfig",
+    "azure-set-function-app-http-version2-0-quick-action": "Azure.WebAppConfig",
+    "azure-webapp-disable-remote-debugging-quick-action": "Azure.WebAppConfig",
+    "azure-webapp-set-min-tls-version-quick-action": "Azure.WebAppConfig",
+    "azure-function-app-set-min-tls-version-quick-action": "Azure.WebAppConfig",
+    "azure-appservice-webapp-config-update": "Azure.AppService.WebAppConfiguration",
+    "azure-webapp-auth-update": "Azure.WebAppAuth",
+    "azure-appservice-webapp-auth-settings-update": "Azure.AppService.WebAppAuthSettings",
+    "azure-webapp-auth-update-quick-action": "Azure.WebAppAuth",
+    "azure-disk-update": "Azure.Disk",
+    "azure-disk-set-data-access-ad-quick-action": "Azure.Disk",
+    "azure-disable-public-private-access-vm-disk-quick-action": "Azure.Disk",
+    "azure-compute-disk-update": "Azure.Compute.Disks",
+    "azure-webapp-update": "Azure.WebApp",
+    "azure-appservice-webapp-update": "Azure.AppService.WebApp",
+    "azure-webapp-assign-managed-identity-quick-action": "Azure.WebApp",
+    "azure-webapp-update-assign-managed-identity-quick-action": "Azure.WebApp",
+    "azure-acr-update": "Azure.ACR",
+    "azure-cr-registry-update": "Azure.ContainerRegistry.Registries",
+    "azure-acr-disable-public-private-access-quick-action": "Azure.ACR",
+    "azure-acr-disable-authentication-as-arm-quick-action": "Azure.ACR",
+    "azure-acr-disable-anonymous-pull-quick-action": "Azure.ACR",
+    "azure-storage-blob-service-properties-get": "Azure.StorageBlobServiceProperties",
+    "azure-storage-blob-service-property-get": "Azure.Storage.BlobServices",
+    "azure-storage-blob-service-properties-set": "Azure.StorageAccountBlobServiceProperties",
+    "azure-storage-blob-service-property-set": "Azure.Storage.BlobServices",
+    "azure-storage-blob-enable-soft-delete-quick-action": "Azure.StorageAccountBlobServiceProperties",
+}
+
+
+class TokenScope:
+    STORAGE = "STORAGE"
+    GRAPH = "GRAPH"
+    NETWORK = "NETWORK"
+    COMPUTE = "COMPUTE"
+    VAULT = "VAULT"
+    CONTAINER_REGISTRY = "CONTAINER_REGISTRY"
+    DATABASE = "DATABASE"
+    COSMOS = "COSMOS"
+    DATA_LAKE_1 = "DATA_LAKE_1"
+    DATA_LAKE_2 = "DATA_LAKE_2"
+    SIGNALR = "SIGNALR"
+    EVENT_HUBS = "EVENT_HUBS"
+    SERVICE_BUS = "SERVICE_BUS"
+    MONITOR = "MONITOR"
+    DIGITAL_TWINS = "DIGITAL_TWINS"
+    COGNITIVE_SERVICES = "COGNITIVE_SERVICES"
+    SYNAPSE_ANALYTICS = "SYNAPSE_ANALYTICS"
+    ML = "ML"
+    NONE = "NONE"
+    DEFAULT = "DEFAULT"
+    SEARCH = "SEARCH"
+    WORKSPACE_MEMBERSHIP = "WORKSPACE_MEMBERSHIP"
+    WORKSPACE_GROUP = "WORKSPACE_GROUP"
+    WORKSPACE_USER = "WORKSPACE_USER"
+    WORKSPACE_DOMAIN = "WORKSPACE_DOMAIN"
+    WORKSPACE_CUSTOMER = "WORKSPACE_CUSTOMER"
+
+
+""" CLIENT CLASS """
+
+
+class AzureClient:
+    def __init__(
+        self,
+        app_id: str = "",
+        subscription_id: str = "",
+        resource_group_name: str = "",
+        verify: bool = False,
+        proxy: bool = False,
+        tenant_id: str | None = None,
+        enc_key: str | None = None,
+        resource: str | None = None,
+        scope: str | None = None,
+        headers: dict | None = {},
+        connection_type: str = "Client Credentials",
+        azure_ad_endpoint: str = "https://login.microsoftonline.com",
+        auth_code: str | None = None,
+        redirect_uri: str | None = None,
+        managed_identities_client_id: str | None = None,
+    ):
+        self.connection_type = connection_type
+        if not headers:
+            is_device_code = "Device Code" in connection_type
+            # Managed Identities authenticate against the IMDS endpoint, not an AAD token endpoint,
+            # so they must not receive a token_retrieval_url.
+            is_managed_identities = "Managed Identities" in connection_type
+            token_retrieval_url: str | None
+            ms_scope: str | None
+            ms_resource: str | None
+            if is_device_code:
+                # Use the configured tenant when available so single-tenant apps get a tenant-scoped
+                # authority. Fall back to the "organizations" endpoint only for multi-tenant apps with
+                # no configured tenant; otherwise Microsoft returns "No tenant-identifying information
+                # found in either the request or implied by any provided credentials".
+                tenant_segment = tenant_id or "organizations"
+                token_retrieval_url = urllib.parse.urljoin(azure_ad_endpoint, f"{tenant_segment}/oauth2/v2.0/token")
+                # Use the per-command resource (management or storage) as the single source of truth,
+                # then derive the matching Device Code delegated scope from it (space-delimited form,
+                # unlike the `.default` form used by the other flows). This keeps storage-container
+                # commands storage-scoped under Device Code auth instead of always management-scoped.
+                ms_resource = (resource or DEFAULT_RESOURCE).rstrip("/")
+                ms_scope = f"{ms_resource}/user_impersonation offline_access user.read"
+            else:
+                # Build the token authority from the configured Azure AD endpoint so that Client Credentials
+                # and Authorization Code flows target the correct cloud (e.g. US Gov login.microsoftonline.us).
+                # Without this, MicrosoftClient falls back to the commercial login.microsoftonline.com authority
+                # while the scope/resource point to a national cloud, which Microsoft rejects with
+                # "Confidential Client is not supported in Cross Cloud request".
+                token_retrieval_url = (
+                    None
+                    if is_managed_identities
+                    else urllib.parse.urljoin(azure_ad_endpoint, f"{tenant_id or ''}/oauth2/v2.0/token")
+                )
+                ms_scope = scope
+                # The Client Credentials and Authorization Code flows use the v2.0 token endpoint, which
+                # authorizes via the `.default` scope and rejects the v1.0 `resource` parameter. Sending both
+                # results in "invalid_target: The resource parameter provided in the request doesn't match with
+                # the requested scopes". Only Device Code (v1.0-style) uses `resource`.
+                ms_resource = None
+            ms_client_args = assign_params(
+                self_deployed=True,
+                auth_id=app_id,
+                token_retrieval_url=token_retrieval_url,
+                grant_type=GRANT_BY_CONNECTION.get(connection_type),
+                base_url=f"{PREFIX_URL_AZURE}",
+                verify=verify,
+                proxy=proxy,
+                resource=ms_resource,
+                scope=ms_scope,
+                azure_ad_endpoint=azure_ad_endpoint,
+                tenant_id=tenant_id,
+                enc_key=enc_key,
+                auth_code=auth_code,
+                redirect_uri=redirect_uri,
+                managed_identities_client_id=managed_identities_client_id,
+                managed_identities_resource_uri=(resource or DEFAULT_RESOURCE).rstrip("/")
+                if is_managed_identities
+                else (ms_resource or Resources.management_azure),
+                command_prefix="azure",
+                ok_codes=(200, 201, 202, 204),
+            )
+            self.ms_client = MicrosoftClient(**ms_client_args)
+        else:
+            base_client_args = assign_params(
+                base_url=f"{PREFIX_URL_AZURE}", verify=os.environ.get("EGRESSPROXY_CA_PATH"), proxy=proxy, headers=headers
+            )
+            self.base_client = BaseClient(**base_client_args)
+
+        self.subscription_id = subscription_id
+        self.resource_group_name = resource_group_name
+        self.headers = headers
+
+    def http_request(
+        self,
+        method: str,
+        url_suffix: str | None = None,
+        full_url: str | None = None,
+        params: dict[str, Any] = {},
+        resp_type: str = "json",
+        json_data: dict | None = None,
+        data: dict | bytes | None = None,
+    ) -> requests.Response | dict[str, Any]:
+        if not params:
+            params = {}
+        if not self.headers:
+            self.headers = {}
+        # A paginated `full_url` (an Azure `nextLink`) already carries its own `api-version` in its query
+        # string. Injecting the default here would send the parameter twice, and ARM joins the two values
+        # into one invalid version (e.g. "2025-09-01,2022-09-01"), failing the request with InvalidResourceType.
+        url_has_api_version = bool(full_url) and "api-version" in parse_qs(urlparse(full_url or "").query)
+        if not params.get("api-version") and not url_has_api_version and "x-ms-version" not in self.headers:
+            params["api-version"] = API_VERSION
+
+        proxies = {"http": os.environ.get("CRTX_HTTP_PROXY"), "https": os.environ.get("CRTX_HTTP_PROXY")}
+
+        if self.headers:
+            self.headers |= {"x-caller-id": get_proxydome_token()}
+            return self.base_client._http_request(  # type: ignore[misc]
+                method=method,
+                url_suffix=url_suffix,
+                full_url=full_url,
+                json_data=json_data,
+                params=params,
+                resp_type=resp_type,
+                headers=self.headers,
+                ok_codes=(200, 201, 202, 204, 206),
+                proxies=proxies,
+                data=data,
+            )
+
+        return self.ms_client.http_request(
+            method=method, url_suffix=url_suffix, full_url=full_url, json_data=json_data, params=params, resp_type=resp_type
+        )
+
+    def handle_azure_error(
+        self,
+        e: Exception,
+        resource_name: str,
+        resource_type: str,
+        api_function_name: str,
+        subscription_id: str = None,
+        resource_group_name: str = None,
+    ) -> None:
+        """
+        Standardized error handling for Azure API calls
+
+        Args:
+            e: The exception that was raised
+            resource_name: Name of the resource that caused the error
+            resource_type: Type of the resource (e.g., 'Security Rule', 'Storage Account')
+            api_function_name: The api function name, used when need to know the permissions.
+            subscription_id: Azure subscription ID (optional, for better error messages)
+            resource_group_name: Resource group name (optional, for better error messages)
+
+        Raises:
+            ValueError: For 404 (not found) errors
+            DemistoException: For permission errors and other API errors
+        """
+        error_msg = str(e).lower()
+        demisto.debug(f"Azure API error for {resource_type} '{resource_name}': {type(e).__name__}")
+
+        if "404" in error_msg or "not found" in error_msg:
+            error_details = f'{resource_type} "{resource_name}"'
+            if subscription_id and resource_group_name:
+                error_details += f' under subscription ID "{subscription_id}" and resource group "{resource_group_name}"'
+            elif subscription_id:
+                error_details += f' under subscription ID "{subscription_id}"'
+            raise ValueError(f"{error_details} was not found. {str(e)}")
+
+        elif ("403" in error_msg or "forbidden" in error_msg) or ("401" in error_msg or "unauthorized" in error_msg):
+            demisto.debug("Permission error, trying to find the missing permission.")
+            found_permission = []
+            # If we have api_function_name, use the reverse mapping for O(1) lookup
+            if api_function_name in API_FUNCTION_TO_PERMISSIONS:
+                found_permission = get_permissions_from_api_function_name(api_function_name, error_msg)
+
+            if not found_permission:
+                found_permission = get_permissions_from_required_role_permissions_list(error_msg)
+
+            error_entries = [{"account_id": subscription_id, "message": error_msg, "name": perm} for perm in found_permission]
+
+            demisto.debug(f"Calling return_multiple_permissions_error function with {error_entries=}")
+            return_multiple_permissions_error(error_entries)
+
+        elif "400" in error_msg or "bad request" in error_msg:
+            if "intercepted by proxydome" in error_msg:
+                raise DemistoException(f'Request for {resource_type} "{resource_name}" was intercepted by proxydome.')
+
+            raise DemistoException(f'Invalid request for {resource_type} "{resource_name}". {str(e)}')
+
+        else:
+            # Re-raise the original exception for any other errors
+            raise DemistoException(f'Failed to access {resource_type} "{resource_name}": {str(e)}')
+
+    def create_or_update_rule(
+        self, security_group: str, rule_name: str, properties: dict, subscription_id: str, resource_group_name: str
+    ):
+        """
+        Create or update a security rule in an Azure Network Security Group.
+        Args:
+            security_group: Name of the network security group
+            rule_name: Name of the security rule to retrieve
+            subscription_id: Azure subscription ID
+            resource_group_name: Resource group name
+            properties: Properties of the security rule
+
+        Returns:
+            The response from the Azure API after creating the security rule
+
+        Raises:
+            ValueError: If the rule is not found
+            DemistoException: If there are permission or other API errors
+        """
+        try:
+            return self.http_request(
+                "PUT",
+                full_url=(
+                    f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                    f"/providers/Microsoft.Network/networkSecurityGroups/{security_group}/securityRules/{rule_name}"
+                ),
+                params={"api-version": NSG_API_VERSION},
+                json_data={"properties": properties},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{security_group}/{rule_name}",
+                resource_type="Security Rule",
+                api_function_name="create_or_update_rule",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def get_rule(self, security_group: str, rule_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Get a network security group rule.
+
+        Args:
+            security_group: Name of the network security group
+            rule_name: Name of the security rule to retrieve
+            subscription_id: Azure subscription ID
+            resource_group_name: Resource group name
+
+        Returns:
+            Dictionary containing the security rule information
+
+        Raises:
+            ValueError: If the rule is not found
+            DemistoException: If there are permission or other API errors
+        """
+        try:
+            demisto.debug("Retrieving security rule details.")
+            return self.http_request(
+                "GET",
+                full_url=f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/networkSecurityGroups/{security_group}/securityRules/{rule_name}",
+                params={"api-version": NSG_API_VERSION},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{security_group}/{rule_name}",
+                resource_type="Security Rule",
+                api_function_name="get_rule",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_security_rules(self, subscription_id: str, resource_group_name: str, network_security_group_name: str):
+        """
+        Gets all security rules in a network security group.
+
+        Args:
+            subscription_id(str) : Azure subscription ID
+            resource_group_name(str) : Resource group name
+            network_security_group_name(str): The name of the network security group
+
+        Returns:
+            A dict containing a list of dictionary with the security rules information
+
+        Raises:
+            DemistoException: If there are permission or other API errors
+        """
+        try:
+            demisto.debug("Retrieving security rules list.")
+            return self.http_request(
+                "GET",
+                full_url=f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/networkSecurityGroups/{network_security_group_name}/securityRules",
+                params={"api-version": NSG_API_VERSION},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{network_security_group_name}/security-rules-list",
+                resource_type="Security Rules",
+                api_function_name="list_security_rules",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_account_list_request(
+        self, account_name: str, resource_group_name: str, subscription_id: str, next_token: str = ""
+    ):
+        """
+        Send the get storage account/s request to the API.
+
+        Args:
+            account_name (str): The storage account name, optional. When empty, all accounts are listed.
+            resource_group_name (str): The resource group name.
+            subscription_id (str): The subscription id.
+            next_token (str): The URL to fetch the next page of results, returned by a previous call.
+
+        Returns:
+            dict: The json response from the API call.
+
+        Raises:
+            ValueError: If the storage account is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of storage accounts.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params: dict = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Storage/storageAccounts"
+            )
+            if account_name:
+                full_url += f"/{account_name}"
+            params = {"api-version": STORAGE_ACCOUNT_API_VERSION}
+        try:
+            demisto.debug(f'Listing storage account(s) "{account_name}".')
+            return self.http_request(
+                method="GET",
+                full_url=full_url,
+                params=params,
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=account_name or "storage-accounts",
+                resource_type="Storage Account",
+                api_function_name="storage_account_list_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_blob_container_list_request(self, subscription_id: str, resource_group_name: str, args: dict):
+        """
+        Send the get blob container/s request to the API.
+
+        Args:
+            subscription_id (str): The subscription id.
+            resource_group_name (str): The resource group name.
+            args (dict): The user arguments (like account name, container name, limit, next_token).
+
+        Returns:
+            dict: The json response from the API call.
+
+        Raises:
+            ValueError: If the blob container is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        account_name = args.get("account_name", "")
+        container_name = args.get("container_name", "")
+        next_token = args.get("next_token", "")
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of blob containers.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params: dict = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Storage/storageAccounts/{account_name}"
+                f"/blobServices/default/containers"
+            )
+            if container_name:
+                full_url += f"/{container_name}"
+            params = {"api-version": API_VERSION}
+            if argToBoolean(args.get("include_deleted", False)):
+                params["$include"] = "deleted"
+            if limit := arg_to_number(args.get("limit")):
+                validate_limit(limit, max_limit=BLOB_CONTAINERS_MAX_PAGE_SIZE)
+                params["$maxpagesize"] = str(limit)
+
+        try:
+            demisto.debug(f'Listing blob container(s) "{container_name}" under account "{account_name}".')
+            return self.http_request(
+                method="GET",
+                full_url=full_url,
+                params=params,
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=container_name or "blob-containers",
+                resource_type="Blob Container",
+                api_function_name="storage_blob_container_list_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_get(self, subscription_id: str, resource_group_name: str, firewall_name: str):
+        """
+        Retrieve an Azure Firewall resource.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the firewall.
+            firewall_name: The name of the Azure Firewall.
+
+        Return:
+            A dictionary containing the Azure Firewall resource.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/azure-firewalls/get?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/azureFirewalls/{firewall_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": FIREWALL_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=firewall_name,
+                resource_type="Firewall",
+                api_function_name="firewall_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_update(self, subscription_id: str, resource_group_name: str, firewall_name: str, firewall_data: dict):
+        """
+        Create or update an Azure Firewall resource.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the firewall.
+            firewall_name: The name of the Azure Firewall.
+            firewall_data: The full firewall resource to send in the request body.
+
+        Return:
+            A dictionary containing the updated Azure Firewall resource.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/azure-firewalls/create-or-update?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/azureFirewalls/{firewall_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT", full_url=full_url, json_data=firewall_data, params={"api-version": FIREWALL_API_VERSION}
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=firewall_name,
+                resource_type="Firewall",
+                api_function_name="firewall_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_rule_collection_group_get(
+        self, subscription_id: str, resource_group_name: str, policy_name: str, collection_name: str
+    ):
+        """
+        Retrieve a rule collection group of a firewall policy.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the firewall policy.
+            policy_name: The name of the firewall policy.
+            collection_name: The name of the rule collection group.
+
+        Return:
+            A dictionary containing the rule collection group.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policy-rule-collection-groups/get?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/firewallPolicies/{policy_name}/ruleCollectionGroups/{collection_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": FIREWALL_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{policy_name}/{collection_name}",
+                resource_type="Firewall Policy Rule Collection Group",
+                api_function_name="firewall_policy_rule_collection_group_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_rule_collection_group_create_or_update(
+        self, subscription_id: str, resource_group_name: str, policy_name: str, collection_name: str, collection_data: dict
+    ):
+        """
+        Create or update a rule collection group of a firewall policy.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the firewall policy.
+            policy_name: The name of the firewall policy.
+            collection_name: The name of the rule collection group.
+            collection_data: The rule collection group to send in the request body.
+
+        Return:
+            A dictionary containing the created or updated rule collection group.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policy-rule-collection-groups/create-or-update?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/firewallPolicies/{policy_name}/ruleCollectionGroups/{collection_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT", full_url=full_url, json_data=collection_data, params={"api-version": FIREWALL_API_VERSION}
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{policy_name}/{collection_name}",
+                resource_type="Firewall Policy Rule Collection Group",
+                api_function_name="firewall_policy_rule_collection_group_create_or_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_rule_collection_group_delete(
+        self, subscription_id: str, resource_group_name: str, policy_name: str, collection_name: str
+    ):
+        """
+        Delete a rule collection group from a firewall policy.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the firewall policy.
+            policy_name: The name of the firewall policy.
+            collection_name: The name of the rule collection group to delete.
+
+        Return:
+            The HTTP response object from the delete operation.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policy-rule-collection-groups/delete?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/firewallPolicies/{policy_name}/ruleCollectionGroups/{collection_name}"
+        )
+        try:
+            return self.http_request(
+                method="DELETE", full_url=full_url, params={"api-version": FIREWALL_API_VERSION}, resp_type="response"
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{policy_name}/{collection_name}",
+                resource_type="Firewall Policy Rule Collection Group",
+                api_function_name="firewall_policy_rule_collection_group_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_account_update_request(self, subscription_id: str, resource_group_name: str, args: dict):
+        """
+            Send the user arguments for the create/update account in the request body to the API.
+        Args:
+            subscription_id: The subscription id.
+            resource_group_name: The resource group name.
+            args: The user arguments.
+
+        Returns:
+            The json response from the API call.
+        """
+        account_name = args.get("account_name", "")
+        json_data_args: dict = {
+            "sku": {"name": args.get("sku")},
+            "kind": args.get("kind"),
+            "location": args.get("location"),
+            "properties": {},
+        }
+        if "tags" in args:
+            args_tags_list = args["tags"].split(",")
+            tags_obj = {f"tag{i + 1!s}": args_tags_list[i] for i in range(len(args_tags_list))}
+            json_data_args["tags"] = tags_obj
+
+        json_data_args.update(
+            {
+                "properties": {
+                    "customDomain": {
+                        "name": args.get("custom_domain_name"),
+                        "useSubDomainName": args.get("use_sub_domain_name") == "true" if "use_sub_domain_name" in args else None,
+                    },
+                    "encryption": {
+                        "keySource": args.get("enc_key_source"),
+                        "keyvaultproperties": {
+                            "keyname": args.get("enc_keyvault_key_name"),
+                            "keyversion": args.get("enc_keyvault_key_version"),
+                            "keyvaulturi": args.get("enc_keyvault_uri"),
+                        },
+                        "requireInfrastructureEncryption": args.get("enc_requireInfrastructureEncryption"),
+                    },
+                    "networkAcls": {
+                        "bypass": args.get("network_ruleset_bypass"),
+                        "defaultAction": args.get("network_ruleset_default_action"),
+                        "ipRules": json.loads(args["network_ruleset_ipRules"]) if "network_ruleset_ipRules" in args else None,
+                        "virtualNetworkRules": json.loads(args["virtual_network_rules"])
+                        if "virtual_network_rules" in args
+                        else None,
+                    },
+                    "accessTier": args.get("access_tier"),
+                    "supportsHttpsTrafficOnly": args.get("supports_https_traffic_only"),
+                    "isHnsEnabled": args.get("is_hns_enabled"),
+                    "largeFileSharesState": args.get("large_file_shares_state"),
+                    "allowCrossTenantReplication": args.get("allow_cross_tenant_replication"),
+                    "allowBlobPublicAccess": args.get("allow_blob_public_access"),
+                    "minimumTlsVersion": args.get("minimum_tls_version"),
+                }
+            }
+        )
+
+        json_data_args = remove_empty_elements(json_data_args)
+        demisto.debug(f'Updating storage account "{account_name}".')
+        try:
+            response = self.http_request(
+                method="PATCH",
+                full_url=(
+                    f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                    f"/providers/Microsoft.Storage/storageAccounts/{account_name}"
+                ),
+                params={
+                    "api-version": API_VERSION,
+                },
+                json_data=json_data_args,
+                resp_type="response",
+            )
+            return response
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=account_name,
+                resource_type="Storage Account",
+                api_function_name="storage_account_update_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_blob_service_properties_set_request(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        account_name: str,
+        delete_rentention_policy_enabled: str | None,
+        delete_rentention_policy_days: str | None,
+    ):
+        """
+        Set properties of Blob service of a given Azure Storage account.
+
+        Args:
+            subscription_id (str): Azure subscription ID containing the storage account.
+            resource_group_name (str): Name of the resource group that contains the storage account.
+            account_name (str): Name of the Azure Storage account.
+            delete_rentention_policy_enabled (str): Whether delete retention is enabled ('true' or 'false').
+            delete_rentention_policy_days (str): Number of days to retain deleted blobs.
+
+        Returns:
+            dict: The full JSON response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the storage account is not found or required parameters are missing
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Storage/storageAccounts/{account_name}/blobServices/default"
+        )
+        data = {
+            "properties": {
+                "deleteRetentionPolicy": {"enabled": delete_rentention_policy_enabled, "days": delete_rentention_policy_days}
+            }
+        }
+        params = {"api-version": API_VERSION}
+        data = remove_empty_elements(data)
+        try:
+            return self.http_request(method="PUT", full_url=full_url, params=params, json_data=data)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/blobServices",
+                resource_type="Storage Blob Service",
+                api_function_name="storage_blob_service_properties_set_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_blob_service_properties_get_request(self, account_name: str, resource_group_name: str, subscription_id: str):
+        """
+            Send the get blob service properties request to the API.
+        Args:
+            account_name: The storage account name.
+            resource_group_name: The resource group name.
+            subscription_id: The subscription id.
+
+        Returns:
+            The json response from the API call.
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/storagerp/blob-services/get-service-properties?view=rest-storagerp-2026-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Storage/storageAccounts/{account_name}/blobServices/default"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": BLOB_SERVICE_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/blobServices",
+                resource_type="Storage Blob Service",
+                api_function_name="storage_blob_service_properties_get_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_blob_containers_create_update_request(
+        self, subscription_id: str, resource_group_name: str, args: Dict, method: str
+    ):
+        """
+        Create or update a blob container in an Azure Storage account.
+
+        This function constructs the request body from user-provided arguments
+        and sends an HTTP request to the Azure REST API to create or update
+        a blob container under the specified storage account.
+
+        Args:
+            subscription_id (str): The Azure subscription ID.
+            resource_group_name (str): The name of the resource group containing the storage account.
+            args (Dict): User-provided arguments, which can include:
+                - container_name (str): Name of the blob container.
+                - account_name (str): Name of the storage account.
+                - default_encryption_scope (str, optional): Default encryption scope for the container.
+                - deny_encryption_scope_override (bool, optional): Whether to deny overriding the encryption scope.
+                - public_access (str, optional): Public access level for the container (e.g., "None", "Blob", "Container").
+            method (str): HTTP method to use for the request (e.g., "PUT" or "PATCH").
+
+        Returns:
+            dict: The JSON response from the Azure API.
+        """
+        container_name = args.get("container_name", "")
+        account_name = args.get("account_name", "")
+        try:
+            properties = {}
+
+            if "default_encryption_scope" in args:
+                properties["defaultEncryptionScope"] = args.get("default_encryption_scope")
+
+            if "deny_encryption_scope_override" in args:
+                properties["denyEncryptionScopeOverride"] = argToBoolean(args.get("deny_encryption_scope_override"))
+
+            if "public_access" in args:
+                properties["publicAccess"] = args.get("public_access")
+
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/"
+                f"Microsoft.Storage/storageAccounts/{account_name}/blobServices/default/containers/{container_name}"
+            )
+
+            return self.http_request(
+                method=method,
+                full_url=full_url,
+                params={"api-version": BLOB_SERVICE_API_VERSION},
+                json_data={"properties": properties},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{container_name}",
+                resource_type="Storage Blob Service",
+                api_function_name="storage_blob_containers_create_update_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def storage_container_set_headers(self, custom_headers: dict = {}):
+        """
+        Set the headers for the storage container request.
+        Args:
+            custom_headers (dict, optional): Custom headers to be added to the request.
+        """
+        request_headers = {
+            "x-ms-version": STORAGE_API_VERSION,
+            "x-ms-date": dt.datetime.utcnow().strftime(STORAGE_DATE_FORMAT),
+        }
+        if self.headers:
+            self.headers |= request_headers
+        else:
+            self.headers = request_headers
+
+        if custom_headers:
+            self.headers |= custom_headers
+
+        demisto.debug(f"Request headers: {self.headers}")
+
+    def get_storage_container_properties_request(self, account_name: str, container_name: str) -> requests.Response:
+        """
+        Retrieve properties for the specified Container.
+
+        Args:
+            account_name (str): The storage account name.
+            container_name (str): Container name.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        params = assign_params(restype="container")
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}"
+        self.storage_container_set_headers()
+
+        response = self.http_request(method="GET", full_url=full_url, params=params, resp_type="response")
+
+        return response  # type: ignore[return-value]
+
+    def create_storage_container_request(self, container_name: str, account_name: str) -> requests.Response:
+        """
+        Create a new Container under the specified account.
+
+        Args:
+            container_name (str): Container name.
+            account_name (str): Storage account name.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        params = assign_params(restype="container")
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}"
+        self.storage_container_set_headers()
+
+        response = self.http_request(method="PUT", full_url=full_url, params=params, resp_type="response")
+
+        return response  # type: ignore[return-value]
+
+    def delete_storage_container_request(self, container_name: str, account_name: str) -> None:
+        """
+        Delete Container under the specified account.
+
+        Args:
+            container_name (str): Container name.
+            account_name (str): Storage account name.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        params = assign_params(restype="container")
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}"
+        self.storage_container_set_headers()
+
+        self.http_request(method="DELETE", full_url=full_url, params=params, resp_type="response")
+
+    def storage_container_create_blob_request(
+        self, container_name: str, account_name: str, file_entry_id: str, blob_name: str, system_file_path: str
+    ) -> None:  # noqa: E501
+        """
+        Create or update Blob under the specified Container.
+
+        Args:
+            container_name (str): Container name.
+            account_name (str): Storage account name.
+            file_entry_id (str): File War room Entry ID.
+            blob_name (str): File name.
+            system_file_path (str): File system path.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+
+        try:
+            with open(system_file_path, "rb") as file_data:
+                file_size = os.path.getsize(system_file_path)
+                headers = {
+                    "x-ms-blob-type": "BlockBlob",  # for standard blob upload
+                    "Content-Length": str(file_size),
+                }
+                self.storage_container_set_headers(headers)
+
+                self.http_request(method="PUT", full_url=full_url, data=file_data, resp_type="response")  # type: ignore
+        except Exception as e:
+            raise DemistoException(f"Unable to read file with id {file_entry_id}", e)
+
+    def storage_container_blob_get_request(
+        self, container_name: str, blob_name: str, account_name: str
+    ) -> requests.Response | dict[str, Any]:  # noqa: E501
+        """
+        Get a blob from a storage container.
+        Args:
+            account_name (str): Name of the storage account.
+            container_name (str): Name of the container.
+            blob_name (str): Name of the blob.
+        Returns:
+            dict: The JSON response from the Azure API.
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+        self.storage_container_set_headers()
+
+        response = self.http_request(method="GET", full_url=full_url, resp_type="response")
+
+        return response
+
+    def storage_container_blob_tag_get_request(
+        self, container_name: str, blob_name: str, account_name: str
+    ) -> requests.Response | dict[str, Any] | str:  # noqa: E501
+        """
+        Get the tags of a blob from a storage container.
+        Args:
+            account_name (str): Name of the storage account.
+            container_name (str): Name of the container.
+            blob_name (str): Name of the blob.
+        Returns:
+            dict: The JSON response from the Azure API.
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+        params = assign_params(comp="tags")
+        self.storage_container_set_headers()
+        response = self.http_request(method="GET", full_url=full_url, params=params, resp_type="text")
+
+        return response
+
+    def storage_container_blob_tags_set_request(
+        self,
+        container_name: str,
+        blob_name: str,
+        tags: bytes,
+        account_name: str,
+    ) -> requests.Response | dict[str, Any]:
+        """
+        Set the tags for a blob in a storage container.
+        Args:
+            container_name (str): Name of the container.
+            blob_name (str): Name of the blob.
+            tags (str): XML data containing the tags to set.
+            account_name (str): Name of the storage account.
+        Returns:
+            dict: The JSON response from the Azure API.
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+        params = assign_params(comp="tags")
+        headers = {
+            "Content-Type": "application/xml; charset=utf-8",
+            "Content-Length": str(len(tags)),
+        }
+        self.storage_container_set_headers(headers)
+
+        response = self.http_request(method="PUT", full_url=full_url, params=params, data=tags, resp_type="response")
+
+        return response
+
+    def storage_container_blob_property_get_request(
+        self, container_name: str, blob_name: str, account_name: str
+    ) -> requests.Response | dict[str, Any]:
+        """
+        Retrieve Blob properties.
+
+        Args:
+            container_name (str): Container name.
+            blob_name (str): Blob name.
+            account_name (str): Name of the storage account.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+        self.storage_container_set_headers()
+
+        response = self.http_request(method="HEAD", full_url=full_url, resp_type="response")
+
+        return response
+
+    def storage_container_blob_properties_set_request(
+        self, container_name: str, blob_name: str, account_name: str, headers: dict
+    ) -> requests.Response | dict[str, Any]:
+        """
+        Set Blob properties.
+
+        Args:
+            container_name (str): Container name.
+            blob_name (str): Blob name.
+            account_name (str): Name of the storage account.
+            headers (dict): Request Headers.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+        params = assign_params(comp="properties")
+        self.storage_container_set_headers(custom_headers=headers)
+
+        response = self.http_request(method="PUT", full_url=full_url, params=params, resp_type="response")
+
+        return response
+
+    def create_table_request(self, account_name: str, table_name: str):
+        """
+        Create a new table in a storage account.
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+
+        Returns:
+            dict: API response from Azure.
+        """
+        full_url = f"https://{account_name}.{TABLE_SERVICE_PREFIX}/Tables"
+        data = {"TableName": table_name}
+        self.storage_container_set_headers({"Content-Type": "application/json", "Accept": "application/json;odata=nometadata"})
+        try:
+            return self.http_request(method="POST", full_url=full_url, json_data=data, resp_type="json")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table",
+                api_function_name="create_table_request",
+            )
+
+    def delete_table_request(self, account_name: str, table_name: str) -> None:
+        """
+        Delete the specified table and any data it contains.
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+        """
+        full_url = f"https://{account_name}.{TABLE_SERVICE_PREFIX}/Tables('{table_name}')"
+        self.storage_container_set_headers()
+        try:
+            self.http_request(method="DELETE", full_url=full_url, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table",
+                api_function_name="delete_table_request",
+            )
+
+    def list_tables_request(self, account_name: str, limit: str = None, query_filter: str = None, next_token: str = None):
+        """
+        List tables under the specified account.
+
+        Args:
+            account_name (str): The storage account name.
+            limit (str): Retrieve top n tables.
+            query_filter (str): Query expression.
+            next_token (str): Continuation token (NextTableName) for retrieving the next page of results.
+
+        Returns:
+            Response: API response from Azure.
+        """
+        full_url = f"https://{account_name}.{TABLE_SERVICE_PREFIX}/Tables"
+        params = remove_empty_elements({"$top": limit, "$filter": query_filter, "NextTableName": next_token})
+        self.storage_container_set_headers({"Accept": "application/json;odata=nometadata"})
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=params, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=account_name,
+                resource_type="Storage Table",
+                api_function_name="list_tables_request",
+            )
+
+    def insert_entity_request(self, account_name: str, table_name: str, entity_fields: dict):
+        """
+        Insert a new entity into a table.
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+            entity_fields (dict): Entity fields data.
+
+        Returns:
+            dict: API response from Azure.
+        """
+        full_url = f"https://{account_name}.{TABLE_SERVICE_PREFIX}/{table_name}"
+        self.storage_container_set_headers({"Content-Type": "application/json", "Accept": "application/json;odata=nometadata"})
+        try:
+            return self.http_request(method="POST", full_url=full_url, json_data=entity_fields, resp_type="json")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table Entity",
+                api_function_name="insert_entity_request",
+            )
+
+    def update_entity_request(
+        self, account_name: str, table_name: str, partition_key: str, row_key: str, entity_fields: dict
+    ) -> None:
+        """
+        Update an existing entity in a table (merge, does not replace the entity).
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+            partition_key (str): Unique identifier for the partition within a given table.
+            row_key (str): Unique identifier for an entity within a given partition.
+            entity_fields (dict): Entity fields data.
+        """
+        full_url = (
+            f"https://{account_name}.{TABLE_SERVICE_PREFIX}/{table_name}(PartitionKey='{partition_key}',RowKey='{row_key}')"
+        )
+        self.storage_container_set_headers({"Content-Type": "application/json"})
+        try:
+            self.http_request(method="MERGE", full_url=full_url, json_data=entity_fields, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table Entity",
+                api_function_name="update_entity_request",
+            )
+
+    def replace_entity_request(
+        self, account_name: str, table_name: str, partition_key: str, row_key: str, entity_fields: dict
+    ) -> None:
+        """
+        Replace an existing entity in a table (replaces the entire entity).
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+            partition_key (str): Unique identifier for the partition within a given table.
+            row_key (str): Unique identifier for an entity within a given partition.
+            entity_fields (dict): Entity fields data.
+        """
+        full_url = (
+            f"https://{account_name}.{TABLE_SERVICE_PREFIX}/{table_name}(PartitionKey='{partition_key}',RowKey='{row_key}')"
+        )
+        self.storage_container_set_headers({"Content-Type": "application/json"})
+        try:
+            self.http_request(method="PUT", full_url=full_url, json_data=entity_fields, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table Entity",
+                api_function_name="replace_entity_request",
+            )
+
+    def query_entity_request(
+        self,
+        account_name: str,
+        table_name: str,
+        partition_key: str = None,
+        row_key: str = None,
+        query_filter: str = None,
+        select: str = None,
+        limit: str = None,
+        next_partition_key: str = None,
+        next_row_key: str = None,
+    ):
+        """
+        Query entities in a table.
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+            partition_key (str): Unique identifier for the partition within a given table.
+            row_key (str): Unique identifier for an entity within a given partition.
+            query_filter (str): Query expression.
+            select (str): Entity properties to return.
+            limit (str): Retrieve top n entities.
+            next_partition_key (str): The NextPartitionKey continuation token for retrieving the next page of results.
+            next_row_key (str): The NextRowKey continuation token for retrieving the next page of results.
+
+        Returns:
+            Response: API response from Azure.
+        """
+        if partition_key:
+            resource = f"{table_name}(PartitionKey='{partition_key}',RowKey='{row_key}')"
+        else:
+            resource = f"{table_name}()"
+        full_url = f"https://{account_name}.{TABLE_SERVICE_PREFIX}/{resource}"
+        params = remove_empty_elements(
+            {
+                "$filter": query_filter,
+                "$select": select,
+                "$top": limit,
+                "NextPartitionKey": next_partition_key,
+                "NextRowKey": next_row_key,
+            }
+        )
+        self.storage_container_set_headers({"Accept": "application/json;odata=nometadata"})
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=params, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table Entity",
+                api_function_name="query_entity_request",
+            )
+
+    def delete_entity_request(self, account_name: str, table_name: str, partition_key: str, row_key: str) -> None:
+        """
+        Delete an existing entity in a table.
+
+        Args:
+            account_name (str): The storage account name.
+            table_name (str): Table name.
+            partition_key (str): Unique identifier for the partition within a given table.
+            row_key (str): Unique identifier for an entity within a given partition.
+        """
+        full_url = (
+            f"https://{account_name}.{TABLE_SERVICE_PREFIX}/{table_name}(PartitionKey='{partition_key}',RowKey='{row_key}')"
+        )
+        self.storage_container_set_headers({"If-Match": "*"})
+        try:
+            self.http_request(method="DELETE", full_url=full_url, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{account_name}/{table_name}",
+                resource_type="Storage Table Entity",
+                api_function_name="delete_entity_request",
+            )
+
+    def storage_container_block_public_access_request(self, account_name: str, container_name: str):
+        """
+        Block public access to a container.
+
+        Args:
+            account_name (str): Name of the storage account.
+            container_name (str): Name of the container.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}"
+        params = assign_params(restype="container", comp="acl")
+        self.storage_container_set_headers()
+
+        response = self.http_request(method="PUT", full_url=full_url, params=params, resp_type="response")
+
+        return response
+
+    def storage_containers_list_request(self, account_name: str, args: dict):
+        """
+        List Containers under the specified storage account.
+
+        Args:
+            account_name (str): Storage account name.
+            args (dict): The user arguments (like prefix, limit, next_token).
+
+        Returns:
+            str: API response from Azure.
+
+        """
+        next_token = args.get("next_token", "")
+        params: dict = {"comp": "list"}
+        if prefix := args.get("prefix"):
+            params["prefix"] = prefix
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of containers.")
+            params["marker"] = next_token
+        limit = arg_to_number(args.get("limit"))
+        if limit is not None:
+            validate_limit(limit, max_limit=BLOB_CONTAINERS_MAX_PAGE_SIZE)
+            params["maxresults"] = str(limit)
+
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/"
+        self.storage_container_set_headers()
+
+        demisto.debug(f'Listing containers under account "{account_name}".')
+        response = self.http_request(method="GET", full_url=full_url, params=params, resp_type="text")
+
+        return response
+
+    def storage_container_blobs_list_request(self, account_name: str, container_name: str, args: dict):
+        """
+        List Blobs under the specified container.
+
+        Args:
+            account_name (str): Storage account name.
+            container_name (str): Container name.
+            args (dict): The user arguments (like prefix, limit, next_token).
+
+        Returns:
+            str: API response from Azure.
+
+        """
+        next_token = args.get("next_token", "")
+        params: dict = {"restype": "container", "comp": "list"}
+        if prefix := args.get("prefix"):
+            params["prefix"] = prefix
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of blobs.")
+            params["marker"] = next_token
+        limit = arg_to_number(args.get("limit"))
+        if limit is not None:
+            validate_limit(limit, max_limit=BLOB_CONTAINERS_MAX_PAGE_SIZE)
+            params["maxresults"] = str(limit)
+
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}"
+        self.storage_container_set_headers()
+
+        demisto.debug(f'Listing blobs under container "{container_name}" in account "{account_name}".')
+        response = self.http_request(method="GET", full_url=full_url, params=params, resp_type="text")
+
+        return response
+
+    def storage_container_blob_exists(self, container_name: str, blob_name: str, account_name: str) -> bool:
+        """
+        Check whether a Blob exists under the specified Container.
+
+        Args:
+            container_name (str): Container name.
+            blob_name (str): Blob name.
+            account_name (str): Storage account name.
+
+        Returns:
+            bool: True if the blob exists, False if Azure returns 404 (blob or container not found).
+
+        """
+        try:
+            self.storage_container_blob_property_get_request(container_name, blob_name, account_name)
+        except DemistoException as e:
+            if e.res is not None and e.res.status_code == 404:
+                demisto.debug(f'[Azure] Blob "{blob_name}" was not found in container "{container_name}".')
+                return False
+            raise
+        return True
+
+    def storage_container_blob_delete_request(self, container_name: str, blob_name: str, account_name: str):
+        """
+        Delete Blob from the specified Container.
+
+        Args:
+            container_name (str): Container name.
+            blob_name (str): Blob name.
+            account_name (str): Storage account name.
+
+        Returns:
+            Response: API response from Azure.
+
+        """
+        full_url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}/{blob_name}"
+        self.storage_container_set_headers()
+
+        response = self.http_request(method="DELETE", full_url=full_url, resp_type="response")
+
+        return response
+
+    def create_policy_assignment(
+        self, name: str, policy_definition_id: str, display_name: str, parameters: str, description: str, scope: str
+    ):
+        """
+        Create a policy assignment in Azure.
+        Args:
+            name (str): Name of the policy assignment.
+            policy_definition_id (str):  ID of the policy definition to assign.
+            display_name (str): Display name for the policy assignment.
+            parameters (str): Parameters for the policy assignment.
+            description (str): Description of the policy assignment.
+            scope (str): Scope of the policy assignment (e.g., subscription or resource group).
+        Returns:
+            dict: The full response from the Azure policy assignment creation API.
+        """
+        # subscription_id is required as argument for token creation.
+        full_url = f"{DEFAULT_RESOURCE}{scope}/providers/Microsoft.Authorization/policyAssignments/{name}"
+        params = {"api-version": POLICY_ASSIGNMENT_API_VERSION}
+        data = {
+            "properties": {
+                "policyDefinitionId": "/providers/Microsoft.Authorization/policySetDefinitions/" + policy_definition_id,
+                "displayName": display_name,
+                "parameters": parameters,
+                "description": description,
+            }
+        }
+        try:
+            return self.http_request(method="PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{name}",
+                resource_type="Policy Assignment",
+                api_function_name="create_policy_assignment",
+                subscription_id=self.subscription_id,
+                resource_group_name=self.resource_group_name,
+            )
+
+    def set_postgres_config(
+        self, server_name: str, subscription_id: str, resource_group_name: str, configuration_name: str, source: str, value: str
+    ):
+        """
+        Updates the configuration of a specific PostgreSQL server parameter.
+        Args:
+            server_name (str): Name of the PostgreSQL server.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the server.
+            configuration_name (str): Name of the configuration parameter to update.
+            source (str): The source of the configuration value.
+            value (str): The new value to set for the configuration parameter.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If required parameters are missing or PostgreSQL server not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.DBforPostgreSQL/servers/{server_name}/configurations/{configuration_name}"
+        )
+        params = {"api-version": POSTGRES_API_VERSION}
+        data = {"properties": {"source": source, "value": value}}
+        data = remove_empty_elements(data)
+        demisto.debug(f'Updating configuration of PostgreSQL server "{server_name}".')
+        try:
+            return self.http_request(method="PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{configuration_name}",
+                resource_type="PostgreSQL Configuration",
+                api_function_name="set_postgres_config",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def set_webapp_config(
+        self,
+        name: str,
+        subscription_id: str,
+        resource_group_name: str,
+        http20_enabled: str,
+        remote_debugging_enabled: str,
+        min_tls_version: str,
+    ):
+        """
+        Updates the web app configuration settings.
+
+        Args:
+            name (str): Name of the web app.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the web app.
+            http20_enabled (str): Whether HTTP/2.0 is enabled for the web app.
+            remote_debugging_enabled (str): Whether remote debugging is enabled.
+            min_tls_version (str): Minimum TLS version required.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If required parameters are missing or webapp not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Web/sites/{name}/config/web"
+        )
+        params = {"api-version": WEBAPP_API_VERSION}
+        data = {
+            "properties": {
+                "http20Enabled": http20_enabled,
+                "remoteDebuggingEnabled": remote_debugging_enabled,
+                "minTlsVersion": min_tls_version,
+            }
+        }
+        data = remove_empty_elements(data)
+        demisto.debug(f"Setting WebApp configuration for {name}.")
+        try:
+            return self.http_request(method="PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=name,
+                resource_type="Web App",
+                subscription_id=subscription_id,
+                api_function_name="set_webapp_config",
+                resource_group_name=resource_group_name,
+            )
+
+    def get_webapp_auth(self, name: str, subscription_id: str, resource_group_name: str):
+        """
+        Gets the authentication settings of a web app.
+
+        Args:
+            name (str): Name of the web app.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the web app.
+
+        Returns:
+            dict: The authentication settings of the web app.
+
+        Raises:
+            ValueError: If required parameters are missing or webapp not found
+            DemistoException: If there are permission or other API errors
+        """
+        try:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Web/sites/{name}/config/authsettings/list"
+            )
+            params = {"api-version": WEBAPP_API_VERSION}
+            return self.http_request(method="GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=name,
+                resource_type="Web App",
+                api_function_name="get_webapp_auth",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def update_webapp_auth(self, name: str, subscription_id: str, resource_group_name: str, enabled: str):
+        """
+        Updates the authentication settings of a web app.
+
+        Args:
+            name (str): Name of the web app.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the web app.
+            current (dict): Current authentication settings dictionary to be updated.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If required parameters are missing or webapp not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Web/sites/{name}/config/authsettings"
+        )
+        params = {"api-version": WEBAPP_API_VERSION}
+        data = {"properties": {"enabled": enabled}}
+        demisto.debug(f"Updating WebApp auth of {name}.")
+        try:
+            return self.http_request(method="PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=name,
+                resource_type="Web App",
+                api_function_name="update_webapp_auth",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def flexible_server_param_set(
+        self, server_name: str, configuration_name: str, subscription_id: str, resource_group_name: str, source: str, value: str
+    ):
+        """
+        Updates a parameter of a MySQL flexible server.
+
+        Args:
+            server_name (str): Name of the MySQL flexible server.
+            configuration_name (str): Name of the configuration parameter to update.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the server.
+            source (str): The source of the configuration value.
+            value (str): The new value to set for the configuration parameter.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the MySQL flexible server or configuration parameter is not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.DBforMySQL/flexibleServers/{server_name}/configurations/{configuration_name}"
+        )
+        params = {"api-version": FLEXIBLE_API_VERSION}
+        data = {"properties": {"source": source, "value": value}}
+        try:
+            return self.http_request(method="PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{configuration_name}",
+                resource_type="MySQL Flexible Server Configuration",
+                api_function_name="flexible_server_param_set",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def postgres_flexible_server_configuration_update(
+        self,
+        server_name: str,
+        configuration_name: str,
+        subscription_id: str,
+        resource_group_name: str,
+        source: str,
+        value: str,
+    ):
+        """
+        Updates a configuration of a PostgreSQL Flexible Server.
+
+        Args:
+            server_name (str): Name of the PostgreSQL Flexible Server.
+            configuration_name (str): Name of the configuration parameter to update.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the server.
+            source (str): The source of the configuration value (e.g. "user-override").
+            value (str): The new value to set for the configuration parameter.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the PostgreSQL Flexible Server or configuration parameter is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.DBforPostgreSQL/flexibleServers/{server_name}/configurations/{configuration_name}"
+        )
+        params = {"api-version": POSTGRES_FLEXIBLE_API_VERSION}
+        data = {"properties": {"source": source, "value": value}}
+        data = remove_empty_elements(data)
+        demisto.debug(f'Updating configuration "{configuration_name}" of PostgreSQL Flexible Server "{server_name}".')
+        try:
+            return self.http_request(method="PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{configuration_name}",
+                resource_type="PostgreSQL Flexible Server Configuration",
+                api_function_name="postgres_flexible_server_configuration_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def get_monitor_log_profile(self, subscription_id: str, log_profile_name: str):
+        """
+        Gets a monitor log profile.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            log_profile_name (str): Name of the log profile.
+
+        Returns:
+            dict: The log profile configuration from Azure API.
+
+        Raises:
+            ValueError: If the log profile is not found
+            DemistoException: If there are permission or other API errors
+        """
+        try:
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.Insights/logprofiles/{log_profile_name}"
+            params = {"api-version": MONITOR_API_VERSION}
+            demisto.debug(f'Getting log profile "{log_profile_name}".')
+            return self.http_request(method="GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=log_profile_name,
+                resource_type="Monitor Log Profile",
+                api_function_name="get_monitor_log_profile",
+                subscription_id=subscription_id,
+                resource_group_name=None,
+            )
+
+    def monitor_log_profile_update(self, subscription_id: str, log_profile_name: str, current_log_profile: dict):
+        """
+        Updates a monitor log profile.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            log_profile_name (str): Name of the log profile.
+            current_log_profile (dict): The current log profile to update.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the log profile is not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.Insights/logprofiles/{log_profile_name}"
+        params = {"api-version": MONITOR_API_VERSION}
+        data = current_log_profile
+        data = remove_empty_elements(data)
+        try:
+            demisto.debug(f'Updating log profile "{log_profile_name}".')
+            return self.http_request(method="PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=log_profile_name,
+                resource_type="Monitor Log Profile",
+                api_function_name="monitor_log_profile_update",
+                subscription_id=subscription_id,
+                resource_group_name=None,
+            )
+
+    def disk_update(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        disk_name: str,
+        public_network_access: str | None,
+        network_access_policy: str | None,
+        data_access_auth_mode: str | None,
+    ):
+        """
+        Updates a disk.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the disk.
+            disk_name (str): Name of the disk.
+            public_network_access (str): The public network access state.
+            network_access_policy (str): The network access policy.
+            data_access_auth_mode (str): The data access authentication mode.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the disk is not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Compute/disks/{disk_name}"
+        )
+        params = {"api-version": DISKS_API_VERSION}
+        data = {
+            "properties": {
+                "publicNetworkAccess": public_network_access,
+                "networkAccessPolicy": network_access_policy,
+                "dataAccessAuthMode": data_access_auth_mode,
+            }
+        }
+        data = remove_empty_elements(data)
+        try:
+            demisto.debug(f'Updating disk "{disk_name}."')
+            return self.http_request(method="PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=disk_name,
+                resource_type="Disk",
+                api_function_name="disk_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def webapp_update(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        name: str,
+        identity_type: str | None,
+        https_only: str | None,
+        client_cert_enabled: str | None,
+    ):
+        """
+        Updates a web app.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the web app.
+            name (str): Name of the web app.
+            identity_type (str): Type of identity to assign to the web app.
+            https_only (str): Whether the web app requires HTTPS only.
+            client_cert_enabled (str): Whether client certificates are enabled.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the web app is not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Web/sites/{name}"
+        )
+        params = {"api-version": WEBAPP_API_VERSION}
+        data = {
+            "identity": {
+                "type": identity_type,
+            },
+            "properties": {
+                "clientCertEnabled": client_cert_enabled,
+                "httpsOnly": https_only,
+            },
+        }
+        data = remove_empty_elements(data)
+        demisto.debug(f'Updating WebApp "{name}".')
+        try:
+            return self.http_request(method="PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=name,
+                resource_type="Web App",
+                api_function_name="webapp_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def acr_update(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        registry_name: str,
+        allow_exports: str | None,
+        public_network_access: str | None,
+        anonymous_pull_enabled: str | None,
+        authentication_as_arm_policy: str | None,
+    ):
+        """
+        Updates an Azure Container Registry.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the registry.
+            registry_name (str): Name of the container registry.
+            allow_exports (str): Whether exports are allowed.
+            public_network_access (str): The public network access state.
+            anonymous_pull_enabled (str): Whether anonymous pulls are enabled.
+            authentication_as_arm_policy (str): The authentication as ARM policy status.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the container registry is not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.ContainerRegistry/registries/{registry_name}"
+        )
+        params = {"api-version": ACR_API_VERSION}
+        data = {
+            "properties": {
+                "publicNetworkAccess": public_network_access,
+                "anonymousPullEnabled": anonymous_pull_enabled,
+                "policies": {
+                    "azureADAuthenticationAsArmPolicy": {"status": authentication_as_arm_policy},
+                    "exportPolicy": {"status": allow_exports},
+                },
+            },
+        }
+        data = remove_empty_elements(data)
+        demisto.debug(f'Updating ACR "{registry_name}".')
+        try:
+            return self.http_request(method="PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=registry_name,
+                resource_type="Container Registry",
+                api_function_name="acr_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def postgres_server_update(self, subscription_id: str, resource_group_name: str, server_name: str, ssl_enforcement: str):
+        """
+        Updates a PostgreSQL server.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the server.
+            server_name (str): Name of the PostgreSQL server.
+            ssl_enforcement (str): The SSL enforcement status.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the PostgreSQL server is not found
+            DemistoException: If there are permission or other API errors
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.DBforPostgreSQL/servers/{server_name}"
+        )
+        params = {"api-version": POSTGRES_API_VERSION}
+        data = {
+            "properties": {"sslEnforcement": ssl_enforcement},
+        }
+        data = remove_empty_elements(data)
+        try:
+            demisto.debug(f'Updating postgres server "{server_name}".')
+            return self.http_request(method="PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=server_name,
+                resource_type="PostgreSQL Server",
+                api_function_name="postgres_server_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def update_key_vault_request(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        vault_name: str,
+        enable_soft_delete: str,
+        enable_purge_protection: str,
+    ):
+        """
+        Updates a Key Vault.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the key vault.
+            vault_name (str): Name of the key vault.
+            enable_soft_delete (str): Whether soft delete is enabled.
+            enable_purge_protection (str): Whether purge protection is enabled.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the key vault is not found
+            DemistoException: If there are permission or other API errors
+        """
+        data = {"properties": {"enableSoftDelete": enable_soft_delete, "enablePurgeProtection": enable_purge_protection}}
+        params = {"api-version": KEY_VAULT_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.KeyVault/vaults/{vault_name}"
+        )
+        try:
+            demisto.debug(f'Updating key vault "{vault_name}".')
+            return self.http_request("PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=vault_name,
+                resource_type="Key Vault",
+                api_function_name="update_key_vault_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_db_threat_policy_get(self, server_name: str, db_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Gets the threat policy of a SQL database.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            db_name (str): Name of the database.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the database.
+
+        Returns:
+            dict: The threat policy of the SQL database.
+
+        Raises:
+            ValueError: If the SQL database or server is not found
+            DemistoException: If there are permission or other API errors
+        """
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/databases/{db_name}/securityAlertPolicies/default"
+        )
+        try:
+            demisto.debug("Getting SQL DB threat policy.")
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{db_name}",
+                resource_type="SQL Database Threat Policy",
+                api_function_name="sql_db_threat_policy_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_db_threat_policy_update(
+        self, server_name: str, db_name: str, subscription_id: str, current: dict, resource_group_name: str
+    ):
+        """
+        Updates the threat policy of a SQL database.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            db_name (str): Name of the database.
+            subscription_id (str): Azure subscription ID.
+            current (dict): The current threat policy configuration to update.
+            resource_group_name (str): Name of the resource group containing the database.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the SQL database or server is not found
+            DemistoException: If there are permission or other API errors
+        """
+        data = current
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/databases/{db_name}/securityAlertPolicies/default"
+        )
+        try:
+            demisto.debug("Updating SQL DB threat policy.")
+            return self.http_request("PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{db_name}",
+                resource_type="SQL Database Threat Policy",
+                api_function_name="sql_db_threat_policy_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_db_tde_set(self, server_name: str, db_name: str, subscription_id: str, state: str, resource_group_name: str):
+        """
+        Sets the transparent data encryption state of a SQL database.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            db_name (str): Name of the database.
+            subscription_id (str): Azure subscription ID.
+            state (str): The TDE state to set.
+            resource_group_name (str): Name of the resource group containing the database.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the SQL database or server is not found
+            DemistoException: If there are permission or other API errors
+        """
+        data = {"properties": {"state": state}}
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/databases/{db_name}/transparentDataEncryption/current"
+        )
+        demisto.debug("Setting SQL DB Transparent Data Encryption state.")
+        try:
+            return self.http_request("PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{db_name}",
+                resource_type="SQL Database Transparent Data Encryption",
+                api_function_name="sql_db_tde_set",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_servers_list(self, subscription_id: str, resource_group_name: str | None = None, next_link: str | None = None):
+        """
+        Lists all SQL servers, optionally filtered by resource group.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str | None): If provided, lists servers in this resource group only.
+            next_link (str | None): If provided, fetches the next page using this URL.
+
+        Returns:
+            dict: The API response containing the list of servers.
+
+        Raises:
+            ValueError: If the resource group is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        params: dict = {"api-version": SQL_DB_API_VERSION}
+        if next_link:
+            demisto.debug("Listing SQL servers (next page).")
+            full_url = validate_next_link(next_link, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params = {}
+        else:
+            if resource_group_name:
+                full_url = (
+                    f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                    f"/providers/Microsoft.Sql/servers"
+                )
+            else:
+                full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.Sql/servers"
+            demisto.debug("Listing SQL servers.")
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name or subscription_id,
+                resource_type="SQL Servers",
+                api_function_name="sql_servers_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name or "",
+            )
+
+    def sql_db_list(self, server_name: str, subscription_id: str, resource_group_name: str, next_link: str | None = None):
+        """
+        Lists all databases for a given SQL server.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            next_link (str | None): If provided, fetches the next page using this URL.
+
+        Returns:
+            dict: The API response containing the list of databases.
+
+        Raises:
+            ValueError: If the server is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        params: dict = {"api-version": SQL_DB_API_VERSION}
+        if next_link:
+            demisto.debug(f"Listing SQL databases for server {server_name} (next page).")
+            full_url = validate_next_link(next_link, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Sql/servers/{server_name}/databases"
+            )
+            demisto.debug(f"Listing SQL databases for server {server_name}.")
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=server_name,
+                resource_type="SQL Databases",
+                api_function_name="sql_db_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_db_server_auditing_settings_list(
+        self, server_name: str, db_name: str, subscription_id: str, resource_group_name: str, next_link: str | None = None
+    ):
+        """
+        Lists the auditing settings for a SQL database.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            db_name (str): Name of the database.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            next_link (str | None): If provided, fetches the next page using this URL.
+
+        Returns:
+            dict: The API response containing the database audit settings list.
+
+        Raises:
+            ValueError: If the database or server is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        params: dict = {"api-version": SQL_DB_API_VERSION}
+        if next_link:
+            demisto.debug(f"Listing SQL DB audit policies for {server_name}/{db_name} (next page).")
+            full_url = validate_next_link(next_link, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Sql/servers/{server_name}/databases/{db_name}/auditingSettings"
+            )
+            demisto.debug(f"Listing SQL DB audit policies for {server_name}/{db_name}.")
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{db_name}",
+                resource_type="SQL Database Audit Policy",
+                api_function_name="sql_db_server_auditing_settings_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_db_audit_policy_create_update(
+        self,
+        server_name: str,
+        db_name: str,
+        subscription_id: str,
+        resource_group_name: str,
+        state: str,
+        audit_actions_groups: list | None = None,
+        is_azure_monitor_target_enabled: bool | None = None,
+        is_storage_secondary_key_in_use: bool | None = None,
+        queue_delay_ms: str | None = None,
+        retention_days: int | None = None,
+        storage_account_access_key: str | None = None,
+        storage_account_subscription_id: str | None = None,
+        storage_endpoint: str | None = None,
+        is_managed_identity_in_use: bool | None = None,
+    ):
+        """
+        Creates or updates the auditing policy for a SQL database.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            db_name (str): Name of the database.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            state (str): The state of the audit policy (Enabled/Disabled).
+            audit_actions_groups (list | None): Actions and groups to audit.
+            is_azure_monitor_target_enabled (bool | None): Whether to send events to Azure Monitor.
+            is_storage_secondary_key_in_use (bool | None): Whether to use the secondary storage key.
+            queue_delay_ms (str | None): Queue delay in milliseconds.
+            retention_days (int | None): Number of days to retain audit logs.
+            storage_account_access_key (str | None): Storage account access key.
+            storage_account_subscription_id (str | None): Storage account subscription ID.
+            storage_endpoint (str | None): Storage endpoint URL.
+            is_managed_identity_in_use (bool | None): Whether managed identity is used.
+
+        Returns:
+            dict: The API response after applying the update.
+
+        Raises:
+            ValueError: If the database or server is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        properties = assign_params(
+            state=state,
+            auditActionsAndGroups=audit_actions_groups,
+            isAzureMonitorTargetEnabled=is_azure_monitor_target_enabled,
+            isStorageSecondaryKeyInUse=is_storage_secondary_key_in_use,
+            queueDelayMs=queue_delay_ms,
+            retentionDays=retention_days,
+            storageAccountAccessKey=storage_account_access_key,
+            storageAccountSubscriptionId=storage_account_subscription_id,
+            storageEndpoint=storage_endpoint,
+            isManagedIdentityInUse=is_managed_identity_in_use,
+        )
+        data = {"properties": properties} if properties else {}
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/databases/{db_name}/auditingSettings/default"
+        )
+        demisto.debug(f"Creating/updating SQL DB audit policy for {server_name}/{db_name}.")
+        try:
+            return self.http_request("PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{db_name}",
+                resource_type="SQL Database Audit Policy",
+                api_function_name="sql_db_audit_policy_create_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_firewall_rules_list(
+        self,
+        server_name: str,
+        subscription_id: str,
+        resource_group_name: str,
+        firewall_rule_name: str | None = None,
+        next_link: str | None = None,
+    ):
+        """
+        Lists firewall rules for a SQL server, or retrieves a specific rule.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            firewall_rule_name (str | None): If provided, retrieves only this specific rule.
+            next_link (str | None): If provided, fetches the next page using this URL.
+
+        Returns:
+            dict: The API response containing the firewall rule(s).
+
+        Raises:
+            ValueError: If the server or rule is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        params: dict = {"api-version": SQL_DB_API_VERSION}
+        if next_link:
+            demisto.debug(f"Listing SQL firewall rules for server {server_name} (next page).")
+            full_url = validate_next_link(next_link, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Sql/servers/{server_name}/firewallRules"
+            )
+            if firewall_rule_name:
+                full_url += f"/{firewall_rule_name}"
+            demisto.debug(f"Listing SQL firewall rules for server {server_name}.")
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=server_name,
+                resource_type="SQL Firewall Rule",
+                api_function_name="sql_firewall_rules_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_firewall_rule_create_update(
+        self,
+        server_name: str,
+        subscription_id: str,
+        resource_group_name: str,
+        firewall_rule_name: str,
+        start_ip_address: str,
+        end_ip_address: str,
+    ):
+        """
+        Creates or updates a firewall rule for a SQL server.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            firewall_rule_name (str): Name of the firewall rule.
+            start_ip_address (str): Start IP address of the firewall rule.
+            end_ip_address (str): End IP address of the firewall rule.
+
+        Returns:
+            dict: The API response after creating/updating the rule.
+
+        Raises:
+            ValueError: If the server is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        data = {"properties": {"startIpAddress": start_ip_address, "endIpAddress": end_ip_address}}
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/firewallRules/{firewall_rule_name}"
+        )
+        demisto.debug(f"Creating/updating SQL firewall rule {firewall_rule_name} for server {server_name}.")
+        try:
+            return self.http_request("PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{firewall_rule_name}",
+                resource_type="SQL Firewall Rule",
+                api_function_name="sql_firewall_rule_create_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_firewall_rule_delete(
+        self, server_name: str, subscription_id: str, resource_group_name: str, firewall_rule_name: str
+    ) -> None:
+        """
+        Deletes a firewall rule from a SQL server.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            firewall_rule_name (str): Name of the firewall rule to delete.
+
+        Raises:
+            ValueError: If the server or rule is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/firewallRules/{firewall_rule_name}"
+        )
+        demisto.debug(f"Deleting SQL firewall rule {firewall_rule_name} from server {server_name}.")
+        try:
+            self.http_request("DELETE", full_url=full_url, params=params, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{server_name}/{firewall_rule_name}",
+                resource_type="SQL Firewall Rule",
+                api_function_name="sql_firewall_rule_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def sql_firewall_rule_replace(
+        self,
+        server_name: str,
+        subscription_id: str,
+        resource_group_name: str,
+        firewall_rule_name: str | None = None,
+        start_ip_address: str | None = None,
+        end_ip_address: str | None = None,
+        request_body: dict | None = None,
+    ):
+        """
+        Replaces all firewall rules on a SQL server.
+
+        Args:
+            server_name (str): Name of the SQL server.
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group.
+            firewall_rule_name (str | None): Name of the firewall rule (used when request_body is None).
+            start_ip_address (str | None): Start IP address (used when request_body is None).
+            end_ip_address (str | None): End IP address (used when request_body is None).
+            request_body (dict | None): Pre-built request body in FirewallRuleList format.
+
+        Returns:
+            dict: The API response after replacing the rules.
+
+        Raises:
+            ValueError: If the server is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        if request_body is None:
+            properties = assign_params(startIpAddress=start_ip_address, endIpAddress=end_ip_address)
+            rule: dict = {"name": firewall_rule_name}
+            if properties:
+                rule["properties"] = properties
+            request_body = {"values": [rule]}
+        params = {"api-version": SQL_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Sql/servers/{server_name}/firewallRules"
+        )
+        demisto.debug(f"Replacing SQL firewall rules for server {server_name}.")
+        try:
+            return self.http_request("PUT", full_url=full_url, json_data=request_body, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=server_name,
+                resource_type="SQL Firewall Rules",
+                api_function_name="sql_firewall_rule_replace",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def aks_clusters_list(self, subscription_id: str, next_token: str = ""):
+        """
+        Lists all managed AKS clusters in the specified subscription.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            next_token (str): The URL to fetch the next page of results, returned by a previous call.
+
+        Returns:
+            dict: The response from the Azure REST API containing the list of managed clusters.
+
+        Raises:
+            ValueError: If the subscription is not found.
+            DemistoException: If there are permission or other API errors.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/aks/managed-clusters/list
+        """
+        params = {"api-version": AKS_API_VERSION}
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.ContainerService/managedClusters"
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of AKS managed clusters.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params = {}
+        demisto.debug("Listing AKS managed clusters.")
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=subscription_id,
+                resource_type="AKS Managed Cluster",
+                api_function_name="aks_clusters_list",
+                subscription_id=subscription_id,
+            )
+
+    def aks_cluster_get(self, subscription_id: str, resource_group_name: str, resource_name: str):
+        """
+        Gets a managed AKS cluster by name.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the cluster.
+            resource_name (str): Name of the managed cluster resource.
+
+        Returns:
+            dict: The response from the Azure REST API containing the managed cluster.
+
+        Raises:
+            ValueError: If the managed cluster is not found.
+            DemistoException: If there are permission or other API errors.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/aks/managed-clusters/get
+        """
+        params = {"api-version": AKS_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.ContainerService/managedClusters/{resource_name}"
+        )
+        demisto.debug("Getting AKS managed cluster.")
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_name,
+                resource_type="AKS Managed Cluster",
+                api_function_name="aks_cluster_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def aks_cluster_addon_update(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        resource_name: str,
+        location: str,
+        http_application_routing_enabled: bool | None = None,
+        monitoring_agent_enabled: bool | None = None,
+        monitoring_resource_name: str | None = None,
+    ):
+        """
+        Updates the addon profiles of a managed AKS cluster.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the cluster.
+            resource_name (str): Name of the managed cluster resource.
+            location (str): Resource location.
+            http_application_routing_enabled (bool | None): Whether HTTP application routing is enabled.
+            monitoring_agent_enabled (bool | None): Whether the Log Analytics monitoring agent is enabled.
+            monitoring_resource_name (str | None): Name of an existing Log Analytics workspace.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the managed cluster is not found.
+            DemistoException: If there are permission or other API errors.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/aks/managed-clusters/create-or-update
+        """
+        cluster = self.aks_cluster_get(subscription_id, resource_group_name, resource_name)
+        properties = cluster.get("properties", {})
+        addon_profiles: dict[str, Any] = properties.get("addonProfiles") or {}
+        if http_application_routing_enabled is not None:
+            addon_profiles["httpApplicationRouting"] = {"enabled": http_application_routing_enabled}
+        if monitoring_agent_enabled is not None:
+            if monitoring_resource_name:
+                workspace_resource_id = (
+                    f"/subscriptions/{subscription_id}/resourceGroups/"
+                    f"DefaultResourceGroup-WUS/providers/Microsoft.OperationalInsights/workspaces"
+                    f"/{monitoring_resource_name}"
+                )
+            else:
+                workspace_resource_id = (
+                    addon_profiles.get("omsagent", {}).get("config", {}).get("logAnalyticsWorkspaceResourceID")
+                )
+            if monitoring_agent_enabled and not workspace_resource_id:
+                raise DemistoException(
+                    "Unable to enable monitoring: no Log Analytics workspace is currently configured for the cluster. "
+                    "Provide the monitoring_resource_name argument to specify a workspace."
+                )
+            addon_profiles["omsagent"] = {
+                "enabled": monitoring_agent_enabled,
+                "config": {"logAnalyticsWorkspaceResourceID": workspace_resource_id},
+            }
+        properties["addonProfiles"] = addon_profiles
+        data = {"location": location, "properties": properties}
+        params = {"api-version": AKS_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.ContainerService/managedClusters/{resource_name}"
+        )
+        demisto.debug(f"Updating AKS managed cluster addon profiles. addon_profiles keys: {list(addon_profiles.keys())}")
+        try:
+            return self.http_request("PUT", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_name,
+                resource_type="AKS Managed Cluster",
+                api_function_name="aks_cluster_addon_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def cosmos_db_update(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        account_name: str,
+        disable_key_based_metadata_write_access: str | None,
+    ):
+        """
+        Updates a Cosmos DB account.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Name of the resource group containing the account.
+            account_name (str): Name of the Cosmos DB account.
+            disable_key_based_metadata_write_access (str): Whether to disable key-based metadata write access.
+
+        Returns:
+            dict: The response from the Azure REST API after applying the update.
+
+        Raises:
+            ValueError: If the Cosmos DB account is not found
+            DemistoException: If there are permission or other API errors
+        """
+        data = {"properties": {"disableKeyBasedMetadataWriteAccess": disable_key_based_metadata_write_access}}
+        data = remove_empty_elements(data)
+        params = {"api-version": COSMOS_DB_API_VERSION}
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.DocumentDB/databaseAccounts/{account_name}"
+        )
+        demisto.debug("Updating Cosmos DB.")
+        try:
+            return self.http_request("PATCH", full_url=full_url, json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=account_name,
+                resource_type="Cosmos DB Account",
+                api_function_name="cosmos_db_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def remove_member_from_role(self, role_object_id: str, user_id: str):
+        """Currently not supported in the integration - token scope issues.
+        Removing a member from a specific role.
+
+        Args:
+            role_object_id: A role to remove the user from.
+            user_id: The user to remove from the role.
+
+        Return:
+            True if succeeded.
+
+        Raises:
+            Error on failed removal (as long with requests errors).
+
+        Docs:
+            https://docs.microsoft.com/en-us/graph/api/directoryrole-delete-member?view=graph-rest-1.0&tabs=http
+        """
+        full_url = f"{PREFIX_URL_MS_GRAPH}/directoryRoles/{role_object_id}/members/{user_id}/$ref"
+        self.http_request("DELETE", full_url=full_url)
+
+    def remove_member_from_group(self, group_id: str, user_id: str):
+        """Currently not supported in the integration - token scope issues.
+        Remove a single member to a group by sending a DELETE request.
+        Args:
+            group_id: the group id to add the member to.
+            user_id: the user id to remove.
+        """
+        #  If successful, this method returns 204 No Content response code.
+        #  It does not return anything in the response body.
+        #  Using resp_type="text" to avoid parsing error in the calling method.
+        self.http_request(
+            method="DELETE", full_url=f"{PREFIX_URL_MS_GRAPH}/groups/{group_id}/members/{user_id}/$ref", resp_type="text"
+        )
+
+    def create_network_security_group(
+        self, subscription_id: str, resource_group_name: str, security_group_name: str, location: str
+    ):
+        """
+        Create or update a network security group.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group name.
+            security_group_name: The name of the network security group.
+            location: The location of the network security group.
+
+        Return:
+            A dictionary containing the network security group information.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-security-groups/create-or-update?view=rest-virtualnetwork-2026-01-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/networkSecurityGroups/{security_group_name}"
+        )
+        json_data = {
+            "location": location,
+        }
+        params = {"api-version": NSG_API_VERSION}
+        try:
+            return self.http_request(method="PUT", full_url=full_url, json_data=remove_empty_elements(json_data), params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=security_group_name,
+                resource_type="Security Group",
+                api_function_name="create_network_security_group",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_network_security_groups(self, subscription_id: str, resource_group_name: str):
+        """
+        List all network security groups in a specific resource group.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the network security groups.
+
+        Return:
+            A dictionary containing the list of network security groups.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-security-groups/list?view=rest-virtualnetwork-2026-01-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/networkSecurityGroups"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": NSG_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name,
+                resource_type="Security Group",
+                api_function_name="list_network_security_groups",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def delete_rule(self, security_group_name: str, security_rule_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Delete a specific security rule from a network security group.
+
+        Args:
+            security_group_name: The name of the network security group.
+            security_rule_name: The name of the security rule to delete.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the network security group.
+
+        Return:
+            The HTTP response object from the delete operation.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/security-rules/delete?view=rest-virtualnetwork-2026-01-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/networkSecurityGroups/{security_group_name}"
+            f"/securityRules/{security_rule_name}"
+        )
+        try:
+            response = self.http_request(
+                method="DELETE", full_url=full_url, params={"api-version": NSG_API_VERSION}, resp_type="response"
+            )
+            if response.status_code in (200, 202, 204):  # type: ignore[union-attr]
+                return response
+            else:
+                demisto.debug("Failed to delete security rule.")
+                response.raise_for_status()  # type: ignore[union-attr]
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{security_group_name}/{security_rule_name}",
+                resource_type="Security Group",
+                api_function_name="delete_rule",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def ip_group_create(
+        self, subscription_id: str, resource_group_name: str, ip_group_name: str, location: str, ip_addresses: list
+    ):
+        """
+        Create or update an IP group resource.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group name.
+            ip_group_name: The name of the IP group.
+            location: The location of the IP group resource.
+            ip_addresses: IP addresses or IP address prefixes in the IP group resource.
+
+        Return:
+            A dictionary containing the IP group information.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/ip-groups/create-or-update?view=rest-virtualnetwork-2025-09-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/ipGroups/{ip_group_name}"
+        )
+        json_data = remove_empty_elements({"location": location, "properties": {"ipAddresses": ip_addresses}})
+        try:
+            return self.http_request(
+                method="PUT", full_url=full_url, json_data=json_data, params={"api-version": IP_GROUPS_API_VERSION}
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=ip_group_name,
+                resource_type="IP Group",
+                api_function_name="ip_group_create",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def ip_group_update(self, subscription_id: str, resource_group_name: str, ip_group_name: str, ip_group_data: dict):
+        """
+        Update an IP group resource.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group name.
+            ip_group_name: The name of the IP group to update.
+            ip_group_data: The IP group resource JSON information.
+
+        Return:
+            A dictionary containing the updated IP group information.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/ip-groups/create-or-update?view=rest-virtualnetwork-2025-09-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/ipGroups/{ip_group_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT", full_url=full_url, json_data=ip_group_data, params={"api-version": IP_GROUPS_API_VERSION}
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=ip_group_name,
+                resource_type="IP Group",
+                api_function_name="ip_group_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def ip_group_get(self, subscription_id: str, resource_group_name: str, ip_group_name: str):
+        """
+        Retrieve an IP group resource.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group name.
+            ip_group_name: The name of the IP group to retrieve.
+
+        Return:
+            A dictionary containing the IP group information.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/ip-groups/get?view=rest-virtualnetwork-2025-09-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/ipGroups/{ip_group_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": IP_GROUPS_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=ip_group_name,
+                resource_type="IP Group",
+                api_function_name="ip_group_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def ip_group_list(self, subscription_id: str, resource_group_name: str, next_token: str):
+        """
+        List the IP groups in a resource group, or in the subscription when no resource group is provided.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the IP groups. When empty, lists by subscription.
+            next_token: The URL to fetch the next page of results.
+
+        Return:
+            A dictionary containing the list of IP groups.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/ip-groups/list-by-resource-group?view=rest-virtualnetwork-2025-09-01
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of IP groups.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params: dict[str, Any] = {}
+        else:
+            resource_group_path = f"/resourceGroups/{resource_group_name}" if resource_group_name else ""
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}{resource_group_path}/providers/Microsoft.Network/ipGroups"
+            params = {"api-version": IP_GROUPS_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name or subscription_id,
+                resource_type="IP Groups",
+                api_function_name="ip_group_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def ip_group_delete(self, subscription_id: str, resource_group_name: str, ip_group_name: str):
+        """
+        Delete an IP group resource.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group name.
+            ip_group_name: The name of the IP group to delete.
+
+        Return:
+            The HTTP response object from the delete operation.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/ip-groups/delete?view=rest-virtualnetwork-2025-09-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/ipGroups/{ip_group_name}"
+        )
+        try:
+            return self.http_request(
+                method="DELETE", full_url=full_url, params={"api-version": IP_GROUPS_API_VERSION}, resp_type="response"
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=ip_group_name,
+                resource_type="IP Group",
+                api_function_name="ip_group_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_resource_groups_request(self, subscription_id: str, filter_by_tag: str, limit: str):
+        """
+        List resource groups in a subscription, optionally filtered by tag and limited in number.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            filter_by_tag: An OData filter expression to filter resource groups by tag.
+            limit: Maximum number of resource groups to return.
+
+        Return:
+            A dictionary containing the list of resource groups.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/resources/resource-groups/list?view=rest-resources-2022-09-01
+        """
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/resourcegroups"
+        try:
+            return self.http_request(
+                method="GET",
+                full_url=full_url,
+                params={"api-version": RESOURCE_GROUPS_API_VERSION, "$filter": filter_by_tag, "$top": limit},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=subscription_id,
+                resource_type="Resource Group",
+                api_function_name="list_resource_groups_request",
+                subscription_id=subscription_id,
+                resource_group_name=None,
+            )
+
+    def list_networks_interfaces_request(self, subscription_id: str, resource_group_name: str):
+        """
+        List all network interfaces in a specific resource group.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the network interfaces.
+
+        Return:
+            A dictionary containing the list of network interfaces.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-interfaces/list?view=rest-virtualnetwork-2024-05-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+            f"providers/Microsoft.Network/networkInterfaces"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=NEW_API_VERSION_PARAMS)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name,
+                resource_type="Network Interface",
+                api_function_name="list_networks_interfaces_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_public_ip_addresses_request(self, subscription_id: str, resource_group_name: str):
+        """
+        List all public IP addresses in a specific resource group.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the public IP addresses.
+
+        Return:
+            A dictionary containing the list of public IP addresses.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/public-ip-addresses/list?view=rest-virtualnetwork-2026-01-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+            f"providers/Microsoft.Network/publicIPAddresses"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": PUBLIC_IP_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name,
+                resource_type="Public IP Addresses",
+                api_function_name="list_public_ip_addresses_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_virtual_networks_request(self, subscription_id: str, resource_group_name: str, next_token: str = ""):
+        """
+        List all virtual networks in a specific resource group.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the virtual networks.
+            next_token: The URI to fetch the next page of results.
+
+        Return:
+            A dictionary containing the list of virtual networks.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/virtual-networks/list
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of virtual networks.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters: dict[str, Any] = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+                f"providers/Microsoft.Network/virtualNetworks"
+            )
+            parameters = {"api-version": VIRTUAL_NETWORKS_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name,
+                resource_type="Virtual Network",
+                api_function_name="list_virtual_networks_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_subscriptions_request(self, next_token: str = ""):
+        """
+        List all subscriptions the authenticated identity has access to in the tenant.
+
+        Note:
+            This is a tenant-level call, therefore it cannot reuse PREFIX_URL_AZURE, which always
+            includes a subscription ID path segment. The base URL is derived from PREFIX_URL_AZURE so
+            the command keeps working after switch_to_gov_account() rebinds the global.
+
+        Args:
+            next_token: The URI to fetch the next page of results.
+
+        Return:
+            A dictionary containing the list of subscriptions.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/resources/subscriptions/list?view=rest-resources-2022-12-01
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of subscriptions.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters: dict[str, Any] = {}
+        else:
+            full_url = f"{PREFIX_URL_AZURE.rstrip('/')}"
+            parameters = {"api-version": SUBSCRIPTIONS_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name="subscriptions",
+                resource_type="Subscription",
+                api_function_name="list_subscriptions_request",
+                subscription_id=None,
+                resource_group_name=None,
+            )
+
+    def start_vm_request(self, subscription_id: str, resource_group_name: str, vm_name: str):
+        """
+        Starts the specified virtual machine in a given resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the virtual machine.
+            vm_name (str): The name of the virtual machine to start.
+
+        Returns:
+            The HTTP response object of the start request.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/start?view=rest-azure-2024-04-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Compute/"
+            f"virtualMachines/{vm_name}/start"
+        )
+        try:
+            response = self.http_request(
+                method="POST", full_url=full_url, params={"api-version": VM_API_VERSION}, resp_type="response"
+            )
+            if response.status_code in (200, 202, 204):  # type: ignore[union-attr]
+                return response
+            else:
+                demisto.debug(f"Failed to start vm {vm_name}.")
+                response.raise_for_status()  # type: ignore[union-attr]
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{vm_name}",
+                resource_type="Virtual Machines",
+                api_function_name="start_vm_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def poweroff_vm_request(self, subscription_id: str, resource_group_name: str, vm_name: str, skip_shutdown: bool):
+        """
+        Powers off the specified virtual machine in a given resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the virtual machine.
+            vm_name (str): The name of the virtual machine to power off.
+            skip_shutdown (str): Whether to skip the OS shutdown before powering off.
+                                Expected values are "true" or "false".
+
+        Returns:
+            The HTTP response object of the power-off request.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/power-off?view=rest-azure-2024-04-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Compute/"
+            f"virtualMachines/{vm_name}/powerOff"
+        )
+        parameters = {"skipShutdown": skip_shutdown} | {"api-version": VM_API_VERSION}
+        try:
+            response = self.http_request(method="POST", full_url=full_url, params=parameters, resp_type="response")
+            if response.status_code in (200, 202, 204):  # type: ignore[union-attr]
+                return response
+            else:
+                demisto.debug(f"Failed to power off vm {vm_name}.")
+                response.raise_for_status()  # type: ignore[union-attr]
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{vm_name}",
+                resource_type="Virtual Machines",
+                api_function_name="poweroff_vm_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def get_vm_request(self, subscription_id: str, resource_group_name: str, vm_name: str, expand: str = "instanceView"):
+        """
+        Gets the specified virtual machine in a given resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the virtual machine.
+            vm_name (str): The name of the virtual machine.
+            expand (str, optional): Additional properties to include in the response. Defaults to "instanceView".
+
+        Returns:
+            The detailed virtual machine object, including optional expanded properties.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/get?view=rest-azure-2024-04-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Compute/"
+            f"virtualMachines/{vm_name}"
+        )
+        parameters = {"$expand": expand, "api-version": VM_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{vm_name}",
+                resource_type="Virtual Machines",
+                api_function_name="get_vm_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def list_vm_request(self, subscription_id: str, resource_group_name: str, next_token: str):
+        """
+        Lists all the virtual machines in the specified resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the virtual machine.
+            next_token (str): The URI to fetch the next page of results.
+
+        Returns:
+            The list of virtual machines.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/list?view=rest-compute-2025-04-01&tabs=HTTP
+        """
+        if not next_token:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Compute/"
+                f"virtualMachines"
+            )
+            parameters = {
+                "api-version": "2025-04-01",
+            }
+        else:
+            demisto.debug(f"using {next_token=} for retrieving the next page of results.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters = {}
+        try:
+            demisto.debug(f"[Azure] {parameters=}")
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}",
+                resource_type="Virtual Machines",
+                api_function_name="list_vm_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def create_vm_request(self, subscription_id: str, resource_group_name: str, vm_name: str, virtual_machine_data: dict):
+        """
+        Creates or updates a virtual machine in the specified resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group in which to create the virtual machine.
+            vm_name (str): The name of the virtual machine to create.
+            virtual_machine_data (dict): The virtual machine object to create.
+
+        Returns:
+            The created virtual machine object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/create-or-update?view=rest-azure-2024-04-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Compute/"
+            f"virtualMachines/{vm_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT",
+                full_url=full_url,
+                params={"api-version": VM_API_VERSION},
+                json_data=virtual_machine_data,
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{vm_name}",
+                resource_type="Virtual Machines",
+                api_function_name="create_vm_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def delete_vm_request(self, subscription_id: str, resource_group_name: str, vm_name: str):
+        """
+        Deallocates and then deletes the specified virtual machine in a given resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the virtual machine.
+            vm_name (str): The name of the virtual machine to delete.
+
+        Returns:
+            The HTTP response object of the delete request.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/compute/virtual-machines/delete?view=rest-azure-2024-04-01
+        """
+        base_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Compute/"
+            f"virtualMachines/{vm_name}"
+        )
+        try:
+            demisto.debug(f"Deallocating vm {vm_name} before deletion.")
+            self.http_request(
+                method="POST",
+                full_url=f"{base_url}/deallocate",
+                params={"api-version": VM_API_VERSION},
+                resp_type="response",
+            )
+            response = self.http_request(
+                method="DELETE", full_url=base_url, params={"api-version": VM_API_VERSION}, resp_type="response"
+            )
+            if response.status_code in (200, 202, 204):  # type: ignore[union-attr]
+                return response
+            else:
+                demisto.debug(f"Failed to delete vm {vm_name}.")
+                response.raise_for_status()  # type: ignore[union-attr]
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{vm_name}",
+                resource_type="Virtual Machines",
+                api_function_name="delete_vm_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def validate_provisioning_state(self, subscription_id, resource_group, vm_name):
+        """
+        Ensure that the provisioning state of a VM is 'Succeeded'
+
+        For all provisioning states other than 'Succeeded', this method will raise an
+        exception with an informative error message.
+
+        parameter: (dict) args
+            The command arguments passed to either the `azure-compute-vm-start` (azure-vm-instance-start) or
+            `azure-compute-vm-power-off` (azure-vm-instance-power-off) commands
+
+        returns:
+            None
+        """
+        creating_or_updating_err = (
+            "Please wait for the VM to finish being"
+            " {} before executing this command. To retrieve the "
+            "last known state of the VM, execute the "
+            "`azure-compute-vm-get` command. "
+        )
+        deleting_err = "You cannot execute this command because the VM is being deleted."
+        failed_err = (
+            "Unable to power-off or power-on '{}' virtual machine "
+            "because the following provisioning failure occurred during "
+            'the vm\'s creation.\ncode: "{}"\nmessage: "{}"\nVisit the '
+            "Azure Web Portal to take care of this issue."
+        )
+        provisioning_state_to_errors = {
+            "creating": creating_or_updating_err.format("created"),
+            "updating": creating_or_updating_err.format("updated"),
+            "deleting": deleting_err,
+            "failed": failed_err,
+        }
+        response = self.get_vm_request(subscription_id=subscription_id, resource_group_name=resource_group, vm_name=vm_name)
+
+        properties = response.get("properties")
+        provisioning_state = properties.get("provisioningState")
+        statuses = properties.get("instanceView", {}).get("statuses")
+
+        # Check if the current ProvisioningState of the VM allows for executing this command
+        if provisioning_state.lower() == "failed":
+            for status in statuses:
+                status_code = status.get("code")
+                if "provisioningstate/failed" in status_code.lower():
+                    message = status.get("message")
+                    err_msg = provisioning_state_to_errors.get("failed")
+                    raise Exception(err_msg.format(vm_name, status_code, message))  # type: ignore
+            # If the Microsoft API changes and the status code is no longer
+            # relevant, preventing the above exception with its detailed error message from
+            # being raised, then raise the below exception with a more general error message
+            err_msg = "Cannot execute this command because the ProvisioningState of the VM is 'Failed'."
+            raise Exception(err_msg)
+        elif provisioning_state.lower() in provisioning_state_to_errors:
+            err_msg = provisioning_state_to_errors.get(provisioning_state.lower())
+            raise Exception(err_msg)
+
+    def get_network_interface_request(self, subscription_id: str, resource_group_name: str, interface_name: str):
+        """
+        Gets the specified network interface in a given resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the network interface.
+            interface_name (str): The name of the network interface.
+
+        Returns:
+            The detailed network interface object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-interfaces/get?view=rest-virtualnetwork-2023-05-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+            f"networkInterfaces/{interface_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": "2023-05-01"})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{interface_name}",
+                resource_type="Network Interfaces",
+                api_function_name="get_network_interface_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def update_network_interface_request(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        interface_name: str,
+        network_interface_data: dict,
+    ):
+        """
+        Creates or updates a network interface.
+
+        This method uses PUT to update the network interface. The caller should first
+        retrieve the current network interface using get_network_interface_request,
+        modify the desired properties, and then pass the full object to this method.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the network interface.
+            interface_name (str): The name of the network interface.
+            network_interface_data (dict): The full network interface object with updated properties.
+
+        Returns:
+            The updated network interface object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-interfaces/create-or-update
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+            f"networkInterfaces/{interface_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT",
+                full_url=full_url,
+                params={"api-version": "2023-05-01"},
+                json_data=network_interface_data,
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{interface_name}",
+                resource_type="Network Interfaces",
+                api_function_name="update_network_interface_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def create_network_interface_request(
+        self,
+        subscription_id: str,
+        resource_group_name: str,
+        interface_name: str,
+        network_interface_data: dict,
+    ):
+        """
+        Creates a network interface in the specified resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group in which to create the network interface.
+            interface_name (str): The name of the network interface to create.
+            network_interface_data (dict): The network interface object to create.
+
+        Returns:
+            The created network interface object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/network-interfaces/create-or-update
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+            f"networkInterfaces/{interface_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT",
+                full_url=full_url,
+                params={"api-version": NETWORK_INTERFACE_API_VERSION},
+                json_data=network_interface_data,
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{interface_name}",
+                resource_type="Network Interfaces",
+                api_function_name="create_network_interface_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def get_public_ip_details_request(self, subscription_id: str, resource_group_name: str, address_name: str):
+        """
+        Gets the specified public IP address in a given resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the public IP.
+            address_name (str): The name of the public IP address.
+
+        Returns:
+            The detailed public IP address object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/public-ip-addresses/get?view=rest-virtualnetwork-2024-10-01
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+            f"publicIPAddresses/{address_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": "2023-05-01"})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{resource_group_name}/{address_name}",
+                resource_type="Public IP Addresses",
+                api_function_name="get_public_ip_details_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def get_all_public_ip_details_request(self, subscription_id: str):
+        """
+        Lists all public IP addresses in the specified Azure subscription.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+
+        Returns:
+            List of PublicIPAddressListResult objects.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/public-ip-addresses/list-all?view=rest-virtualnetwork-2026-01-01
+        """
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.Network/publicIPAddresses"
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": PUBLIC_IP_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{subscription_id}",
+                resource_type="Public IP Addresses",
+                api_function_name="get_all_public_ip_details_request",
+                subscription_id=subscription_id,
+                resource_group_name=None,
+            )
+
+    def log_analytics_workspace_full_url(self, subscription_id: str, resource_group_name: str, workspace_name: str) -> str:
+        """Build the ARM base URL for a Log Analytics workspace."""
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.OperationalInsights/workspaces"
+        )
+        if workspace_name:
+            full_url += f"/{workspace_name}"
+        return full_url
+
+    def log_analytics_saved_searches_list(self, subscription_id: str, resource_group_name: str, workspace_name: str):
+        """
+        List all saved searches of a Log Analytics workspace.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+
+        Returns:
+            dict: The API response containing the saved searches.
+
+        Raises:
+            ValueError: If the workspace is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request("GET", full_url=f"{base_url}/savedSearches", params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=workspace_name,
+                resource_type="Log Analytics Saved Search",
+                api_function_name="log_analytics_saved_searches_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def log_analytics_saved_search_get(
+        self, subscription_id: str, resource_group_name: str, workspace_name: str, saved_search_id: str
+    ):
+        """
+        Get a specified saved search from a Log Analytics workspace.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+            saved_search_id (str): The ID of the saved search.
+
+        Returns:
+            dict: The API response containing the saved search.
+
+        Raises:
+            ValueError: If the saved search is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request("GET", full_url=f"{base_url}/savedSearches/{saved_search_id}", params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=saved_search_id,
+                resource_type="Log Analytics Saved Search",
+                api_function_name="log_analytics_saved_search_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def log_analytics_saved_search_create_update(
+        self, subscription_id: str, resource_group_name: str, workspace_name: str, saved_search_id: str, data: dict
+    ):
+        """
+        Create or update a saved search in a Log Analytics workspace.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+            saved_search_id (str): The ID of the saved search.
+            data (dict): The saved search request body.
+
+        Returns:
+            dict: The API response containing the created/updated saved search.
+
+        Raises:
+            ValueError: If the workspace is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request("PUT", full_url=f"{base_url}/savedSearches/{saved_search_id}", json_data=data, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=saved_search_id,
+                resource_type="Log Analytics Saved Search",
+                api_function_name="log_analytics_saved_search_create_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def log_analytics_saved_search_delete(
+        self, subscription_id: str, resource_group_name: str, workspace_name: str, saved_search_id: str
+    ) -> None:
+        """
+        Delete a specified saved search from a Log Analytics workspace.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+            saved_search_id (str): The ID of the saved search.
+
+        Raises:
+            ValueError: If the saved search is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            self.http_request(
+                "DELETE", full_url=f"{base_url}/savedSearches/{saved_search_id}", params=params, resp_type="response"
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=saved_search_id,
+                resource_type="Log Analytics Saved Search",
+                api_function_name="log_analytics_saved_search_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def log_analytics_workspaces_list(self, subscription_id: str, resource_group_name: str):
+        """
+        List Log Analytics workspaces in a resource group.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+
+        Returns:
+            dict: The API response containing the workspaces.
+
+        Raises:
+            ValueError: If the resource group is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        full_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, "")
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request("GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name,
+                resource_type="Log Analytics Workspace",
+                api_function_name="log_analytics_workspaces_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def log_analytics_table_get(self, subscription_id: str, resource_group_name: str, workspace_name: str, table_name: str):
+        """
+        Get a Log Analytics workspace table (search job).
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+            table_name (str): The name of the table.
+
+        Returns:
+            dict: The API response containing the table.
+
+        Raises:
+            ValueError: If the table is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request("GET", full_url=f"{base_url}/tables/{table_name}", params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=table_name,
+                resource_type="Log Analytics Search Job",
+                api_function_name="log_analytics_table_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def log_analytics_table_run(
+        self, subscription_id: str, resource_group_name: str, workspace_name: str, table_name: str, data: dict
+    ):
+        """
+        Create a Log Analytics search job table. The API returns only a 202 status code.
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+            table_name (str): The name of the table to create (must end with the _SRCH suffix).
+            data (dict): The search job request body.
+
+        Raises:
+            ValueError: If the workspace is not found.
+            DemistoException: If the search job already exists or on permission/other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request(
+                "PUT", full_url=f"{base_url}/tables/{table_name}", json_data=data, params=params, resp_type="response"
+            )
+        except Exception as e:
+            if "properties.searchResult is immutable" in str(e):
+                raise DemistoException(f"Search job {table_name} already exists - please choose another name.") from e
+            self.handle_azure_error(
+                e=e,
+                resource_name=table_name,
+                resource_type="Log Analytics Search Job",
+                api_function_name="log_analytics_table_run",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def log_analytics_table_delete(self, subscription_id: str, resource_group_name: str, workspace_name: str, table_name: str):
+        """
+        Delete a Log Analytics workspace table (search job).
+
+        Args:
+            subscription_id (str): Azure subscription ID.
+            resource_group_name (str): Resource group name.
+            workspace_name (str): Log Analytics workspace name.
+            table_name (str): The name of the table to delete.
+
+        Raises:
+            ValueError: If the table is not found.
+            DemistoException: If there are permission or other API errors.
+        """
+        base_url = self.log_analytics_workspace_full_url(subscription_id, resource_group_name, workspace_name)
+        params = {"api-version": LOG_ANALYTICS_API_VERSION}
+        try:
+            return self.http_request("DELETE", full_url=f"{base_url}/tables/{table_name}", params=params, resp_type="response")
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=table_name,
+                resource_type="Log Analytics Search Job",
+                api_function_name="log_analytics_table_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+            return {}
+
+    def billing_usage_list(
+        self,
+        subscription_id: str,
+        expand: str = "",
+        filter_: str = "",
+        metric: str = "",
+        max_results: int = 50,
+        next_page_token: str = "",
+    ):
+        """
+        Retrieves actual usage and cost details from Azure Consumption API.
+        Args:
+            subscription_id (str): Azure subscription ID.
+            expand (str): Expand usage details with additional properties.
+            filter_ (str): OData filter expression for filtering results.
+            metric (str): Specific metric to retrieve (e.g., ActualCost, UsageQuantity).
+            max_results (int): Maximum number of results to return (default: 50).
+            next_page_token (str): Token for pagination.
+        Returns:
+            dict: The response from the Azure Consumption API.
+        Raises:
+            DemistoException: If Azure API call fails, subscription not found, or invalid parameters provided
+        """
+        scope = f"/{subscription_id}"
+        url = f"{scope}/providers/Microsoft.Consumption/usageDetails"
+        api_version = "2024-08-01"
+        params_ = {
+            "$expand": expand,
+            "$filter": filter_,
+            "metric": metric.lower().replace(" ", ""),
+            "api-version": api_version,
+            "$top": max_results,
+        }
+        remove_nulls_from_dictionary(params_)
+
+        try:
+            if next_page_token:
+                validate_next_link(next_page_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+                new_url = remove_query_param_from_url(next_page_token, "api-version")
+                demisto.debug(f"Azure billing usage request (pagination): {new_url}")
+                return self.http_request("GET", full_url=new_url, params={"api-version": api_version})
+            else:
+                demisto.debug(f"Azure billing usage request: {url}, params: {params_}")
+                return self.http_request("GET", url_suffix=url, params=params_)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=subscription_id,
+                resource_type="Usage Details",
+                subscription_id=subscription_id,
+                api_function_name="billing_usage_list",
+            )
+
+    def billing_forecast_list(
+        self,
+        subscription_id: str,
+        forecast_type: str,
+        aggregation_function_name: str,
+        aggregation_function_type: str = "Sum",
+        granularity: str = "Daily",
+        start_date: str = "",
+        end_date: str = "",
+        filter_param: str = "",
+        include_actual_cost: bool = False,
+        include_fresh_partial_cost: bool = False,
+    ):
+        """
+        Returns cost forecast for a subscription over a given time range.
+        Args:
+            subscription_id (str): Azure subscription ID.
+            forecast_type (str): Forecast type (Usage, ActualCost, AmortizedCost).
+            aggregation_function_name (str): Aggregation function name.
+            aggregation_function_type (str): Aggregation function type (default: "Sum").
+            granularity (str): Data granularity (default: "Daily").
+            start_date (str): Start date for the forecast.
+            end_date (str): End date for the forecast.
+            filter_param (str): URL parameter to filter forecasts.
+            include_actual_cost (bool): Include actual cost data (default: False).
+            include_fresh_partial_cost (bool): Include fresh partial cost data (default: False).
+        Returns:
+            dict: The response from the Azure Cost Management API.
+        Raises:
+            DemistoException: If Azure API call fails, subscription not found, or invalid parameters provided
+        """
+
+        start_datetime = arg_to_datetime(start_date) or datetime.now(UTC)
+        end_datetime = arg_to_datetime(end_date) or (datetime.now(UTC) + timedelta(days=7))
+
+        url = f"{subscription_id}/providers/Microsoft.CostManagement/forecast"
+        api_version = "2025-03-01"
+
+        body: dict[str, Any] = {
+            "type": forecast_type,
+            "timeframe": "Custom",
+            "timePeriod": {
+                "from": start_datetime.strftime("%Y-%m-%dT00:00:00Z"),
+                "to": end_datetime.strftime("%Y-%m-%dT00:00:00Z"),
+            },
+            "dataset": {
+                "granularity": granularity,
+                "aggregation": {
+                    "totalCost": {
+                        "function": aggregation_function_type,
+                        "name": aggregation_function_name,
+                    }
+                },
+            },
+        }
+        if include_actual_cost:
+            body["includeActualCost"] = include_actual_cost
+        if include_fresh_partial_cost:
+            body["includeFreshPartialCost"] = include_fresh_partial_cost
+
+        if filter_param:
+            body["dataset"]["filter"] = filter_param  # type: ignore[index]
+
+        demisto.debug(f"Azure billing forecast \nrequest body: \n{body}")
+        params_ = {"api-version": api_version}
+
+        try:
+            return self.http_request("POST", url_suffix=url, params=params_, json_data=body)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=subscription_id,
+                resource_type="Cost Forecast",
+                subscription_id=subscription_id,
+                api_function_name="billing_forecast_list",
+            )
+
+    def billing_budgets_list(
+        self,
+        subscription_id: str,
+        budget_name: str = "",
+    ):
+        """
+        Retrieves budget information from Azure Consumption API.
+        Args:
+            subscription_id (str): Azure subscription ID.
+            budget_name (str): Optional specific budget name to retrieve.
+        Returns:
+            dict: The response from the Azure Consumption API.
+        Raises:
+            DemistoException: If Azure API call fails, subscription not found, or invalid parameters provided
+        """
+        scope = f"/{subscription_id}"
+        if budget_name:
+            url = f"{scope}/providers/Microsoft.Consumption/budgets/{budget_name}"
+        else:
+            url = f"{scope}/providers/Microsoft.Consumption/budgets"
+
+        api_version = "2024-08-01"
+        params_ = {"api-version": api_version}
+
+        demisto.debug(f"Azure billing budgets request: {url}, params: {params_}")
+        try:
+            return self.http_request("GET", url_suffix=url, params=params_)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=budget_name or subscription_id,
+                resource_type="Budget",
+                subscription_id=subscription_id,
+                api_function_name="billing_budgets_list",
+            )
+
+    def waf_policy_get(self, policy_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Retrieve a single Application Gateway WAF policy by name.
+
+        Args:
+            policy_name: The name of the WAF policy to retrieve.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the policy.
+
+        Returns:
+            A dictionary containing the WAF policy.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/application-gateway/web-application-firewall-policies/get
+        """
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/{WAF_POLICY_PATH}/{policy_name}"
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": WAF_POLICY_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="WAF Policy",
+                api_function_name="waf_policy_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_policy_list(self, subscription_id: str, resource_group_name: str, next_token: str = ""):
+        """
+        List Application Gateway WAF policies within a resource group, or within the whole
+        subscription when no resource group is given.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group to list policies from. When empty, the
+                policies of the entire subscription are listed.
+            next_token: The URL to fetch the next page of results.
+
+        Returns:
+            A dictionary containing the list of WAF policies.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/application-gateway/web-application-firewall-policies/list
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of WAF policies.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params: dict[str, Any] = {}
+        elif resource_group_name:
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/{WAF_POLICY_PATH}"
+            params = {"api-version": WAF_POLICY_API_VERSION}
+        else:
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/{WAF_POLICY_PATH}"
+            params = {"api-version": WAF_POLICY_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name or subscription_id,
+                resource_type="WAF Policies",
+                api_function_name="waf_policy_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_policy_upsert(self, policy_name: str, subscription_id: str, resource_group_name: str, data: dict):
+        """
+        Create or update an Application Gateway WAF policy.
+
+        Args:
+            policy_name: The name of the WAF policy to create or update.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group to create the policy in.
+            data: The policy request body.
+
+        Returns:
+            A dictionary containing the created or updated WAF policy.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/application-gateway/web-application-firewall-policies/create-or-update
+        """
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/{WAF_POLICY_PATH}/{policy_name}"
+        try:
+            return self.http_request(
+                method="PUT", full_url=full_url, json_data=data, params={"api-version": WAF_POLICY_API_VERSION}
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="WAF Policy",
+                api_function_name="waf_policy_upsert",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_policy_delete(self, policy_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Delete an Application Gateway WAF policy.
+
+        Args:
+            policy_name: The name of the WAF policy to delete.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the policy.
+
+        Returns:
+            The HTTP response object from the delete operation.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/application-gateway/web-application-firewall-policies/delete
+        """
+        full_url = f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/{WAF_POLICY_PATH}/{policy_name}"
+        try:
+            return self.http_request(
+                method="DELETE", full_url=full_url, resp_type="response", params={"api-version": WAF_POLICY_API_VERSION}
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="WAF Policy",
+                api_function_name="waf_policy_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_front_door_policy_get(self, policy_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Retrieve a single Front Door WAF policy by name.
+
+        Args:
+            policy_name: The name of the Front Door WAF policy to retrieve.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the policy.
+
+        Returns:
+            A dictionary containing the Front Door WAF policy.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/frontdoor/policies/get
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/{WAF_FRONT_DOOR_POLICY_PATH}/{policy_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": WAF_FRONT_DOOR_POLICY_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Front Door WAF Policy",
+                api_function_name="waf_front_door_policy_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_front_door_policy_list(self, subscription_id: str, resource_group_name: str, next_token: str = ""):
+        """
+        List Front Door WAF policies within a resource group, or within the whole
+        subscription when no resource group is given.
+
+        Args:
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group to list policies from. When empty, the
+                policies of the entire subscription are listed.
+            next_token: The URL to fetch the next page of results.
+
+        Returns:
+            A dictionary containing the list of Front Door WAF policies.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/frontdoor/policies/list
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of Front Door WAF policies.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            params: dict[str, Any] = {}
+        elif resource_group_name:
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/{WAF_FRONT_DOOR_POLICY_PATH}"
+            params = {"api-version": WAF_FRONT_DOOR_POLICY_API_VERSION}
+        else:
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/{WAF_FRONT_DOOR_POLICY_PATH}"
+            params = {"api-version": WAF_FRONT_DOOR_POLICY_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name or subscription_id,
+                resource_type="Front Door WAF Policies",
+                api_function_name="waf_front_door_policy_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_front_door_policy_upsert(self, policy_name: str, subscription_id: str, resource_group_name: str, data: dict):
+        """
+        Create or update a Front Door WAF policy.
+
+        Args:
+            policy_name: The name of the Front Door WAF policy to create or update.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group to create the policy in.
+            data: The policy request body.
+
+        Returns:
+            A dictionary containing the created or updated Front Door WAF policy.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/frontdoor/policies/create-or-update
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/{WAF_FRONT_DOOR_POLICY_PATH}/{policy_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT",
+                full_url=full_url,
+                json_data=data,
+                params={"api-version": WAF_FRONT_DOOR_POLICY_API_VERSION},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Front Door WAF Policy",
+                api_function_name="waf_front_door_policy_upsert",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def waf_front_door_policy_delete(self, policy_name: str, subscription_id: str, resource_group_name: str):
+        """
+        Delete a Front Door WAF policy.
+
+        Args:
+            policy_name: The name of the Front Door WAF policy to delete.
+            subscription_id: The Azure subscription ID.
+            resource_group_name: The resource group containing the policy.
+
+        Returns:
+            The HTTP response object from the delete operation.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/frontdoor/policies/delete
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/{WAF_FRONT_DOOR_POLICY_PATH}/{policy_name}"
+        )
+        try:
+            return self.http_request(
+                method="DELETE",
+                full_url=full_url,
+                resp_type="response",
+                params={"api-version": WAF_FRONT_DOOR_POLICY_API_VERSION},
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Front Door WAF Policy",
+                api_function_name="waf_front_door_policy_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_create_or_update(
+        self, subscription_id: str, resource_group_name: str, policy_name: str, policy_data: dict
+    ):
+        """
+        Create or update a firewall policy.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group that contains the firewall policy.
+            policy_name (str): The name of the firewall policy.
+            policy_data (dict): The full firewall policy object to send.
+
+        Returns:
+            dict: The created or updated firewall policy object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policies/create-or-update
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/firewallPolicies/{policy_name}"
+        )
+        try:
+            return self.http_request(
+                method="PUT",
+                full_url=full_url,
+                params={"api-version": FIREWALL_API_VERSION},
+                json_data=policy_data,
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Firewall Policy",
+                api_function_name="firewall_policy_create_or_update",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_get(self, subscription_id: str, resource_group_name: str, policy_name: str):
+        """
+        Get a firewall policy.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group that contains the firewall policy.
+            policy_name (str): The name of the firewall policy.
+
+        Returns:
+            dict: The firewall policy object.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policies/get
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/firewallPolicies/{policy_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": FIREWALL_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Firewall Policy",
+                api_function_name="firewall_policy_get",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_delete(self, subscription_id: str, resource_group_name: str, policy_name: str):
+        """
+        Delete a firewall policy.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group that contains the firewall policy.
+            policy_name (str): The name of the firewall policy to delete.
+
+        Returns:
+            The HTTP response object of the delete request.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policies/delete
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+            f"/providers/Microsoft.Network/firewallPolicies/{policy_name}"
+        )
+        try:
+            return self.http_request(
+                method="DELETE",
+                full_url=full_url,
+                params={"api-version": FIREWALL_API_VERSION},
+                resp_type="response",
+            )
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Firewall Policy",
+                api_function_name="firewall_policy_delete",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_list(self, subscription_id: str, resource_group_name: str, next_token: str = ""):
+        """
+        List the firewall policies in a resource group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group that contains the firewall policies.
+            next_token (str): The URI to fetch the next page of results.
+
+        Returns:
+            dict: The list of firewall policies.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policies/list
+        """
+        if next_token:
+            demisto.debug(f"[Azure] using {next_token=} for retrieving the next page of firewall policies.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters: dict[str, Any] = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}"
+                f"/providers/Microsoft.Network/firewallPolicies"
+            )
+            parameters = {"api-version": FIREWALL_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name,
+                resource_type="Firewall Policy",
+                api_function_name="firewall_policy_list",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_list_request(self, subscription_id: str, resource_group_name: str, resource: str, next_token: str):
+        """
+        Lists the Azure firewalls in a resource group or in the whole subscription.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the firewalls.
+            resource (str): The scope to list the firewalls from, either "resource_group" or "subscription".
+            next_token (str): The URL to fetch the next page of results.
+
+        Returns:
+            A dictionary containing the list of Azure firewalls.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/firewall/azure-firewalls/list
+        """
+        if next_token:
+            demisto.debug(f"using {next_token=} for retrieving the next page of results.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters = {}
+        elif resource == "subscription":
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.Network/azureFirewalls"
+            parameters = {"api-version": FIREWALL_API_VERSION}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+                f"providers/Microsoft.Network/azureFirewalls"
+            )
+            parameters = {"api-version": FIREWALL_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=resource_group_name if resource == "resource_group" else subscription_id,
+                resource_type="Firewalls",
+                api_function_name="firewall_list_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_get_request(self, subscription_id: str, resource_group_name: str, firewall_name: str):
+        """
+        Retrieves the information of a specific Azure firewall.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the firewall.
+            firewall_name (str): The name of the Azure firewall to retrieve.
+
+        Returns:
+            A dictionary containing the Azure firewall information.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/firewall/azure-firewalls/get
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+            f"providers/Microsoft.Network/azureFirewalls/{firewall_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": FIREWALL_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=firewall_name,
+                resource_type="Firewall",
+                api_function_name="firewall_get_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_rule_collection_list_request(
+        self, subscription_id: str, resource_group_name: str, policy_name: str, next_token: str
+    ):
+        """
+        Lists the rule collection groups of a firewall policy.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the policy.
+            policy_name (str): The name of the firewall policy containing the rule collection groups.
+            next_token (str): The URL to fetch the next page of results.
+
+        Returns:
+            A dictionary containing the list of the policy rule collection groups.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policy-rule-collection-groups/list?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        if next_token:
+            demisto.debug(f"using {next_token=} for retrieving the next page of results.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters = {}
+        else:
+            full_url = (
+                f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+                f"providers/Microsoft.Network/firewallPolicies/{policy_name}/ruleCollectionGroups"
+            )
+            parameters = {"api-version": FIREWALL_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=policy_name,
+                resource_type="Firewall Policy Rule Collection Groups",
+                api_function_name="firewall_policy_rule_collection_list_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_policy_rule_collection_get_request(
+        self, subscription_id: str, resource_group_name: str, policy_name: str, collection_name: str
+    ):
+        """
+        Retrieves the information of a specific firewall policy rule collection group.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            resource_group_name (str): The name of the resource group containing the policy.
+            policy_name (str): The name of the firewall policy containing the rule collection group.
+            collection_name (str): The name of the rule collection group to retrieve.
+
+        Returns:
+            A dictionary containing the policy rule collection group information.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/firewall-policy-rule-collection-groups/get?view=rest-virtualnetwork-2025-09-01&tabs=HTTP
+        """
+        full_url = (
+            f"{PREFIX_URL_AZURE}{subscription_id}/resourceGroups/{resource_group_name}/"
+            f"providers/Microsoft.Network/firewallPolicies/{policy_name}/ruleCollectionGroups/{collection_name}"
+        )
+        try:
+            return self.http_request(method="GET", full_url=full_url, params={"api-version": FIREWALL_API_VERSION})
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=f"{policy_name}/{collection_name}",
+                resource_type="Firewall Policy Rule Collection Group",
+                api_function_name="firewall_policy_rule_collection_get_request",
+                subscription_id=subscription_id,
+                resource_group_name=resource_group_name,
+            )
+
+    def firewall_service_tag_list_request(self, subscription_id: str, location: str, next_token: str):
+        """
+        Lists the service tag information resources of a given location.
+
+        Args:
+            subscription_id (str): The ID of the Azure subscription.
+            location (str): The location that is used as a reference for the service tags version.
+            next_token (str): The URL to fetch the next page of results.
+
+        Returns:
+            A dictionary containing the list of service tags.
+
+        Docs:
+            https://learn.microsoft.com/en-us/rest/api/virtualnetwork/service-tag-information/list
+        """
+        if next_token:
+            demisto.debug(f"using {next_token=} for retrieving the next page of results.")
+            full_url = validate_next_link(next_token, urlparse(PREFIX_URL_AZURE).hostname or "")
+            parameters = {}
+        else:
+            full_url = f"{PREFIX_URL_AZURE}{subscription_id}/providers/Microsoft.Network/locations/{location}/serviceTagDetails"
+            parameters = {"api-version": FIREWALL_API_VERSION}
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=parameters)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name=location,
+                resource_type="Service Tags",
+                api_function_name="firewall_service_tag_list_request",
+                subscription_id=subscription_id,
+            )
+
+    def resource_graph_list_operations(self):
+        """
+        Send the list Azure Resource Graph operations request to the API.
+
+        Returns:
+            dict: The JSON response from the API call, containing the available operations.
+
+        Raises:
+            DemistoException: If there are permission or other API errors.
+        """
+        management_host = urlparse(PREFIX_URL_AZURE).hostname
+        full_url = f"https://{management_host}/providers/Microsoft.ResourceGraph/operations"
+        params = {"api-version": RESOURCE_GRAPH_API_VERSION}
+        demisto.debug("Listing Azure Resource Graph operations.")
+        try:
+            return self.http_request(method="GET", full_url=full_url, params=params)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name="operations",
+                resource_type="Resource Graph Operations",
+                api_function_name="resource_graph_list_operations",
+            )
+
+    def resource_graph_query_resources(
+        self, query: str, paging_options: dict[str, Any], subscriptions: list, management_groups: list
+    ):
+        """
+        Send the Azure Resource Graph query request to the API.
+
+        Args:
+            query (str): The KQL query to execute.
+            paging_options (dict): The paging options (e.g. $skip, $top, $skipToken) for the query.
+            subscriptions (list): The subscriptions against which to execute the query.
+            management_groups (list): The management groups against which to execute the query.
+
+        Returns:
+            dict: The JSON response from the API call, containing the query results.
+
+        Raises:
+            DemistoException: If there are permission or other API errors.
+        """
+        request_data = remove_empty_elements(
+            {"query": query, "options": paging_options, "subscriptions": subscriptions, "managementGroups": management_groups}
+        )
+
+        management_host = urlparse(PREFIX_URL_AZURE).hostname
+        full_url = f"https://{management_host}/providers/Microsoft.ResourceGraph/resources"
+        params = {"api-version": RESOURCE_GRAPH_API_VERSION}
+        demisto.debug(f"Executing Azure Resource Graph query with options: {paging_options}.")
+        try:
+            return self.http_request(method="POST", full_url=full_url, params=params, json_data=request_data)
+        except Exception as e:
+            self.handle_azure_error(
+                e=e,
+                resource_name="resources",
+                resource_type="Resource Graph Query",
+                api_function_name="resource_graph_query_resources",
+            )
+
+
+""" HELPER FUNCTIONS """
+
+
+def get_permissions_from_api_function_name(api_function_name: str, error_msg: str) -> list:
+    """
+    Extract the relevant missing permission by checking command-to-permissions mapping against an error message.
+    Iterates over the permissions mapped to a specific API function and returns the relevant permissions
+    that appear in the given error message.
+
+    Args:
+        api_function_name (str): The name of the API function used for permission lookup.
+        error_msg (str): The error message string to check for missing permissions.
+
+    Returns:
+        list: The matching permission names if found, otherwise an empty list.
+    """
+    permission_names = []
+    for permission in API_FUNCTION_TO_PERMISSIONS[api_function_name]:
+        if permission.lower() in error_msg.lower():
+            demisto.debug(f"Found missing permission via command mapping: {permission}")
+            permission_names.append(permission)
+    return permission_names
+
+
+def get_permissions_from_required_role_permissions_list(error_msg: str) -> list:
+    """
+    Extract the relevant missing permission by searching the required role permissions list against an error message.
+    Iterates over the predefined required role permissions and returns the relevant permissions
+    that appear in the given error message.
+
+    Args:
+        error_msg (str): The error message string to check for missing permissions.
+
+    Returns:
+        list: The matching permission names if found, otherwise an empty list.
+    """
+    permission_names = []
+    permissions_to_check = set(REQUIRED_ROLE_PERMISSIONS)
+    for permission in permissions_to_check:
+        if permission.lower() in error_msg.lower():
+            demisto.debug(f"Found missing permission via fallback search: {permission}")
+            permission_names.append(permission)
+
+    if not permission_names:
+        permission_names.append("N/A")
+
+    return permission_names
+
+
+def format_rule(rule_json: dict | list, security_rule_name: str):
+    """
+    Format the rule and create the commandResult object with it
+    Args:
+        rule_json: the json returned from the http_request
+        security_rule_name: the name of the rule
+
+    Returns:
+        CommandResults for the rule
+    """
+    # We want to flatten the rules `properties` key as this is the more important key, and we'd like
+    # to be able to display it nicely
+    if isinstance(rule_json, dict):
+        rule_json.update(rule_json.pop("properties", {}))
+    if isinstance(rule_json, list):
+        for rule in rule_json:
+            rule.update(rule.pop("properties", {}))
+
+    hr = tableToMarkdown(f"Rules {security_rule_name}", rule_json, removeNull=True)
+
+    return CommandResults(outputs_prefix="Azure.NSGRule", outputs_key_field="id", outputs=rule_json, readable_output=hr)
+
+
+def extract_azure_resource_info(resource_id: str) -> tuple[str | None, str | None, str | None]:
+    """Extract subscription ID, resource group, and account name from Azure resource ID.
+
+    Args:
+        resource_id: Azure resource ID string
+
+    Returns:
+        Tuple of (subscription_id, resource_group, account_name)
+    """
+    patterns = {
+        "subscription_id": r"subscriptions/(.+?)/resourceGroups",
+        "resource_group": r"resourceGroups/(.+?)/providers",
+        "account_name": r"storageAccounts/(.+?)/blobServices",
+    }
+
+    results = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, resource_id)
+        results[key] = match.group(1) if match else None
+
+    return results["subscription_id"], results["resource_group"], results["account_name"]
+
+
+def validate_limit(limit: int | None, min_limit: int = 1, max_limit: int = BLOB_CONTAINERS_MAX_PAGE_SIZE) -> None:
+    """
+    Validates that the provided limit argument is within the allowed range.
+
+    Args:
+        limit (int | None): The limit value to validate.
+        min_limit (int): The minimum allowed value (inclusive). Defaults to 1.
+        max_limit (int): The maximum allowed value (inclusive). Defaults to BLOB_CONTAINERS_MAX_PAGE_SIZE.
+
+    Raises:
+        DemistoException: If the limit is outside the allowed range.
+    """
+    if limit is not None and not (min_limit <= limit <= max_limit):
+        raise DemistoException(
+            f"The acceptable values of the argument limit are {min_limit} to {max_limit}, inclusive. "
+            f"Currently the value is {limit}."
+        )
+
+
+def remove_query_param_from_url(url: str, param: str) -> str:
+    """
+    Remove a specific query parameter from a given URL and return the updated URL.
+
+    Args:
+        url (str): The full URL that may contain a query string.
+        param (str): The name of the query parameter to remove.
+
+    Returns:
+        str: The URL with the specified query parameter removed. If the parameter
+             is not present, the original URL is returned unchanged.
+    """
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    qs.pop(param, None)
+    new_query = urlencode(qs, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def validate_next_link(next_link: str, expected_host: str) -> str:
+    """
+    Validate that a pagination link points at the configured Azure management endpoint.
+
+    The link is sent as a full URL with the integration's bearer token attached, so an arbitrary
+    host would receive a valid Azure access token.
+
+    Args:
+        next_link (str): The pagination link provided by the user.
+        expected_host (str): The hostname of the configured Azure management endpoint.
+
+    Returns:
+        str: The validated link.
+
+    Raises:
+        DemistoException: If the link is not an HTTPS URL pointing at the expected host.
+    """
+    parsed = urlparse(next_link)
+    if parsed.scheme != "https" or parsed.hostname != expected_host:
+        demisto.debug(f"[Azure] Rejected next_token with {parsed.scheme=} and {parsed.hostname=}, {expected_host=}")
+        raise DemistoException(
+            "Invalid next_token: it must be the next token value returned by a previous call to the same command."
+        )
+    return next_link
+
+
+def update_nic_properties(args: dict, params: dict, properties: dict):
+    """
+    Updates the properties dictionary of a Network Interface Card (NIC) based on the provided arguments.
+
+    Args:
+        args (dict): The arguments provided to the command.
+        params (dict): The integration parameters.
+        properties (dict): The current properties of the NIC to be updated.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    remove_network_security_group = arg_to_bool_or_none(args.get("remove_network_security_group"))
+
+    properties["enableIPForwarding"] = (
+        argToBoolean(args.get("enable_ip_forwarding"))
+        if args.get("enable_ip_forwarding") is not None
+        else properties.get("enableIPForwarding")
+    )
+    properties["enableAcceleratedNetworking"] = (
+        argToBoolean(args.get("enable_accelerate_networking"))
+        if args.get("enable_accelerate_networking") is not None
+        else properties.get("enableAcceleratedNetworking")
+    )
+    properties["auxiliaryMode"] = args.get("auxiliary_mode") or properties.get("auxiliaryMode")
+    properties["auxiliarySku"] = args.get("auxiliary_sku") or properties.get("auxiliarySku")
+    properties["nicType"] = args.get("nic_type") or properties.get("nicType")
+    nsg_prefix = (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network"
+        f"/networkSecurityGroups/"
+    )
+    properties["networkSecurityGroup"] = {
+        "id": f'{nsg_prefix}{args.get("network_security_group_name")}'
+        if args.get("network_security_group_name")
+        else properties.get("networkSecurityGroup", {}).get("id")
+    }
+
+    internal_dns_name_label = args.get("internal_dns_name_label")
+    dns_servers = args.get("dns_servers")
+    dns_arr = [internal_dns_name_label, dns_servers]
+
+    if "dnsSettings" not in properties and any(x is not None for x in dns_arr):
+        properties["dnsSettings"] = {}
+
+    if internal_dns_name_label:
+        properties["dnsSettings"]["internalDnsNameLabel"] = internal_dns_name_label
+
+    if dns_servers:
+        properties["dnsSettings"]["dnsServers"] = argToList(dns_servers)
+
+    if remove_network_security_group:
+        demisto.debug(f"Removing the network security group {properties.get('networkSecurityGroup')}")
+        properties.pop("networkSecurityGroup", None)
+
+
+def parse_nested_keys_to_dict(base_dict: dict, keys: list, value: Any) -> None:
+    """
+    Recursively place a value into a nested dictionary following a list of keys.
+
+    A keys list of ["properties", "policySettings"] with the value {"mode": "Prevention"}
+    produces {"properties": {"policySettings": {"mode": "Prevention"}}}.
+
+    Args:
+        base_dict (dict): The dictionary to populate, modified in place.
+        keys (list): The hierarchy of keys leading to the value.
+        value (Any): The value to place at the end of the key hierarchy.
+    """
+    if len(keys) == 1:
+        base_dict[keys[0]] = value
+    else:
+        base_dict.setdefault(keys[0], {})
+        parse_nested_keys_to_dict(base_dict[keys[0]], keys[1:], value)
+
+
+def build_waf_policy_body(args: dict[str, Any], upsert_params: dict[str, str]) -> dict[str, Any]:
+    """
+    Build a WAF policy request body from the command arguments.
+
+    Each argument listed in the given mapping is placed at its dotted location in the body.
+    Only the arguments named in WAF_POLICY_JSON_ARGUMENTS are parsed as JSON; every other
+    argument is a plain string and is sent unchanged. Arguments that were not supplied are
+    skipped entirely.
+
+    Args:
+        args (dict[str, Any]): The command arguments.
+        upsert_params (dict[str, str]): Mapping of argument name to its dotted body location.
+
+    Returns:
+        dict[str, Any]: The request body to send to the Azure API.
+    """
+    body: dict[str, Any] = {}
+    for argument_name, body_path in upsert_params.items():
+        raw_value = args.get(argument_name)
+        if not raw_value:
+            continue
+        value: Any = raw_value
+        if argument_name in WAF_POLICY_JSON_ARGUMENTS and isinstance(raw_value, str):
+            try:
+                value = json.loads(raw_value)
+            except json.JSONDecodeError:
+                value = raw_value
+        parse_nested_keys_to_dict(base_dict=body, keys=body_path.split("."), value=value)
+    return body
+
+
+def filter_policy_rule_collections(rule_collection_groups: list, rule_type: str) -> list:
+    """
+    Filters firewall policy rule collection groups by the given rule type.
+
+    Args:
+        rule_collection_groups (list): The rule collection groups from the API response.
+        rule_type (str): The rule type to filter by.
+
+    Returns:
+        list: The rule collection groups matching the given rule type.
+    """
+    collection_type = {
+        "network_rule": "FirewallPolicyFilterRuleCollection",
+        "application_rule": "FirewallPolicyFilterRuleCollection",
+        "nat_rule": "FirewallPolicyNatRuleCollection",
+    }.get(rule_type, "")
+    rule_key = {"network_rule": "NetworkRule", "application_rule": "ApplicationRule", "nat_rule": "NatRule"}.get(rule_type, "")
+    filtered = []
+
+    for collection_group in rule_collection_groups:
+        rule_collections = dict_safe_get(collection_group, ["properties", "ruleCollections"], [])
+        if not isinstance(rule_collections, list) or not rule_collections:
+            continue
+        # A rule collection group can hold several rule collections, so all of them are checked for a match.
+        if any(
+            rule_collection.get("ruleCollectionType") == collection_type
+            and any(rule.get("ruleType") == rule_key for rule in rule_collection.get("rules") or [])
+            for rule_collection in rule_collections
+        ):
+            filtered.append(collection_group)
+
+    return filtered
+
+
+def validate_firewall_or_policy_provided(firewall_name: str, policy_name: str) -> None:
+    """
+    Validates that exactly one of the firewall name or the policy name was provided.
+
+    Args:
+        firewall_name (str): The name of the Azure firewall given in the command arguments.
+        policy_name (str): The name of the Azure firewall policy given in the command arguments.
+
+    Raises:
+        DemistoException: If none of the arguments or both of them were provided.
+    """
+    if not firewall_name and not policy_name:
+        raise DemistoException("One of the arguments 'firewall_name' or 'policy_name' must be provided.")
+
+    if firewall_name and policy_name:
+        raise DemistoException("Only one of the arguments 'firewall_name' or 'policy_name' can be provided.")
+
+
+def get_rules_of_collection(rule_collections: list, collection_name: str) -> list:
+    """
+    Retrieves the rules of the firewall rule collection with the given name.
+
+    Args:
+        rule_collections (list): The firewall rule collections from the API response.
+        collection_name (str): The name of the rule collection containing the rules.
+
+    Returns:
+        list: The rules of the matching rule collection, or an empty list if there is no such collection.
+    """
+    return next(
+        (
+            dict_safe_get(collection, ["properties", "rules"], [])
+            for collection in rule_collections
+            if collection.get("name") == collection_name
+        ),
+        [],
+    )
+
+
+def get_firewall_rule_collections(firewall: dict, rule_type: str) -> list:
+    """
+    Extracts the rule collections of the given type from an Azure firewall response.
+
+    Args:
+        firewall (dict): The Azure firewall from the API response.
+        rule_type (str): The rule collection type to retrieve.
+
+    Returns:
+        list: The matching rule collections.
+    """
+    rule_collection_key = {
+        "network_rule": "networkRuleCollections",
+        "application_rule": "applicationRuleCollections",
+        "nat_rule": "natRuleCollections",
+    }.get(rule_type, "")
+
+    return dict_safe_get(firewall, ["properties", rule_collection_key], [])
+
+
+def get_policy_rule_collection_rules(
+    client: AzureClient, subscription_id: str, resource_group_name: str, policy_name: str, collection_name: str
+) -> tuple[dict, list]:
+    """
+    Retrieves the rules of a firewall policy rule collection group.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        subscription_id (str): The ID of the Azure subscription.
+        resource_group_name (str): The name of the resource group containing the policy.
+        policy_name (str): The name of the policy containing the rule collection group.
+        collection_name (str): The name of the rule collection group containing the rules.
+
+    Returns:
+        tuple[dict, list]: The API response and the rules of the rule collection group.
+    """
+    response = client.firewall_policy_rule_collection_get_request(
+        subscription_id, resource_group_name, policy_name, collection_name
+    )
+    rules: list = []
+    rule_collections = dict_safe_get(response, ["properties", "ruleCollections"], [])
+
+    if isinstance(rule_collections, list):
+        # A rule collection group can hold several rule collections, so the rules of all of them are aggregated.
+        for rule_collection in rule_collections:
+            rules.extend(rule_collection.get("rules") or [])
+
+    return response, rules
+
+
+def build_firewall_readable_data(firewalls: list) -> list:
+    """
+    Builds the human readable rows of the Azure firewall commands.
+
+    Args:
+        firewalls (list): The Azure firewalls from the API response.
+
+    Returns:
+        list: The rows to display in the war room.
+    """
+    readable_data = []
+    for firewall in firewalls:
+        properties = firewall.get("properties", {})
+        ip_configurations = properties.get("ipConfigurations") or [{}]
+        readable_data.append(
+            {
+                "name": firewall.get("name"),
+                "id": firewall.get("id"),
+                "location": firewall.get("location"),
+                "subnet": dict_safe_get(ip_configurations[0], ["properties", "subnet", "id"]),
+                "threatIntelMode": properties.get("threatIntelMode"),
+                "privateIPAddress": dict_safe_get(ip_configurations[0], ["properties", "privateIPAddress"]),
+                "provisioningState": properties.get("provisioningState"),
+            }
+        )
+
+    return readable_data
+
+
+def validate_firewall_network_rule_source_and_destination(
+    source_type: str,
+    source_ips: list,
+    source_ip_group_ids: list,
+    destination_type: str,
+    destinations: list,
+) -> None:
+    """
+    Validate that the source and destination arguments of a network rule are consistent with their selected types.
+    Without this validation a value that does not match the selected type is silently dropped, and a rule with no
+    source or no destination is sent to Azure.
+
+    Args:
+        source_type: The source type of the rule, either "ip_address" or "ip_group".
+        source_ips: The source IP addresses of the rule.
+        source_ip_group_ids: The source IP group IDs of the rule.
+        destination_type: The destination type of the rule.
+        destinations: The destinations of the rule.
+
+    Raises:
+        ValueError: If a type is unknown, if the argument matching a provided type is empty, or if an argument that
+            does not match the provided type was supplied.
+    """
+    source_arguments = {"ip_address": ("source_ips", source_ips), "ip_group": ("source_ip_group_ids", source_ip_group_ids)}
+
+    if source_type:
+        if source_type not in source_arguments:
+            raise ValueError(
+                f'The "source_type" argument must be one of {", ".join(source_arguments)}, but "{source_type}" was provided.'
+            )
+        matching_argument, matching_values = source_arguments[source_type]
+        if not matching_values:
+            raise ValueError(
+                f'The "{matching_argument}" argument must be provided when the "source_type" argument is "{source_type}".'
+            )
+        for other_type, (other_argument, other_values) in source_arguments.items():
+            if other_type != source_type and other_values:
+                raise ValueError(
+                    f'The "{other_argument}" argument cannot be provided when the "source_type" argument is "{source_type}".'
+                )
+    elif source_ips or source_ip_group_ids:
+        raise ValueError(
+            'The "source_type" argument must be provided when the "source_ips" or "source_ip_group_ids" argument is provided.'
+        )
+
+    if destination_type:
+        if destination_type not in FIREWALL_NETWORK_RULE_DESTINATION_FIELDS:
+            raise ValueError(
+                f'The "destination_type" argument must be one of {", ".join(FIREWALL_NETWORK_RULE_DESTINATION_FIELDS)}, '
+                f'but "{destination_type}" was provided.'
+            )
+        if not destinations:
+            raise ValueError(
+                f'The "destinations" argument must be provided when the "destination_type" argument is "{destination_type}".'
+            )
+    elif destinations:
+        raise ValueError('The "destination_type" argument must be provided when the "destinations" argument is provided.')
+
+
+def build_firewall_network_rule(args: dict[str, Any], is_firewall_rule: bool) -> dict[str, Any]:
+    """
+    Build an Azure Firewall network rule object from the command arguments.
+
+    Args:
+        args: Command arguments.
+        is_firewall_rule: Whether the rule belongs to a firewall. A policy rule uses a different schema.
+
+    Return:
+        A dictionary containing the network rule object.
+
+    Raises:
+        ValueError: If the source or the destination arguments are inconsistent with their selected types.
+    """
+    source_type = args.get("source_type", "")
+    source_ips = argToList(args.get("source_ips"))
+    source_ip_group_ids = argToList(args.get("source_ip_group_ids"))
+    destination_type = args.get("destination_type", "")
+    destinations = argToList(args.get("destinations"))
+    protocols = argToList(args.get("protocols"))
+
+    validate_firewall_network_rule_source_and_destination(
+        source_type=source_type,
+        source_ips=source_ips,
+        source_ip_group_ids=source_ip_group_ids,
+        destination_type=destination_type,
+        destinations=destinations,
+    )
+    rule: dict[str, Any] = {
+        "name": args.get("rule_name", ""),
+        "description": args.get("description"),
+        "destinationPorts": argToList(args.get("destination_ports")),
+        FIREWALL_NETWORK_RULE_DESTINATION_FIELDS.get(destination_type, "destinationAddresses"): destinations,
+        "sourceAddresses": source_ips if source_type == "ip_address" else None,
+        "sourceIpGroups": source_ip_group_ids if source_type == "ip_group" else None,
+        "protocols": protocols if is_firewall_rule else None,
+        "ipProtocols": None if is_firewall_rule else protocols,
+        "ruleType": None if is_firewall_rule else "NetworkRule",
+    }
+    return remove_empty_elements(rule)
+
+
+def build_firewall_network_rule_update_fields(args: dict[str, Any], is_firewall_rule: bool) -> dict[str, Any]:
+    """
+    Build the properties to replace on an existing Azure Firewall network rule.
+    Only the provided properties are replaced, so the unset ones are pruned rather than overwriting Azure with nulls.
+
+    Args:
+        args: Command arguments.
+        is_firewall_rule: Whether the rule belongs to a firewall. A policy rule uses a different schema.
+
+    Return:
+        A dictionary containing the rule properties to replace.
+
+    Raises:
+        ValueError: If the source or the destination arguments are inconsistent with their selected types.
+    """
+    source_type = args.get("source_type", "")
+    source_ips = argToList(args.get("source_ips"))
+    source_ip_group_ids = argToList(args.get("source_ip_group_ids"))
+    destination_type = args.get("destination_type", "")
+    destinations = argToList(args.get("destinations"))
+    protocols = argToList(args.get("protocols"))
+
+    validate_firewall_network_rule_source_and_destination(
+        source_type=source_type,
+        source_ips=source_ips,
+        source_ip_group_ids=source_ip_group_ids,
+        destination_type=destination_type,
+        destinations=destinations,
+    )
+    update_fields: dict[str, Any] = {
+        "description": args.get("description"),
+        "destinationPorts": argToList(args.get("destination_ports")),
+        FIREWALL_NETWORK_RULE_DESTINATION_FIELDS.get(destination_type, "destinationAddresses"): destinations,
+        "sourceAddresses": source_ips if source_type == "ip_address" else None,
+        "sourceIpGroups": source_ip_group_ids if source_type == "ip_group" else None,
+        "protocols": protocols if is_firewall_rule else None,
+        "ipProtocols": None if is_firewall_rule else protocols,
+    }
+    return remove_empty_elements(update_fields)
+
+
+def get_firewall_network_rule_collections(
+    client: AzureClient, subscription_id: str, resource_group_name: str, firewall_name: str
+) -> tuple[dict, list]:
+    """
+    Retrieve an Azure Firewall resource along with its network rule collections.
+
+    Args:
+        client: The AzureClient.
+        subscription_id: The Azure subscription ID.
+        resource_group_name: The resource group containing the firewall.
+        firewall_name: The name of the Azure Firewall.
+
+    Return:
+        A tuple of the firewall resource and the list of its network rule collections. The list is a
+        reference into the firewall resource, so mutating it updates the resource sent back to Azure.
+    """
+    firewall_data = client.firewall_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, firewall_name=firewall_name
+    )
+    return firewall_data, firewall_data.setdefault("properties", {}).setdefault("networkRuleCollections", [])
+
+
+def find_firewall_network_rule_collection(collections: list, collection_name: str) -> dict:
+    """
+    Find a network rule collection by name within a firewall's rule collections.
+
+    Args:
+        collections: The network rule collections of the firewall.
+        collection_name: The name of the rule collection to find.
+
+    Return:
+        The matching rule collection.
+
+    Raises:
+        ValueError: If the rule collection was not found.
+    """
+    for collection in collections:
+        if collection.get("name") == collection_name:
+            return collection
+    raise ValueError(f'Network rule collection "{collection_name}" was not found.')
+
+
+def get_policy_network_rule_collection(collection_group: dict, collection_name: str) -> dict:
+    """
+    Find a rule collection by name within a firewall policy rule collection group.
+    A rule collection group can legitimately hold several rule collections, so the requested one is matched by name
+    rather than assuming the group holds a single collection.
+
+    Args:
+        collection_group: The firewall policy rule collection group.
+        collection_name: The name of the rule collection to find.
+
+    Return:
+        The matching rule collection.
+
+    Raises:
+        ValueError: If the rule collection was not found in the rule collection group.
+    """
+    rule_collections = dict_safe_get(collection_group, ["properties", "ruleCollections"], [])
+    for rule_collection in rule_collections:
+        if rule_collection.get("name") == collection_name:
+            return rule_collection
+    raise ValueError(f'Network rule collection "{collection_name}" was not found in the policy.')
+
+
+def firewall_policy_network_rule_collection_exists(
+    client: AzureClient, subscription_id: str, resource_group_name: str, policy_name: str, collection_name: str
+) -> bool:
+    """
+    Check whether a rule collection group already exists in a firewall policy.
+
+    Args:
+        client: The AzureClient.
+        subscription_id: The Azure subscription ID.
+        resource_group_name: The resource group containing the firewall policy.
+        policy_name: The name of the firewall policy.
+        collection_name: The name of the rule collection group.
+
+    Return:
+        True if the rule collection group exists, False if Azure reported it as not found.
+
+    Raises:
+        ValueError: If the lookup failed for any reason other than the rule collection group not being found.
+    """
+    try:
+        client.firewall_policy_rule_collection_group_get(
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+        )
+    except ValueError as e:
+        # handle_azure_error raises ValueError for a 404, which simply means the collection name is available.
+        # Any other ValueError is a real failure and must be surfaced rather than reported as "does not exist".
+        error_msg = str(e).lower()
+        if "404" not in error_msg and "not found" not in error_msg:
+            raise
+        demisto.debug(f"Network rule collection {collection_name} does not exist in policy {policy_name}.")
+        return False
+    return True
+
+
+def find_firewall_network_rule(rules: list, rule_name: str) -> dict:
+    """
+    Find a network rule by name within a rule collection's rules.
+
+    Args:
+        rules: The rules of the rule collection.
+        rule_name: The name of the rule to find.
+
+    Return:
+        The matching rule.
+
+    Raises:
+        ValueError: If the rule was not found.
+    """
+    for rule in rules:
+        if rule.get("name") == rule_name:
+            return rule
+    raise ValueError(f'Network rule "{rule_name}" was not found.')
+
+
+def remove_firewall_network_rules(rules: list, rule_names: list) -> tuple[list, list]:
+    """
+    Remove the requested network rules from a rule collection's rules.
+
+    Args:
+        rules: The rules of the rule collection.
+        rule_names: The names of the rules to remove.
+
+    Return:
+        A tuple of the remaining rules and the names of the rules that were not found.
+
+    Raises:
+        ValueError: If none of the requested rules were found.
+    """
+    existing_names = {rule.get("name") for rule in rules}
+    missing_names = [rule_name for rule_name in rule_names if rule_name not in existing_names]
+
+    if len(missing_names) == len(rule_names):
+        raise ValueError(f"None of the requested network rules were found: {', '.join(rule_names)}.")
+
+    return [rule for rule in rules if rule.get("name") not in rule_names], missing_names
+
+
+def build_firewall_network_rule_delete_header(collection_name: str, missing_rules: list) -> str:
+    """
+    Build the readable output header of the network rule delete commands.
+
+    Args:
+        collection_name: The name of the rule collection the network rules were deleted from.
+        missing_rules: The names of the requested network rules that were not found in the rule collection.
+
+    Return:
+        The header of the readable output, naming the network rules that were not found when there are any.
+    """
+    readable_header = f'Successfully deleted network rules from collection "{collection_name}".'
+    if missing_rules:
+        readable_header += f" The following network rules were not found: {', '.join(missing_rules)}."
+    return readable_header
+
+
+def firewall_command_results(response: dict, readable_header: str, outputs_prefix: str) -> CommandResults:
+    """
+    Build the command results for the Azure Firewall network rule commands.
+
+    Args:
+        response: The Azure Firewall resource or the firewall policy rule collection group returned by Azure.
+        readable_header: The header of the readable output.
+        outputs_prefix: The context output prefix of the returned resource.
+
+    Return:
+        CommandResults with the updated resource.
+    """
+    readable_output = tableToMarkdown(
+        readable_header,
+        response,
+        headers=["name", "id", "location", "type"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def validate_firewall_polling_args(args: dict[str, Any]) -> None:
+    """
+    Validate the polling arguments of the Azure Firewall commands.
+
+    Args:
+        args: The command arguments, optionally including "interval_in_seconds" and "polling_timeout".
+
+    Raises:
+        ValueError: If "interval_in_seconds" or "polling_timeout" is not a positive number.
+    """
+    # A supplied 0 is falsy, so the value is only defaulted when the argument was not supplied at all.
+    interval = arg_to_number(args.get("interval_in_seconds"))
+    timeout = arg_to_number(args.get("polling_timeout"))
+    interval = DEFAULT_INTERVAL_IN_SECONDS if interval is None else interval
+    timeout = DEFAULT_TIMEOUT_POLLING_COMMAND if timeout is None else timeout
+
+    if interval <= 0:
+        raise ValueError(f"The interval_in_seconds argument must be a positive number. Currently the value is {interval}.")
+    if timeout <= 0:
+        raise ValueError(f"The polling_timeout argument must be a positive number. Currently the value is {timeout}.")
+
+
+def firewall_poll_result(
+    response: dict,
+    readable_header: str,
+    outputs_prefix: str,
+    resource_name: str,
+    args: dict[str, Any],
+) -> PollResult:
+    """
+    Build the poll result of an Azure Firewall command from the provisioning state of the returned resource.
+    Azure provisions firewalls and firewall policy rule collection groups asynchronously, so the command keeps
+    polling until the resource reaches a terminal provisioning state.
+
+    Args:
+        response: The Azure Firewall resource or the firewall policy rule collection group returned by Azure.
+        readable_header: The header of the readable output of the completed operation.
+        outputs_prefix: The context output prefix of the returned resource.
+        resource_name: The name of the resource being provisioned, used in the polling message.
+        args: The command arguments, reused for the next polling run.
+
+    Return:
+        PollResult: The provisioned resource, or an indication to poll again.
+
+    Raises:
+        ValueError: If the resource reached the "Failed" provisioning state.
+    """
+    provisioning_state = dict_safe_get(response, ["properties", "provisioningState"], "")
+    demisto.debug(f"The provisioning state of {resource_name} is {provisioning_state}.")
+
+    if provisioning_state == FIREWALL_FAILED_PROVISIONING_STATE:
+        raise ValueError(f'The provisioning of "{resource_name}" failed.')
+
+    if provisioning_state not in FIREWALL_TERMINAL_PROVISIONING_STATES:
+        return PollResult(
+            response=None,
+            continue_to_poll=True,
+            args_for_next_run=args,
+            partial_result=CommandResults(
+                readable_output=f'Waiting for "{resource_name}" to be provisioned. Current state: {provisioning_state}.'
+            ),
+        )
+
+    return PollResult(
+        response=firewall_command_results(
+            response=response,
+            readable_header=readable_header,
+            outputs_prefix=outputs_prefix,
+        ),
+        continue_to_poll=False,
+    )
+
+
+def poll_firewall_provisioning(
+    client: AzureClient,
+    subscription_id: str,
+    resource_group_name: str,
+    firewall_name: str,
+    readable_header: str,
+    args: dict[str, Any],
+) -> PollResult:
+    """
+    Retrieve an Azure Firewall and keep polling while it is still being provisioned.
+
+    Args:
+        client: The AzureClient.
+        subscription_id: The Azure subscription ID.
+        resource_group_name: The resource group containing the firewall.
+        firewall_name: The name of the Azure Firewall.
+        readable_header: The header of the readable output of the completed operation.
+        args: The command arguments, reused for the next polling run.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+    """
+    response = client.firewall_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, firewall_name=firewall_name
+    )
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+def poll_firewall_policy_collection_provisioning(
+    client: AzureClient,
+    subscription_id: str,
+    resource_group_name: str,
+    policy_name: str,
+    collection_name: str,
+    readable_header: str,
+    args: dict[str, Any],
+) -> PollResult:
+    """
+    Retrieve a firewall policy rule collection group and keep polling while it is still being provisioned.
+
+    Args:
+        client: The AzureClient.
+        subscription_id: The Azure subscription ID.
+        resource_group_name: The resource group containing the firewall policy.
+        policy_name: The name of the firewall policy.
+        collection_name: The name of the rule collection group.
+        readable_header: The header of the readable output of the completed operation.
+        args: The command arguments, reused for the next polling run.
+
+    Return:
+        PollResult: The provisioned rule collection group, or an indication to poll again.
+    """
+    response = client.firewall_policy_rule_collection_group_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    )
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX,
+        resource_name=collection_name,
+        args=args,
+    )
+
+
+def log_analytics_tags_arg_to_request_format(tags: str | None) -> list[dict[str, str]] | None:
+    """Convert a 'name=value;name=value' tags argument into the API request format.
+
+    Args:
+        tags (str | None): The tags argument as a string in the format 'name=value;name=value'.
+            Multiple tags are separated by semicolons, and each tag's name and value are separated
+            by an equals sign. Can be None or empty.
+
+    Returns:
+        list[dict[str, str]] | None: A list of dictionaries, each with 'name' and 'value' keys
+            representing a single tag, or None if the input is empty or None.
+
+    Raises:
+        DemistoException: If any tag is not in the expected 'name=value' format.
+    """
+    bad_arg_msg = "The `tags` argument is malformed. Value should be in the following format: `name=value;name=value`"
+    if not tags:
+        return None
+    parsed_tags = [tag.split("=") for tag in tags.split(";")]
+    for tag in parsed_tags:
+        if len(tag) != 2:
+            raise DemistoException(bad_arg_msg)
+    return [{"name": tag[0], "value": tag[1]} for tag in parsed_tags]
+
+
+""" COMMAND FUNCTIONS """
+
+
+def update_security_rule_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Update an existing rule.
+
+    As I couldn't find a way to just update specific fields, the command gets the existing rule, then updates
+    the wanted fields and sends that as a "new" rule. This will update the rule and not create a new rule.
+
+    Args:
+        client: The MS Client
+        params: configuration parameters
+        args: args dictionary.
+
+    Returns:
+    an updated rule
+    """
+    security_group_name = args.get("security_group_name", "")
+    security_rule_name = args.get("security_rule_name", "")
+    direction = args.get("direction", "")
+    action = args.get("action", "")
+    protocol = args.get("protocol", "")
+    source = args.get("source", "")
+    source_ports = args.get("source_ports", "")
+    destination = args.get("destination", "")
+    destination_ports = args.get("destination_ports", "")
+    priority = args.get("priority", "")
+    description = args.get("description", "")
+    access = args.get("access", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    rule = client.get_rule(
+        security_group=security_group_name,
+        rule_name=security_rule_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+    )
+    properties = rule.get("properties")
+
+    updated_properties = assign_params(
+        protocol="*" if protocol == "Any" else protocol,
+        access=access or action,
+        priority=priority,
+        direction=direction,
+        description=description,
+    )
+    if source_ports:
+        source_ports_list = argToList(source_ports)
+        if len(source_ports_list) > 1:
+            properties.pop("sourcePortRange", None)  # Can't supply both sourcePortRange and sourcePortRanges
+            updated_properties["sourcePortRanges"] = source_ports_list
+        else:
+            properties.pop("sourcePortRanges", None)  # Can't supply both sourcePortRange and sourcePortRanges
+            updated_properties["sourcePortRange"] = source_ports
+
+    if destination_ports:
+        dest_ports_list = argToList(destination_ports)
+        if len(dest_ports_list) > 1:
+            properties.pop("destinationPortRange", None)  # Can't supply both destinationPortRange,destinationPortRanges
+            updated_properties["destinationPortRanges"] = dest_ports_list
+        else:
+            properties.pop("destinationPortRanges", None)  # Can't supply destinationPortRange and destinationPortRanges
+            updated_properties["destinationPortRange"] = destination_ports
+
+    if destination:
+        dest_list = argToList(destination)
+        if len(dest_list) > 1:
+            properties.pop("destinationAddressPrefix", None)  # Can't supply both destinationAddressPrefix and
+            # destinationAddressPrefix
+            updated_properties["destinationAddressPrefixes"] = dest_list
+        else:
+            properties.pop("destinationAddressPrefixes", None)  # Can't supply both
+            # destinationAddressPrefixes, destinationAddressPrefixes
+            updated_properties["destinationAddressPrefix"] = "*" if destination == "Any" else destination
+
+    if source:
+        source_list = argToList(source)
+        if len(source_list) > 1:
+            properties.pop("sourceAddressPrefix", None)  # Can't supply both sourceAddressPrefixes, sourceAddressPrefix
+            updated_properties["sourceAddressPrefixes"] = source_list
+        else:
+            properties.pop("sourceAddressPrefixes", None)  # Can't supply both sourceAddressPrefixes,sourceAddressPrefix
+            updated_properties["sourceAddressPrefix"] = "*" if source == "Any" else source
+
+    properties.update(updated_properties)
+
+    rule = client.create_or_update_rule(
+        security_group=security_group_name,
+        rule_name=security_rule_name,
+        properties=properties,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+    )
+
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(demisto.command(), "Azure.VirtualNetworks.SecurityRules")
+    if outputs_prefix != "Azure.VirtualNetworks.SecurityRules":
+        return format_rule(rule, security_rule_name)
+
+    hr = tableToMarkdown(f"Rule {security_rule_name} updated successfully", rule, removeNull=True)
+    return CommandResults(outputs_prefix=outputs_prefix, outputs_key_field="id", outputs=rule, readable_output=hr)
+
+
+def storage_account_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+        Gets a storage account if an account name is specified, and a list of storage accounts if not.
+    Args:
+        client: The AzureClient client.
+        params: The configuration parameters.
+        args: The users arguments, (like account name).
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    account_name = args.get("account_name", "")
+    next_token = args.get("next_token", "")
+
+    response = client.storage_account_list_request(
+        account_name=account_name,
+        resource_group_name=resource_group_name,
+        subscription_id=subscription_id,
+        next_token=next_token,
+    )
+    accounts = response.get("value", [response])
+
+    if not accounts:
+        return CommandResults(readable_output="No storage accounts were found.", raw_response=response)
+
+    outputs = {
+        "Azure.Storage.StorageAccounts(val.id && val.id == obj.id)": accounts,
+        "Azure.Storage(true)": {"StorageAccountsNextToken": response.get("nextLink")},
+    }
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=tableToMarkdown(
+            "Azure Storage Account List",
+            accounts,
+            ["id", "name", "type", "kind", "location"],
+            removeNull=True,
+            headerTransform=pascalToSpace,
+        ),
+        raw_response=response,
+    )
+
+
+def storage_blob_container_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+        Gets a blob container if a container name is specified, and a list of blob containers if not.
+    Args:
+        client: The AzureClient client.
+        params: The configuration parameters.
+        args: The users arguments, (like account name, container name).
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    response = client.storage_blob_container_list_request(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, args=args
+    )
+    containers = response.get("value", [response])
+
+    if not containers:
+        return CommandResults(readable_output="No blob containers were found.", raw_response=response)
+
+    outputs = {
+        "Azure.Storage.BlobContainers(val.id && val.id == obj.id)": containers,
+        "Azure.Storage(true)": {"BlobContainersNextToken": response.get("nextLink")},
+    }
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=tableToMarkdown(
+            "Azure Storage Blob Containers List",
+            containers,
+            ["id", "name", "type"],
+            removeNull=True,
+            headerTransform=pascalToSpace,
+        ),
+        raw_response=response,
+    )
+
+
+def storage_account_update_command(client: AzureClient, params: dict, args: dict) -> CommandResults | str:
+    """
+        Creates or updates a given storage account.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments, (like account name).
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    # subscription_id = args.get("subscription_id")
+    # resource_group_name = args.get("resource_group_name")
+    response = client.storage_account_update_request(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, args=args
+    )
+    if not response.text:
+        return f"The request was accepted - the account {args.get('account_name')} will be created shortly."
+
+    response = response.json()
+
+    readable_output = {
+        "Account Name": response.get("name"),
+        "Subscription ID": subscription_id,
+        "Resource Group": resource_group_name,
+        "Network Ruleset Bypass": response.get("properties", {}).get("networkAcls", {}).get("bypass")
+        if args.get("network_ruleset_bypass")
+        else None,
+        "Default Action": response.get("properties", {}).get("networkAcls", {}).get("defaultAction")
+        if args.get("network_ruleset_default_action")
+        else None,
+        "Allow Cross Tenant Replication": response.get("properties", {}).get("allowCrossTenantReplication")
+        if args.get("allow_cross_tenant_replication")
+        else None,
+        "Supports Https Traffic Only": response.get("properties", {}).get("supportsHttpsTrafficOnly")
+        if args.get("supports_https_traffic_only")
+        else None,
+    }
+
+    return CommandResults(
+        outputs_prefix="Azure.Storage.StorageAccounts",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=tableToMarkdown(
+            "Azure Storage Account",
+            readable_output,
+            [
+                "Account Name",
+                "Subscription ID",
+                "Resource Group",
+                "Network Ruleset Bypass",
+                "Default Action",
+                "Allow Cross Tenant Replication",
+                "Supports Https Traffic Only",
+            ],
+            removeNull=True,
+        ),
+        raw_response=response,
+    )
+
+
+def storage_blob_service_properties_set_command(client: AzureClient, params: dict, args: dict):
+    """
+        Sets the blob service properties for the storage account.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments, (like account name).
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    delete_retention_policy_enabled = args.get("delete_retention_policy_enabled", args.get("delete_rentention_policy_enabled"))
+    delete_retention_policy_days = args.get("delete_retention_policy_days", args.get("delete_rentention_policy_days"))
+    account_name = args.get("account_name", "")
+
+    response = client.storage_blob_service_properties_set_request(
+        subscription_id, resource_group_name, account_name, delete_retention_policy_enabled, delete_retention_policy_days
+    )
+
+    readable_output = {
+        "Name": response.get("name"),
+        "ID": response.get("id"),
+        "Delete Retention Policy": response.get("properties", {}).get("deleteRetentionPolicy")
+        if delete_retention_policy_enabled is not None or delete_retention_policy_days is not None
+        else None,
+    }
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Storage.BlobServices")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=tableToMarkdown(
+            "Updated Azure Storage Blob Service Properties",
+            readable_output,
+            ["Name", "ID", "Delete Retention Policy"],
+            removeNull=True,
+        ),
+        raw_response=response,
+    )
+
+
+def storage_blob_containers_update_command(client: AzureClient, params: dict, args: dict):
+    """
+        Updates a given blob container.
+    Args:
+        client: The Microsoft client.
+        params: The configuration parameters.
+        args: User-provided arguments, such as the account name and container name.
+
+    Returns:
+        CommandResults: The command results, including the Markdown table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    response = client.storage_blob_containers_create_update_request(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, args=args, method="PATCH"
+    )
+
+    subscription_id, resource_group, account_name = extract_azure_resource_info(response.get("id", ""))
+
+    readable_output = {
+        "Name": response.get("name", ""),
+        "Account Name": account_name,
+        "Subscription ID": subscription_id,
+        "Resource Group": resource_group,
+        "Public Access": response.get("properties", {}).get("publicAccess"),
+    }
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Storage.BlobContainers")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+        readable_output=tableToMarkdown(
+            name="Azure Storage Blob Containers Properties",
+            t=readable_output,
+            headers=["Name", "Account Name", "Subscription ID", "Resource Group", "Public Access"],
+            removeNull=True,
+        ),
+    )
+
+
+def storage_blob_service_properties_get_command(client: AzureClient, params: dict, args: dict):
+    """
+        Gets the blob service properties for the storage account.
+    Args:
+        client: The AzureClient client.
+        params: The configuration parameters.
+        args: User-provided arguments, such as the account name and container name.
+
+    Returns:
+        CommandResults: The command results, including the Markdown table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    account_name = args.get("account_name", "")
+    response = client.storage_blob_service_properties_get_request(
+        account_name=account_name, resource_group_name=resource_group_name, subscription_id=subscription_id
+    )
+    subscription_id, resource_group, account_name = extract_azure_resource_info(response.get("id", ""))
+
+    readable_output = {
+        "Name": response.get("name", ""),
+        "Account Name": account_name,
+        "Subscription ID": subscription_id,
+        "Resource Group": resource_group,
+        "Change Feed": response.get("properties", {}).get("changeFeed", {}).get("enabled", ""),
+        "Delete Retention Policy": response.get("properties", {}).get("deleteRetentionPolicy", {}).get("enabled", ""),
+        "Versioning": response.get("properties", {}).get("isVersioningEnabled"),
+    }
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Storage.BlobServices")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+        readable_output=tableToMarkdown(
+            name="Azure Storage Blob Service Properties",
+            t=readable_output,
+            headers=[
+                "Name",
+                "Account Name",
+                "Subscription ID",
+                "Resource Group",
+                "Change Feed",
+                "Delete Retention Policy",
+                "Versioning",
+            ],
+            removeNull=True,
+        ),
+    )
+
+
+def storage_container_property_get_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+        Gets the properties of a storage container.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    container_name = args["container_name"]
+    account_name = args.get("account_name", "")
+    response = client.get_storage_container_properties_request(account_name, container_name)
+    raw_response = response.headers
+    raw_response = dict(raw_response)  # Convert raw_response from 'CaseInsensitiveDict' to 'dict'
+    outputs = {}
+
+    outputs["ContainerName"] = container_name
+    outputs["Property"] = raw_response
+
+    readable_output = tableToMarkdown(
+        f"Container {container_name} Properties:",
+        outputs.get("Property"),
+        headerTransform=string_to_table_header,
+        removeNull=True,
+    )
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.Storage.Container",
+        outputs_key_field="ContainerName",
+        outputs=outputs,
+        raw_response=raw_response,
+    )
+
+
+def storage_container_create_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Create a new Container under the specified account.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    account_name = args.get("account_name", "")
+
+    container_name_regex = "^[a-z0-9](?!.*--)[a-z0-9-]{1,61}[a-z0-9]$"
+    # Rules for naming containers can be found here:
+    # https://docs.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
+
+    if not re.search(container_name_regex, container_name):
+        raise Exception("The specified container name is invalid.")
+
+    client.create_storage_container_request(container_name, account_name)
+
+    return CommandResults(
+        readable_output=f"Container {container_name} successfully created.",
+    )
+
+
+def storage_container_delete_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Delete Container under the specified account.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    account_name = args.get("account_name", "")
+
+    client.delete_storage_container_request(container_name, account_name)
+
+    return CommandResults(
+        readable_output=f"Container {container_name} successfully deleted.",
+    )
+
+
+def storage_container_blob_create_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Create a new Blob under the specified Container.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    account_name = args.get("account_name", "")
+    file_entry_id = args["file_entry_id"]
+    blob_name = args.get("blob_name", "")
+
+    file_data = demisto.getFilePath(file_entry_id)  # Retrieve system file path and name, given file entry ID.
+    system_file_path = file_data["path"]
+    file_name = blob_name if blob_name else file_data["name"]
+
+    client.storage_container_create_blob_request(container_name, account_name, file_entry_id, file_name, system_file_path)  # noqa: E501
+
+    command_results = CommandResults(readable_output=f"Blob {file_name} successfully created.")
+
+    return command_results
+
+
+def storage_container_blob_get_command(client: AzureClient, params: dict, args: dict) -> Any:
+    """
+    Retrieve Blob from Container.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments.
+
+    Returns:
+        fileResult: File Result.
+
+    """
+    container_name = args["container_name"]
+    blob_name = args["blob_name"]
+    account_name = args.get("account_name", "")
+
+    response = client.storage_container_blob_get_request(container_name, blob_name, account_name)
+    if hasattr(response, "content"):
+        return fileResult(filename=blob_name, data=response.content)  # type: ignore[attr-defined]
+    else:
+        raise DemistoException(f"Failed to get content from response for blob {blob_name}")
+
+
+def storage_container_blob_tag_get_command(client: AzureClient, params: dict, args: dict):
+    """
+        Gets the tags of a blob from the storage container.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    container_name = args["container_name"]
+    blob_name = args["blob_name"]
+    account_name = args.get("account_name", "")
+
+    response = client.storage_container_blob_tag_get_request(container_name, blob_name, account_name)
+
+    tree = ET.ElementTree(defused_ET.fromstring(response))
+    root = tree.getroot()
+
+    raw_response = []
+    outputs = {"name": container_name, "Blob": {"name": blob_name}}
+
+    for element in root.iter("Tag"):
+        tag = {"Key": element.findtext("Key"), "Value": element.findtext("Value")}
+        raw_response.append(dict(tag))
+
+    outputs["Blob"]["Tag"] = raw_response
+
+    readable_output = tableToMarkdown(
+        f"Blob {blob_name} Tags:", outputs["Blob"]["Tag"], headers=["Key", "Value"], headerTransform=pascalToSpace
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Storage.Blob")
+    if command != "azure-storage-container-blob-tag-get":
+        outputs["Blob"]["ContainerName"] = outputs.pop("name")
+        outputs = outputs.get("Blob", {})
+        demisto.debug(f"The {command=} name was used, updated the outputs accordingly.")
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="name",
+        outputs=outputs,
+        raw_response=raw_response,
+    )
+
+
+def create_set_tags_request_body(tags: dict) -> bytes:
+    """
+    Create XML request body for set blob tags.
+    Args:
+        tags (dict): Tags data. Key represents tag name , and value represents tag Value.
+
+    Returns:
+        str: Set tags request body.
+
+    """
+    tags_element = ET.Element("Tags")
+    tag_set_element = ET.SubElement(tags_element, "TagSet")
+
+    for key, value in tags.items():
+        tag_element = ET.SubElement(tag_set_element, "Tag")
+        ET.SubElement(tag_element, "Key").text = key
+        ET.SubElement(tag_element, "Value").text = value
+
+    return ET.tostring(tags_element, encoding="utf-8", xml_declaration=True)
+
+
+def storage_container_blob_tag_set_command(client: AzureClient, params: dict, args: dict):
+    """
+    Sets the tags for the specified Blob.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response
+
+    """
+    account_name = args.get("account_name", "")
+    container_name = args["container_name"]
+    blob_name = args["blob_name"]
+    tags = args["tags"]
+    append_tags = argToBoolean(args.get("append", False))
+
+    try:
+        tags = json.loads(tags)
+        demisto.debug(f"{tags=}")
+    except ValueError:
+        raise ValueError("Failed to parse tags argument. Please provide valid JSON format tags data.")
+
+    if append_tags:
+        results = storage_container_blob_tag_get_command(client, params, args)
+        original_tags = results.outputs["Tag"]
+        demisto.debug(f"Appending the new tags to {original_tags=}")
+        dict_original_tags = {tag["Key"]: tag["Value"] for tag in original_tags}
+        dict_original_tags.update(tags)
+        tags = dict_original_tags
+        demisto.debug(f"After the append {tags=}")
+
+    xml_data = create_set_tags_request_body(tags)
+
+    client.storage_container_blob_tags_set_request(container_name, blob_name, xml_data, account_name)
+
+    command_results = CommandResults(
+        readable_output=f"{blob_name} Tags successfully updated.",
+    )
+
+    return command_results
+
+
+def convert_dict_time_format(data: dict, keys: list, date_format=DATE_FORMAT):
+    """
+    Convert dictionary data values time format.
+    Args:
+        data (dict): Data.
+        keys (list): Keys list to convert
+
+    """
+    for key in keys:
+        if data.get(key):
+            time_value = datetime.strptime(data.get(key), date_format)  # type: ignore
+            iso_time = FormatIso8601(time_value)
+            data[key] = iso_time
+
+
+def storage_container_blob_property_get_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Retrieve Blob properties.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    blob_name = args["blob_name"]
+    account_name = args.get("account_name", "")
+
+    response = client.storage_container_blob_property_get_request(container_name, blob_name, account_name)
+
+    if not hasattr(response, "headers"):
+        raise DemistoException(f"Failed to get headers from response for blob {blob_name}")
+
+    raw_response = response.headers  # type: ignore[attr-defined]
+    raw_response = dict(raw_response)  # Convert raw_response from 'CaseInsensitiveDict' to 'dict'
+    outputs = {}
+
+    outputs["name"] = container_name
+    outputs["Blob"] = {"name": blob_name, "Property": raw_response}
+
+    readable_output = tableToMarkdown(
+        f"Blob {blob_name} Properties:",
+        outputs.get("Blob").get("Property"),  # type: ignore
+        headerTransform=string_to_table_header,
+        removeNull=True,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Storage.Blob")
+    if command != "azure-storage-container-blob-property-get":
+        outputs["Blob"]["ContainerName"] = outputs.pop("name")
+        outputs = outputs.get("Blob", {})
+        demisto.debug(f"The new {command=} name was used, updated the outputs accordingly.")
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="name",
+        outputs=outputs,
+        raw_response=raw_response,
+    )
+
+
+def storage_container_blob_property_set_command(client: AzureClient, params: dict, args: dict):
+    """
+    Set Blob properties.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    blob_name = args["blob_name"]
+    content_type = args.get("content_type", "")
+    content_md5 = args.get("content_md5", "")
+    content_encoding = args.get("content_encoding", "")
+    content_language = args.get("content_language", "")
+    content_disposition = args.get("content_disposition", "")
+    cache_control = args.get("cache_control", "")
+    request_id = args.get("request_id", "")
+    lease_id = args.get("lease_id", "")
+    account_name = args.get("account_name", "")
+
+    headers = remove_empty_elements(
+        {
+            "x-ms-blob-cache-control": cache_control,
+            "x-ms-blob-content-type": content_type,
+            "x-ms-blob-content-md5": content_md5,
+            "x-ms-blob-content-encoding": content_encoding,
+            "x-ms-blob-content-language": content_language,
+            "x-ms-blob-content-disposition": content_disposition,
+            "x-ms-client-request-id": request_id,
+            "x-ms-lease-id": lease_id,
+            "Content-Length": "0",
+        }
+    )
+
+    client.storage_container_blob_properties_set_request(container_name, blob_name, account_name, headers)
+
+    command_results = CommandResults(
+        readable_output=f"Blob {blob_name} properties successfully updated.",
+    )
+
+    return command_results
+
+
+def storage_container_block_public_access_command(client: AzureClient, params: dict, args: dict):
+    """
+    Block container's public access.
+
+    Args:
+        client (Client): Azure Blob Storage API client.
+        args (dict): Command arguments
+
+    Returns:
+        CommandResults: outputs and raw response.
+
+    """
+
+    account_name = args.get("account_name", "")
+    container_name = args.get("container_name", "")
+
+    response = client.storage_container_block_public_access_request(account_name, container_name)
+    demisto.debug(f"Response from block public access API:- {response}")
+    command_results = CommandResults(
+        readable_output=f"Public access to container '{container_name}' has been successfully blocked",
+    )
+    return command_results
+
+
+def create_table_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Create a new table in a storage account.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: outputs, readable output and raw response for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+
+    if not re.search(TABLE_NAME_REGEX, table_name):
+        raise ValueError("The specified table name is invalid.")
+
+    response = client.create_table_request(account_name, table_name)
+    outputs = {"TableName": response.get("TableName")}
+
+    return CommandResults(
+        readable_output=f"Table {table_name} successfully created.",
+        outputs_prefix="Azure.Storage.Table",
+        outputs_key_field="TableName",
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def delete_table_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Delete the specified table and any data it contains.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: readable output for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+
+    client.delete_table_request(account_name, table_name)
+
+    return CommandResults(readable_output=f"Table {table_name} successfully deleted.")
+
+
+def list_tables_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    List tables under the specified account.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: outputs, readable output and raw response for XSOAR.
+    """
+    account_name = args["account_name"]
+    limit = arg_to_number(args.get("limit")) or int(DEFAULT_LIMIT)
+    validate_limit(limit, max_limit=TABLE_MAX_PAGE_SIZE)
+    query_filter = args.get("filter")
+    next_token = args.get("next_token", "")
+
+    demisto.debug(f"[Azure] listing tables for {account_name=} with {limit=} {query_filter=} next_token={bool(next_token)}")
+    response = client.list_tables_request(account_name, str(limit), query_filter, next_token)
+    raw_response = response.json()
+
+    tables = raw_response.get("value", [])
+    if not tables:
+        return CommandResults(
+            readable_output=f"No tables found in storage account {account_name}.",
+            outputs={"Azure.Storage(true)": {"TablesNextToken": response.headers.get("x-ms-continuation-NextTableName")}},
+        )
+
+    # The Table data-plane returns the continuation token for the next page in the
+    # 'x-ms-continuation-NextTableName' response header (empty when there are no more results).
+    outputs = {
+        "Azure.Storage.Table(val.TableName && val.TableName == obj.TableName)": tables,
+        "Azure.Storage(true)": {"TablesNextToken": response.headers.get("x-ms-continuation-NextTableName")},
+    }
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=tableToMarkdown(
+            f"Azure Storage Tables (account: {account_name})",
+            tables,
+            ["TableName"],
+            removeNull=True,
+            headerTransform=pascalToSpace,
+        ),
+        raw_response=raw_response,
+    )
+
+
+def insert_entity_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Insert a new entity into a table.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: outputs, readable output and raw response for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+
+    try:
+        entity_fields = json.loads(args["entity_fields"])
+    except json.JSONDecodeError as e:
+        raise DemistoException(f'Failed to parse the "entity_fields" argument as JSON. Please verify it is valid JSON. {e}')
+    kwargs = {**entity_fields, "PartitionKey": args["partition_key"], "RowKey": args["row_key"]}
+    remove_nulls_from_dictionary(kwargs)
+
+    response = client.insert_entity_request(account_name, table_name, kwargs)
+
+    outputs = dict(response)
+    # The Table data-plane returns Timestamp with 7 fractional-second digits (e.g.
+    # "2021-08-16T14:52:20.7422729Z"), but Python's %f directive supports only 6 digits. As in the legacy
+    # AzureStorageTable pack, trim the last 2 characters (the 7th fractional digit and the trailing "Z")
+    # and re-append "Z" before parsing with the fractional-aware TABLE_TIMESTAMP_FORMAT.
+    if outputs.get("Timestamp"):
+        outputs["Timestamp"] = outputs["Timestamp"][:-2] + "Z"
+    convert_dict_time_format(outputs, ["Timestamp"], date_format=TABLE_TIMESTAMP_FORMAT)
+
+    readable_output = tableToMarkdown(
+        f"Entity Fields for {table_name} Table:",
+        [outputs],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.Storage.Table.Entity",
+        outputs_key_field=["PartitionKey", "RowKey"],
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def update_entity_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Update an existing entity in a table. This operation does not replace the existing entity.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: readable output for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+    partition_key = args["partition_key"]
+    row_key = args["row_key"]
+    try:
+        entity_fields = json.loads(args["entity_fields"])
+    except json.JSONDecodeError as e:
+        raise DemistoException(f'Failed to parse the "entity_fields" argument as JSON. Please verify it is valid JSON. {e}')
+
+    client.update_entity_request(account_name, table_name, partition_key, row_key, entity_fields)
+
+    return CommandResults(readable_output=f"Entity in {table_name} table successfully updated.")
+
+
+def replace_entity_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Replace an existing entity in a table. Replaces the entire entity and can be used to remove properties.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: readable output for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+    partition_key = args["partition_key"]
+    row_key = args["row_key"]
+    try:
+        entity_fields = json.loads(args["entity_fields"])
+    except json.JSONDecodeError as e:
+        raise DemistoException(f'Failed to parse the "entity_fields" argument as JSON. Please verify it is valid JSON. {e}')
+
+    client.replace_entity_request(account_name, table_name, partition_key, row_key, entity_fields)
+
+    return CommandResults(readable_output=f"Entity in {table_name} table successfully replaced.")
+
+
+def query_entity_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Query entities in a table.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: outputs, readable output and raw response for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+    partition_key = args.get("partition_key")
+    row_key = args.get("row_key")
+    query_filter = args.get("filter")
+    select = argToList(args.get("select"))
+    limit = None if partition_key else (arg_to_number(args.get("limit")) or int(DEFAULT_LIMIT))
+    validate_limit(limit, max_limit=TABLE_MAX_PAGE_SIZE)
+
+    if (partition_key and not row_key) or (row_key and not partition_key):
+        raise ValueError("Please provide both 'partition_key' and 'row_key' arguments, or none of them.")
+
+    # The Table data-plane paginates entity queries via a compound continuation token returned across two
+    # response headers (NextPartitionKey + NextRowKey). We expose it to the user as a single tab-joined
+    # token and split it back into the two query params on the next call. A tab is a control character that
+    # Azure disallows in both PartitionKey and RowKey, so it is a safe delimiter for a clean round-trip.
+    next_partition_key, _, next_row_key = args.get("next_token", "").partition("\t")
+
+    demisto.debug(
+        f"[Azure] querying entities in {table_name=} for {account_name=} with "
+        f"partition_key={bool(partition_key)} {query_filter=} {select=} {limit=} next_token={bool(next_partition_key)}"
+    )
+    response = client.query_entity_request(
+        account_name,
+        table_name,
+        partition_key,
+        row_key,
+        query_filter,
+        ",".join(select) if select else None,
+        str(limit) if limit else None,
+        next_partition_key or None,
+        next_row_key or None,
+    )
+    raw_response = response.json()
+
+    next_page_partition_key = response.headers.get("x-ms-continuation-NextPartitionKey")
+    next_page_row_key = response.headers.get("x-ms-continuation-NextRowKey")
+    entities_next_token = f"{next_page_partition_key}\t{next_page_row_key or ''}" if next_page_partition_key else None
+
+    entities = [raw_response] if partition_key else raw_response.get("value", [])
+
+    if not entities:
+        return CommandResults(
+            readable_output=f"No entities found in table {table_name}.",
+            outputs={"Azure.Storage(true)": {"EntitiesNextToken": entities_next_token}},
+        )
+
+    for entity in entities:
+        # Trim the Table data-plane's 7th fractional-second digit (and trailing "Z") down to the 6 digits
+        # Python's %f supports, matching the legacy AzureStorageTable pack, before parsing the timestamp.
+        if entity.get("Timestamp"):
+            entity["Timestamp"] = entity["Timestamp"][:-2] + "Z"
+        convert_dict_time_format(entity, ["Timestamp"], date_format=TABLE_TIMESTAMP_FORMAT)
+
+    readable_output = tableToMarkdown(
+        f"Entity Fields for {table_name} table:",
+        entities,
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+
+    outputs: dict[str, Any] = {
+        "Azure.Storage.Table.Entity(val.PartitionKey && val.PartitionKey == obj.PartitionKey "
+        "&& val.RowKey && val.RowKey == obj.RowKey)": entities,
+    }
+    if not partition_key:
+        outputs["Azure.Storage(true)"] = {"EntitiesNextToken": entities_next_token}
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=raw_response,
+    )
+
+
+def delete_entity_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Delete an existing entity in a table.
+
+    Args:
+        client (AzureClient): Azure Storage Table API client.
+        params (dict): Integration configuration parameters.
+        args (dict): Command arguments from XSOAR.
+
+    Returns:
+        CommandResults: readable output for XSOAR.
+    """
+    account_name = args["account_name"]
+    table_name = args["table_name"]
+    partition_key = args["partition_key"]
+    row_key = args["row_key"]
+
+    client.delete_entity_request(account_name, table_name, partition_key, row_key)
+
+    return CommandResults(readable_output=f"Entity in {table_name} table successfully deleted.")
+
+
+def storage_container_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    List Containers under the specified storage account.
+
+    Args:
+        client (AzureClient): Azure Blob Storage API client.
+        params (dict): The configuration parameters.
+        args (dict): Command arguments (account_name, prefix, limit, next_token).
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    account_name = args.get("account_name", "")
+
+    response = client.storage_containers_list_request(account_name, args)
+
+    root = defused_ET.fromstring(response)
+
+    containers = []
+    for element in root.iter("Container"):
+        properties = {}
+        for container_property in element.findall("Properties"):
+            for attribute in container_property:
+                properties[attribute.tag] = attribute.text
+        containers.append({"name": element.findtext("Name"), "Property": properties})
+
+    # Azure returns an empty <NextMarker /> on the last page; normalize it to None so a stale token is overwritten.
+    next_token = root.findtext("NextMarker") or None
+    token_output = {"Azure.Storage(true)": {"ContainersNextToken": next_token}}
+
+    if not containers:
+        readable_output = "No containers were found."
+        if next_token:
+            readable_output += " More pages are available - re-run the command with the next_token argument to continue."
+        return CommandResults(readable_output=readable_output, outputs=token_output, raw_response=response)
+
+    outputs = {
+        "Azure.Storage.Container(val.name && val.name == obj.name)": remove_empty_elements(containers),
+        **token_output,
+    }
+
+    readable_output = tableToMarkdown(
+        f"Containers List in account {account_name}:",
+        containers,
+        headers=["name"],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def storage_container_blob_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    List Blobs under the specified container.
+
+    Args:
+        client (AzureClient): Azure Blob Storage API client.
+        params (dict): The configuration parameters.
+        args (dict): Command arguments (account_name, container_name, prefix, limit, next_token).
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    account_name = args.get("account_name", "")
+    container_name = args["container_name"]
+
+    response = client.storage_container_blobs_list_request(account_name, container_name, args)
+
+    root = defused_ET.fromstring(response)
+
+    blobs = []
+    for element in root.iter("Blob"):
+        properties = {}
+        for blob_property in element.findall("Properties"):
+            for attribute in blob_property:
+                properties[attribute.tag] = attribute.text
+        blobs.append({"name": element.findtext("Name"), "ContainerName": container_name, "Property": properties})
+
+    # Azure returns an empty <NextMarker /> on the last page; normalize it to None so a stale token is overwritten.
+    next_token = root.findtext("NextMarker") or None
+    token_output = {"Azure.Storage(true)": {"BlobsNextToken": next_token}}
+
+    if not blobs:
+        readable_output = f"No blobs were found in container {container_name}."
+        if next_token:
+            readable_output += " More pages are available - re-run the command with the next_token argument to continue."
+        return CommandResults(readable_output=readable_output, outputs=token_output, raw_response=response)
+
+    outputs = {
+        "Azure.Storage.Blob(val.name && val.name == obj.name && val.ContainerName == obj.ContainerName)": remove_empty_elements(
+            blobs
+        ),
+        **token_output,
+    }
+
+    readable_output = tableToMarkdown(
+        f"Blobs List in container {container_name}:",
+        blobs,
+        headers=["name"],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def storage_container_blob_update_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Update the content of an existing Blob under the specified Container.
+
+    Args:
+        client (AzureClient): Azure Blob Storage API client.
+        params (dict): The configuration parameters.
+        args (dict): Command arguments (account_name, container_name, file_entry_id, blob_name).
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    account_name = args.get("account_name", "")
+    file_entry_id = args["file_entry_id"]
+    blob_name = args["blob_name"]
+
+    # The upload API creates the blob when it is missing, so check first to keep this an update of an existing blob.
+    if not client.storage_container_blob_exists(container_name, blob_name, account_name):
+        raise DemistoException(
+            f"Blob {blob_name} does not exist in container {container_name}. "
+            "Use the azure-storage-blob-create command to create a new blob."
+        )
+
+    file_data = demisto.getFilePath(file_entry_id)  # Retrieve system file path and name, given file entry ID.
+    system_file_path = file_data["path"]
+
+    client.storage_container_create_blob_request(container_name, account_name, file_entry_id, blob_name, system_file_path)
+
+    return CommandResults(readable_output=f"Blob {blob_name} successfully updated.")
+
+
+def storage_container_blob_delete_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Delete Blob from the specified Container.
+
+    Args:
+        client (AzureClient): Azure Blob Storage API client.
+        params (dict): The configuration parameters.
+        args (dict): Command arguments (account_name, container_name, blob_name).
+
+    Returns:
+        CommandResults: outputs, readable outputs and raw response.
+
+    """
+    container_name = args["container_name"]
+    blob_name = args["blob_name"]
+    account_name = args.get("account_name", "")
+
+    client.storage_container_blob_delete_request(container_name, blob_name, account_name)
+
+    return CommandResults(readable_output=f"Blob {blob_name} successfully deleted.")
+
+
+def check_valid_permission(valid_permissions: str, input_permissions: str) -> bool:
+    """
+    Check the permissions follow a valid permission order.
+
+    Args:
+        valid_permissions (str): Valid permissions order.
+        input_permissions (str): Permissions given.
+
+    Returns:
+        bool: True if the given permissions are valid and in the correct order.
+
+    """
+    if not input_permissions or len(input_permissions) > len(valid_permissions):
+        return False
+    if any(permission not in valid_permissions for permission in input_permissions):
+        return False
+    for current_permission, next_permission in itertools.pairwise(input_permissions):
+        if valid_permissions.index(current_permission) > valid_permissions.index(next_permission):
+            return False
+    return True
+
+
+def generate_sas_signature(
+    account_key: str,
+    canonicalized_resource: str,
+    signed_permissions: str,
+    signed_start: str,
+    signed_expiry: str,
+    signed_resource: str,
+    api_version: str,
+    signed_ip: str = "",
+) -> str:
+    """
+    Generate a SAS token for a Container.
+
+    Args:
+        account_key (str): Account key of the storage account.
+        canonicalized_resource (str): Canonicalized resource.
+        signed_permissions (str): Signed permissions.
+        signed_start (str): Start time for the SAS token.
+        signed_expiry (str): Expiry time for the SAS token.
+        signed_resource (str): Signed resource type.
+        api_version (str): The signed version.
+        signed_ip (str): Public IP address or range from which to accept requests.
+
+    Returns:
+        str: The URL-encoded SAS token.
+
+    """
+    if signed_ip is None:
+        signed_ip = ""
+    string_to_sign = (
+        f"{signed_permissions}\n{signed_start}\n{signed_expiry}\n{canonicalized_resource}\n\n"
+        f"{signed_ip}\nhttps\n{api_version}\n{signed_resource}\n\n\n\n\n\n"
+    ).encode()
+    signed_hmac_sha256 = hmac.new(base64.b64decode(account_key), string_to_sign, hashlib.sha256)
+    sig = base64.b64encode(signed_hmac_sha256.digest())
+
+    token = {
+        "sp": signed_permissions,
+        "st": signed_start,
+        "se": signed_expiry,
+        "sip": signed_ip,
+        "spr": "https",
+        "sv": api_version,
+        "sr": signed_resource,
+        "sig": sig,
+    }
+    remove_nulls_from_dictionary(token)
+
+    return urllib.parse.urlencode(token)
+
+
+def generate_sas_token_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Generate a SAS URL for a Container.
+
+    Args:
+        client (AzureClient): Azure Blob Storage API client.
+        params (dict): The configuration parameters.
+        args (dict): Command arguments (account_name, container_name, expiry_time, signed_resources,
+            signed_permissions, signed_ip, account_key).
+
+    Returns:
+        CommandResults: outputs and raw response.
+
+    """
+    account_name = args.get("account_name", "")
+    container_name = args["container_name"]
+    signed_resource = args["signed_resources"]
+    signed_permissions = args["signed_permissions"]
+    signed_ip = args.get("signed_ip", "")
+    valid_permissions = "racwdxltmeop"
+    api_version = STORAGE_API_VERSION
+
+    if not check_valid_permission(valid_permissions, signed_permissions):
+        raise DemistoException(
+            "Permissions are invalid or in the wrong order. The correct order for permissions is 'racwdxltmeop'."
+        )
+
+    account_key = args["account_key"]
+
+    now = dt.datetime.now(UTC)
+    signed_start = (now - dt.timedelta(minutes=2)).strftime(DATE_FORMAT)
+    expiry_time = arg_to_number(args.get("expiry_time")) or 1
+    signed_expiry = (now + dt.timedelta(hours=expiry_time)).strftime(DATE_FORMAT)
+
+    canonicalized_resource = f"/blob/{account_name}/{container_name}"
+    url = f"https://{account_name}.{BLOB_SERVICE_PREFIX}/{container_name}"
+
+    sas_token = generate_sas_signature(
+        account_key,
+        canonicalized_resource,
+        signed_permissions,
+        signed_start,
+        signed_expiry,
+        signed_resource,
+        api_version,
+        signed_ip,
+    )
+    sas_url = f"{url}?{sas_token}"
+
+    return CommandResults(
+        readable_output=tableToMarkdown("Azure Storage Container SAS URL", {"SAS URL": sas_url}, headerTransform=pascalToSpace),
+        outputs_prefix="Azure.Storage.Container.SAS",
+        outputs_key_field="name",
+        outputs={"name": container_name, "SASURL": sas_url},
+    )
+
+
+def create_policy_assignment_command(client: AzureClient, params: dict, args: dict):
+    """
+        Creates a policy assignment.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    name = args.get("name", "")
+    scope = args.get("scope", "")
+    policy_definition_id: str = args.get("policy_definition_id", "")
+    display_name = args.get("display_name", "")
+    parameters = json.loads(args.get("parameters", "{}"))
+    description = args.get("description", "")
+    response = client.create_policy_assignment(name, policy_definition_id, display_name, parameters, description, scope)
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "Policy Definition ID": response.get("properties", {}).get("policyDefinitionId", ""),
+            "Display Name": response.get("properties", {}).get("displayName", ""),
+            "Description": response.get("properties", {}).get("description", ""),
+            "ID": response.get("id"),
+            "Parameters": response.get("properties", {}).get("parameters") if parameters else None,
+        }
+    ]
+    md = tableToMarkdown(
+        f"Azure policy assignment {name} was successfully created.",
+        outputs,
+        ["ID", "Name", "Policy Definition ID", "Display Name", "Description", "Parameters"],
+        removeNull=True,
+    )
+    return CommandResults(
+        outputs_prefix="Azure.Policy.PolicyAssignments",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def set_postgres_config_command(client: AzureClient, params: dict, args: dict):
+    """
+        Updates a configuration of PostgreSQL server.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    server_name = args.get("server_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    configuration_name = args.get("configuration_name", "")
+    source = args.get("source", "")
+    value = args.get("value", "")
+    client.set_postgres_config(server_name, subscription_id, resource_group_name, configuration_name, source, value)
+    return CommandResults(readable_output=f"Updated the configuration {configuration_name} of the server {server_name}.")
+
+
+def set_webapp_config_command(client: AzureClient, params: dict, args: dict):
+    """
+        Sets WebApp configurations.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    name = args.get("name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    http20_enabled = args.get("http20_enabled", "")
+    remote_debugging_enabled = args.get("remote_debugging_enabled", "")
+    min_tls_version = args.get("min_tls_version", "")
+    response = client.set_webapp_config(
+        name, subscription_id, resource_group_name, http20_enabled, remote_debugging_enabled, min_tls_version
+    )
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "Http20 Enabled": response.get("properties", {}).get("http20Enabled", "") if http20_enabled else None,
+            "Remote Debugging Enabled": response.get("properties", {}).get("remoteDebuggingEnabled", "")
+            if remote_debugging_enabled
+            else None,
+            "Min Tls Version": response.get("properties", {}).get("minTlsVersion", "") if min_tls_version else None,
+            "ID": response.get("id"),
+        }
+    ]
+    md = tableToMarkdown(
+        f"Web App configuration for {name} was updated successfully.",
+        outputs,
+        ["Name", "Http20 Enabled", "Remote Debugging Enabled", "Min Tls Version", "ID"],
+        removeNull=True,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.AppService.WebAppConfiguration")
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def update_webapp_auth_command(client: AzureClient, params: dict, args: dict):
+    """
+        Sets WebApp authentication.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    name = args.get("name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    enabled = args.get("enabled", "")
+    response = client.update_webapp_auth(name, subscription_id, resource_group_name, enabled)
+    demisto.debug("Updated webapp auth settings.")
+    outputs = [
+        {
+            "Name": name,
+            "Enabled": response.get("properties", {}).get("enabled", "") if enabled else None,
+            "ID": response.get("id"),
+        }
+    ]
+    md = tableToMarkdown(
+        f"Authentication settings for Web App {name} updated successfully.",
+        outputs,
+        ["Name", "Enabled", "ID"],
+        removeNull=True,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.AppService.WebAppAuthSettings")
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def mysql_flexible_server_param_set_command(client: AzureClient, params: dict, args: dict):
+    """
+        Updates a configuration of MySQL flexible server.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    configuration_name = args.get("configuration_name", "")
+    server_name = args.get("server_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    source = args.get("source", "")
+    value = args.get("value", "")
+    client.flexible_server_param_set(server_name, configuration_name, subscription_id, resource_group_name, source, value)
+    return CommandResults(readable_output=f"Updated the configuration {configuration_name} of the server {server_name}.")
+
+
+def postgres_flexible_server_configuration_update_command(client: AzureClient, params: dict, args: dict):
+    """
+    Updates a configuration of a PostgreSQL Flexible Server.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server name, configuration name, source, and value.
+
+    Returns:
+        CommandResults: A success message confirming the configuration was updated.
+    """
+    server_name = args.get("server_name", "")
+    configuration_name = args.get("configuration_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    source = args.get("source", "")
+    value = args.get("value", "")
+    client.postgres_flexible_server_configuration_update(
+        server_name, configuration_name, subscription_id, resource_group_name, source, value
+    )
+    return CommandResults(
+        readable_output=f"Updated the configuration {configuration_name} of the PostgreSQL Flexible Server {server_name}."
+    )
+
+
+def monitor_log_profile_update_command(client: AzureClient, params: dict, args: dict):
+    """
+        Updates a monitor log profile.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    log_profile_name = args.get("log_profile_name", "")
+    location = args.get("location")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    retention_policy_days = arg_to_number(args.get("retention_policy_days"))
+    retention_policy_enabled = args.get("retention_policy_enabled")
+    current_log_profile = client.get_monitor_log_profile(subscription_id, log_profile_name)
+    current_log_profile["properties"]["retentionPolicy"]["enabled"] = (
+        retention_policy_enabled
+        if retention_policy_enabled is not None
+        else current_log_profile.get("properties", {}).get("retentionPolicy", {}).get("enabled")
+    )
+    current_log_profile["properties"]["retentionPolicy"]["days"] = (
+        retention_policy_days
+        if retention_policy_days
+        else current_log_profile.get("properties", {}).get("retentionPolicy", {}).get("days")
+    )
+    current_log_profile["location"] = location if location else current_log_profile.get("location")
+    response = client.monitor_log_profile_update(subscription_id, log_profile_name, current_log_profile)
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "ID": response.get("id"),
+            "Location": response.get("location", "") if location else None,
+            "Retention Policy": response.get("properties", {}).get("retentionPolicy")
+            if (retention_policy_enabled or retention_policy_days)
+            else None,
+        }
+    ]
+    md = tableToMarkdown(
+        f"Log profile {log_profile_name} updated successfully.",
+        outputs,
+        ["Name", "ID", "Location", "Retention Policy"],
+        removeNull=True,
+    )
+    return CommandResults(
+        outputs_prefix="Azure.Monitor.LogProfiles",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def disk_update_command(client: AzureClient, params: dict, args: dict):
+    """
+        Updates a disk.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    disk_name = args.get("disk_name", "")
+    public_network_access = args.get("public_network_access")
+    network_access_policy = args.get("network_access_policy")
+    data_access_auth_mode = args.get("data_access_auth_mode")
+    response = client.disk_update(
+        subscription_id, resource_group_name, disk_name, public_network_access, network_access_policy, data_access_auth_mode
+    )
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "ID": response.get("id"),
+            "Public Network Access": response.get("properties", {}).get("publicNetworkAccess") if public_network_access else None,
+            "Network Access Policy": response.get("properties", {}).get("networkAccessPolicy") if network_access_policy else None,
+            "Data Access Auth Mode": response.get("properties", {}).get("dataAccessAuthMode") if data_access_auth_mode else None,
+        }
+    ]
+    md = tableToMarkdown(
+        f"Disk {disk_name} updated successfully.",
+        outputs,
+        ["Name", "ID", "Public Network Access", "Network Access Policy", "Data Access Auth Mode"],
+        removeNull=True,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Compute.Disks")
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def webapp_update_command(client: AzureClient, params: dict, args: dict):
+    """
+    Updates an Azure web application with specified settings.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including web app name, identity type, HTTPS settings, etc.
+
+    Returns:
+        CommandResults: The updated web app configuration formatted for display.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    name = args.get("name", "")
+    identity_type = args.get("identity_type")
+    https_only = args.get("https_only")
+    client_cert_enabled = args.get("client_cert_enabled")
+    response = client.webapp_update(subscription_id, resource_group_name, name, identity_type, https_only, client_cert_enabled)
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "ID": response.get("id"),
+            "Identity": response.get("identity", {}) if identity_type else None,
+            "Https Only": response.get("properties", {}).get("httpsOnly") if https_only else None,
+            "Client Cert Enabled": response.get("properties", {}).get("clientCertEnabled") if client_cert_enabled else None,
+        }
+    ]
+    md = tableToMarkdown(
+        f"Updated the Web App {name}.",
+        outputs,
+        ["Name", "ID", "Identity", "Https Only", "Client Cert Enabled"],
+        removeNull=True,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.AppService.WebApp")
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def acr_update_command(client: AzureClient, params: dict, args: dict):
+    """
+    Updates an Azure Container Registry with specified settings.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including registry name, access settings, etc.
+
+    Returns:
+        CommandResults: The updated container registry configuration formatted for display.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    registry_name = args.get("registry_name", "")
+    allow_exports = args.get("allow_exports")
+    public_network_access = args.get("public_network_access")
+    anonymous_pull_enabled = args.get("anonymous_pull_enabled")
+    authentication_as_arm_policy = args.get("authentication_as_arm_policy")
+    response = client.acr_update(
+        subscription_id,
+        resource_group_name,
+        registry_name,
+        allow_exports,
+        public_network_access,
+        anonymous_pull_enabled,
+        authentication_as_arm_policy,
+    )
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "ID": response.get("id"),
+            "Public Network Access": response.get("properties", {}).get("publicNetworkAccess") if public_network_access else None,
+            "Anonymous Pull Enabled": response.get("properties", {}).get("anonymousPullEnabled")
+            if anonymous_pull_enabled
+            else None,
+            "Allow Exports": response.get("properties", {}).get("policies", {}).get("exportPolicy", {}).get("status")
+            if allow_exports
+            else None,
+            "Authentication As Arm Policy": response.get("properties", {})
+            .get("policies", {})
+            .get("azureADAuthenticationAsArmPolicy", {})
+            .get("status")
+            if authentication_as_arm_policy
+            else None,
+        }
+    ]
+    md = tableToMarkdown(
+        f"Updated the container registry {registry_name}.",
+        outputs,
+        ["Name", "ID", "Public Network Access", "Anonymous Pull Enabled", "Allow Exports", "Authentication As Arm Policy"],
+        removeNull=True,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.ContainerRegistry.Registries")
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=md,
+        raw_response=response,
+    )
+
+
+def postgres_server_update_command(client: AzureClient, params: dict, args: dict):
+    """
+    Updates a PostgreSQL server with specified SSL enforcement settings.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server name and SSL enforcement state.
+
+    Returns:
+        CommandResults: The updated PostgreSQL server configuration.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    server_name = args.get("server_name", "")
+    ssl_enforcement = args.get("ssl_enforcement", "")
+    client.postgres_server_update(subscription_id, resource_group_name, server_name, ssl_enforcement)
+    return CommandResults(readable_output=f"Updated postgreSQL server {server_name}.")
+
+
+def update_key_vault_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+        updates a key vault.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    vault_name = args.get("vault_name", "")
+    enable_soft_delete = args.get("enable_soft_delete", "")
+    enable_purge_protection = args.get("enable_purge_protection", "")
+    response = client.update_key_vault_request(
+        subscription_id, resource_group_name, vault_name, enable_soft_delete, enable_purge_protection
+    )
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "ID": response.get("id"),
+            "Enable Soft Delete": response.get("properties", {}).get("enableSoftDelete") if enable_soft_delete else None,
+            "Enable Purge Protection": response.get("properties", {}).get("enablePurgeProtection")
+            if enable_purge_protection
+            else None,
+        }
+    ]
+    readable_output = tableToMarkdown(
+        f"Updated Key Vault {vault_name}.",
+        outputs,
+        ["ID", "Name", "Enable Soft Delete", "Enable Purge Protection"],
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.KeyVault.Vault")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+        readable_output=readable_output,
+        ignore_auto_extract=True,
+    )
+
+
+def sql_db_threat_policy_update_command(client: AzureClient, params: dict[str, Any], args: Dict[str, Any]) -> CommandResults:
+    """
+    Updates the threat detection policy for a SQL database.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server name, database name, and email settings.
+
+    Returns:
+        CommandResults: The updated threat detection policy configuration formatted for display.
+    """
+    server_name = args.get("server_name", "")
+    db_name = args.get("db_name", "")
+    email_account_admins = args.get("email_account_admins_enabled", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    current_db = client.sql_db_threat_policy_get(
+        server_name=server_name, db_name=db_name, subscription_id=subscription_id, resource_group_name=resource_group_name
+    )
+    current_db["properties"]["emailAccountAdmins"] = email_account_admins or current_db.get("properties", {}).get(
+        "emailAccountAdmins"
+    )
+    response = client.sql_db_threat_policy_update(
+        server_name=server_name,
+        db_name=db_name,
+        subscription_id=subscription_id,
+        current=current_db,
+        resource_group_name=resource_group_name,
+    )
+
+    outputs = [
+        {
+            "Name": response.get("name"),
+            "ID": response.get("id"),
+            "Email Account Admins": response.get("properties", {}).get("emailAccountAdmins") if email_account_admins else None,
+        }
+    ]
+    readable_output = tableToMarkdown(
+        f"Updated Database Threat Detection Policies for {resource_group_name=}",
+        outputs,
+        ["ID", "Name", "Email Account Admins"],
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.SqlDB.SecurityAlertPolicies")
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def sql_db_tde_set_command(client: AzureClient, params: dict[str, Any], args: Dict[str, Any]) -> CommandResults:
+    """
+    Sets the transparent data encryption state for a SQL database.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server name, database name, and TDE state.
+
+    Returns:
+        CommandResults: A message indicating successful TDE state update.
+    """
+    server_name = args.get("server_name", "")
+    db_name = args.get("db_name", "")
+    state = args.get("state", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    client.sql_db_tde_set(
+        server_name=server_name,
+        db_name=db_name,
+        subscription_id=subscription_id,
+        state=state,
+        resource_group_name=resource_group_name,
+    )
+    # CommandResults don't contain the response because it takes time for the resource to be updated.
+    return CommandResults(
+        readable_output=f"Updated SQL database {db_name} of the server {server_name}.",
+    )
+
+
+def aks_clusters_list_command(client: AzureClient, params: dict[str, Any], args: Dict[str, Any]) -> CommandResults:
+    """
+    Lists all managed AKS clusters in the specified subscription.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments, optionally including the subscription ID and next_token.
+
+    Returns:
+        CommandResults: The list of managed clusters.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    next_token = args.get("next_token", "")
+    response = client.aks_clusters_list(subscription_id=subscription_id, next_token=next_token)
+    clusters = response.get("value", [])
+
+    if not clusters:
+        return CommandResults(
+            outputs={"Azure.AKS(true)": {"ManagedClusterNextToken": response.get("nextLink")}},
+            readable_output="No AKS managed clusters were found.",
+            raw_response=response,
+        )
+
+    outputs = {
+        "Azure.AKS.ManagedCluster(val.id && val.id == obj.id)": clusters,
+        "Azure.AKS(true)": {"ManagedClusterNextToken": response.get("nextLink")},
+    }
+    return CommandResults(
+        outputs=outputs,
+        readable_output=tableToMarkdown(
+            "AKS Managed Clusters List",
+            clusters,
+            ["id", "name", "location", "type"],
+            removeNull=True,
+            headerTransform=pascalToSpace,
+        ),
+        raw_response=response,
+    )
+
+
+def aks_cluster_addon_update_command(client: AzureClient, params: dict[str, Any], args: Dict[str, Any]) -> CommandResults:
+    """
+    Updates the addon profiles of a managed AKS cluster.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including the cluster name, location, and addon settings.
+
+    Returns:
+        CommandResults: A message indicating the update request was sent successfully.
+    """
+    resource_name = args.get("resource_name", "")
+    location = args.get("location", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    http_application_routing_enabled = arg_to_bool_or_none(args.get("http_application_routing_enabled"))
+    monitoring_agent_enabled = arg_to_bool_or_none(args.get("monitoring_agent_enabled"))
+
+    client.aks_cluster_addon_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        resource_name=resource_name,
+        location=location,
+        http_application_routing_enabled=http_application_routing_enabled,
+        monitoring_agent_enabled=monitoring_agent_enabled,
+        monitoring_resource_name=args.get("monitoring_resource_name"),
+    )
+    return CommandResults(readable_output="The request to update the managed cluster was sent successfully.")
+
+
+def cosmosdb_update_command(client: AzureClient, params: dict[str, Any], args: Dict[str, Any]) -> CommandResults:
+    """
+        Updates a Cosmos DB account with specified settings.
+    Args:
+        client: The microsoft client.
+        params: The configuration parameters.
+        args: The users arguments.
+
+    Returns:
+        CommandResults: The command results in MD table and context data.
+    """
+    account_name = args.get("account_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    disable_key_based_metadata_write_access = args.get("disable_key_based_metadata_write_access")
+    response = client.cosmos_db_update(
+        subscription_id, resource_group_name, account_name, disable_key_based_metadata_write_access
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.CosmosDB.DBAccounts")
+
+    return CommandResults(
+        readable_output=f"Updated Cosmos DB {account_name}.",
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def nsg_security_group_create_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    This command will create a network security group.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        CommandResults: The network security group that was created.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    security_group_name = args.get("security_group_name", "")
+    location = args.get("location", "")
+
+    response = client.create_network_security_group(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        security_group_name=security_group_name,
+        location=location,
+    )
+    demisto.debug(f"Created network security group {response=}")
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    response["etag"] = response.get("etag", "")[3:-1]
+
+    hr = tableToMarkdown(
+        name=f"The network security group {security_group_name} was created successfully",
+        t=response,
+        removeNull=True,
+        headers=["name", "id", "location", "type"],
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.VirtualNetworks.SecurityGroups",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=hr,
+        raw_response=response,
+    )
+
+
+def nsg_security_groups_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+        List all network security groups.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+
+    Returns:
+        A detailed list of all network security groups
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    response = client.list_network_security_groups(subscription_id=subscription_id, resource_group_name=resource_group_name)
+    network_groups = response.get("value", [])
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    for group in network_groups:
+        group["etag"] = group.get("etag", "")[3:-1]
+        for rule in group.get("defaultSecurityRules", []):
+            rule["etag"] = rule.get("etag", "")[3:-1]
+
+    hr = tableToMarkdown(
+        name="Network Security Groups",
+        t=network_groups,
+        headers=["name", "id", "type", "etag", "location"],
+        headerTransform=string_to_table_header,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.SecurityGroups")
+
+    return CommandResults(
+        raw_response=response,
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=network_groups,
+        readable_output=hr,
+    )
+
+
+def nsg_security_rule_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    This command will get a rule from a security group.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        CommandResults: The rule that was requested
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    security_group_name = args.get("security_group_name", "")
+    security_rule_name = args.get("security_rule_name", "")
+
+    if not security_rule_name and not security_group_name:
+        return_error("Please provide security_group_name and security_rule_name.")
+
+    rule = client.get_rule(
+        security_group=security_group_name,
+        rule_name=security_rule_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+    )
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    rule["etag"] = rule.get("etag", "")[3:-1]
+
+    hr = tableToMarkdown(
+        name=f"Rule {security_rule_name}",
+        t=rule,
+        removeNull=True,
+        headers=["name", "id", "etag", "type"],
+        headerTransform=pascalToSpace,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.SecurityRules")
+    return CommandResults(outputs_prefix=outputs_prefix, outputs_key_field="id", outputs=rule, readable_output=hr)
+
+
+def nsg_security_rules_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Gets all security rules in a network security group.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary (subscription_id, resource_group_name, network_security_group_name).
+    Returns:
+        CommandResults: The list of security rules.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    network_security_group_name = args.get("network_security_group_name", "")
+
+    if not resource_group_name and not network_security_group_name:
+        return_error("Please provide security_group_name and security_rule_name.")
+
+    response = client.list_security_rules(subscription_id, resource_group_name, network_security_group_name)
+    security_rules = response.get("value", [])
+    demisto.debug(f"{security_rules=}")
+    hr_data = []
+    for rule in security_rules:
+        hr_data.append(
+            {
+                "name": rule.get("name"),
+                "id": rule.get("id"),
+                "direction": rule.get("properties", {}).get("direction"),
+            }
+        )
+
+    hr = tableToMarkdown(
+        name="Security Groups List",
+        t=hr_data,
+        removeNull=True,
+        headers=["name", "id", "direction"],
+        headerTransform=pascalToSpace,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.SecurityRules")
+
+    return CommandResults(
+        outputs=security_rules,
+        readable_output=hr,
+        raw_response=security_rules,
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+    )
+
+
+def nsg_security_rule_create_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    This command will create a rule in a security group.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        CommandResults: The rule that was created.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    security_group_name = args.get("security_group_name", "")
+    security_rule_name = args.get("security_rule_name", "")
+    direction = args.get("direction", "")  # required in API
+    priority = args.get("priority", "")  # required in API
+    action = args.get("action", "Allow")  # required in API, named as "access" in the API
+    access = args.get("access") or action  # required in API, named as "access" in the API
+    protocol = args.get("protocol", "Any")  # required in API
+    source = args.get("source", "Any")
+    source_ports = args.get("source_ports", "*")
+    destination = args.get("destination", "Any")
+    destination_ports = args.get("destination_ports", "*")
+    description = args.get("description", "")
+
+    if not security_rule_name and not security_group_name and not direction and not priority:
+        return_error("Please provide security_group_name, security_rule_name, direction and priority.")
+
+    # The reason for using 'Any' as default instead of '*' is to adhere to the standards in the UI.
+    properties = {
+        "protocol": "*" if protocol == "Any" else protocol,
+        "access": access,
+        "priority": priority,
+        "direction": direction,
+    }
+    source_ports_list = argToList(source_ports)
+    if len(source_ports_list) > 1:
+        properties["sourcePortRanges"] = source_ports_list
+    else:
+        properties["sourcePortRange"] = source_ports
+
+    dest_ports_list = argToList(destination_ports)
+    if len(dest_ports_list) > 1:
+        properties["destinationPortRanges"] = dest_ports_list
+    else:
+        properties["destinationPortRange"] = destination_ports
+
+    source_list = argToList(source)
+    if len(source_list) > 1:
+        properties["sourceAddressPrefixes"] = source_list
+    else:
+        properties["sourceAddressPrefix"] = "*" if source == "Any" else source
+
+    dest_list = argToList(destination)
+    if len(dest_list) > 1:
+        properties["destinationAddressPrefixes"] = dest_list
+    else:
+        properties["destinationAddressPrefix"] = "*" if destination == "Any" else destination
+
+    if description:
+        properties["description"] = description
+
+    rule = client.create_or_update_rule(
+        security_group=security_group_name,
+        rule_name=security_rule_name,
+        properties=properties,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+    )
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    rule["etag"] = rule.get("etag", "")[3:-1]
+
+    hr = tableToMarkdown(
+        name=f"The security rule {security_rule_name} was created successfully",
+        t=rule,
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.SecurityRules")
+
+    return CommandResults(outputs_prefix=outputs_prefix, outputs_key_field="id", outputs=rule, readable_output=hr)
+
+
+def nsg_security_rule_delete_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Deletes a rule from a security group
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        Message that the rule was deleted.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    security_group_name = args.get("security_group_name", "")
+    security_rule_name = args.get("security_rule_name", "")
+
+    if not security_rule_name and not security_group_name:
+        return_error("Please provide security_group_name and security_rule_name.")
+
+    rule_deleted = client.delete_rule(
+        security_group_name=security_group_name,
+        security_rule_name=security_rule_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+    )
+    message = ""
+    if rule_deleted.status_code == 204:
+        message = (
+            f"Rule {security_rule_name} with resource_group_name "
+            f"{resource_group_name} and subscription id {subscription_id} was not found."
+        )
+    elif rule_deleted.status_code == 200:
+        message = (
+            f"Rule {security_rule_name} with resource_group_name "
+            f"{resource_group_name} and subscription id {subscription_id} "
+            f"was successfully deleted."
+        )
+    elif rule_deleted.status_code == 202:
+        message = (
+            f"The delete request for rule {security_rule_name} with resource_group_name"
+            f"{resource_group_name} and subscription id {subscription_id} "
+            f"was accepted and the operation will complete asynchronously."
+        )
+    return CommandResults(readable_output=message)
+
+
+def validate_ip_group_polling_args(args: dict[str, Any]) -> None:
+    """
+    Validates the polling arguments of the IP group create and update commands.
+
+    Args:
+        args: The command arguments, optionally including 'interval_in_seconds' and 'polling_timeout'.
+
+    Raises:
+        DemistoException: If 'interval_in_seconds' or 'polling_timeout' is not a positive number.
+    """
+    # The values are read with an explicit "is None" check rather than "or", so that an explicit 0 is
+    # validated and rejected instead of being silently replaced by the default.
+    interval = arg_to_number(args.get("interval_in_seconds"))
+    interval = DEFAULT_INTERVAL_IN_SECONDS if interval is None else interval
+    timeout = arg_to_number(args.get("polling_timeout"))
+    timeout = DEFAULT_TIMEOUT_POLLING_COMMAND if timeout is None else timeout
+
+    if interval <= 0:
+        raise DemistoException(f"The interval_in_seconds argument must be a positive number. Currently the value is {interval}")
+    if timeout <= 0:
+        raise DemistoException(f"The polling_timeout argument must be a positive number. Currently the value is {timeout}")
+
+
+def ip_group_poll_result(
+    client: AzureClient,
+    subscription_id: str,
+    resource_group_name: str,
+    ip_group_name: str,
+    command_name: str,
+    success_message: str,
+) -> PollResult:
+    """
+    Retrieves an IP group and keeps polling while its provisioning has not reached a terminal state.
+
+    As long as the provisioning state is neither 'Succeeded' nor 'Failed', the returned PollResult instructs the
+    ``polling_function`` decorator to schedule another run of the command.
+
+    Args:
+        client: The AzureClient.
+        subscription_id: The Azure subscription ID.
+        resource_group_name: The resource group name.
+        ip_group_name: The name of the IP group being provisioned.
+        command_name: The command name, used for debug logging.
+        success_message: The readable output title used once provisioning succeeded.
+
+    Returns:
+        PollResult: The provisioned IP group, or an indication to poll again.
+
+    Raises:
+        DemistoException: If the provisioning of the IP group failed.
+    """
+    response = client.ip_group_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, ip_group_name=ip_group_name
+    )
+    provisioning_state = dict_safe_get(response, ["properties", "provisioningState"])
+    demisto.debug(f"[Azure] {command_name}: IP group {ip_group_name} provisioning state is {provisioning_state}")
+
+    if provisioning_state == PROVISIONING_STATE_FAILED:
+        raise DemistoException(f"The provisioning of IP group {ip_group_name} failed.")
+
+    if provisioning_state != PROVISIONING_STATE_SUCCEEDED:
+        return PollResult(
+            response=None,
+            continue_to_poll=True,
+            partial_result=CommandResults(
+                readable_output=(f"Waiting for IP group {ip_group_name} to be provisioned. Current state: {provisioning_state}.")
+            ),
+        )
+
+    hr = tableToMarkdown(
+        name=success_message,
+        t=response,
+        removeNull=True,
+        headers=IP_GROUP_TABLE_HEADERS,
+        headerTransform=pascalToSpace,
+    )
+
+    return PollResult(
+        response=CommandResults(
+            outputs_prefix="Azure.VirtualNetworks.IPGroups",
+            outputs_key_field="id",
+            outputs=response,
+            readable_output=hr,
+            raw_response=response,
+        ),
+        continue_to_poll=False,
+    )
+
+
+@polling_function(
+    name="azure-vn-ip-group-create",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def ip_group_create_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Creates an IP group resource and polls until it is fully provisioned.
+    Args:
+        args: args dictionary.
+        client: The AzureClient
+        params: configuration parameters
+    Returns:
+        PollResult: The created IP group, or an indication to poll again.
+    """
+    validate_ip_group_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    ip_group_name = args.get("ip_group_name", "")
+
+    # On the first run the IP group is created, and on every scheduled run afterwards only its provisioning
+    # state is polled, so that the create request is not sent again on each poll.
+    if not argToBoolean(args.get("ip_group_created", False)):
+        location = args.get("location", "")
+        ip_addresses = argToList(args.get("ip_addresses"))
+
+        response = client.ip_group_create(
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            ip_group_name=ip_group_name,
+            location=location,
+            ip_addresses=ip_addresses,
+        )
+        provisioning_state = dict_safe_get(response, ["properties", "provisioningState"])
+        demisto.debug(f"[Azure] created IP group {response.get('name')=} {response.get('id')=} {provisioning_state=}")
+        args["ip_group_created"] = True
+
+        return PollResult(
+            response=None,
+            continue_to_poll=True,
+            partial_result=CommandResults(
+                readable_output=f"The creation of IP group {ip_group_name} has started. Current state: {provisioning_state}."
+            ),
+            args_for_next_run=args,
+        )
+
+    return ip_group_poll_result(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        ip_group_name=ip_group_name,
+        command_name="azure-vn-ip-group-create",
+        success_message=f"The IP group {ip_group_name} was created successfully",
+    )
+
+
+@polling_function(
+    name="azure-vn-ip-group-update",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def ip_group_update_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Updates an IP group resource by adding or removing IP addresses, and polls until it is fully provisioned.
+    Args:
+        args: args dictionary.
+        client: The AzureClient
+        params: configuration parameters
+    Returns:
+        PollResult: The updated IP group, or an indication to poll again.
+    """
+    validate_ip_group_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    ip_group_name = args.get("ip_group_name", "")
+    ip_addresses_to_add = argToList(args.get("ip_addresses_to_add"))
+    ip_addresses_to_remove = argToList(args.get("ip_addresses_to_remove"))
+
+    if not ip_addresses_to_add and not ip_addresses_to_remove:
+        raise DemistoException("One of the arguments: `ip_addresses_to_add` or `ip_addresses_to_remove` must be provided.")
+
+    # On the first run the IP group is updated, and on every scheduled run afterwards only its provisioning
+    # state is polled, so that the update request is not sent again on each poll.
+    if not argToBoolean(args.get("ip_group_updated", False)):
+        ip_group_data = client.ip_group_get(
+            subscription_id=subscription_id, resource_group_name=resource_group_name, ip_group_name=ip_group_name
+        )
+        # The updated list is assigned back explicitly rather than mutated in place, so that an IP group with no
+        # "ipAddresses" key yet (an empty group) still receives the added addresses instead of silently dropping them.
+        existing_ip_addresses = dict_safe_get(ip_group_data, ["properties", "ipAddresses"], []) or []
+        # dict.fromkeys merges the existing and the added addresses while preserving their order and dropping
+        # duplicates, so re-adding an address that is already in the group does not create a duplicate entry.
+        ip_addresses = list(dict.fromkeys(existing_ip_addresses + ip_addresses_to_add))
+        ip_addresses = [ip_address for ip_address in ip_addresses if ip_address not in ip_addresses_to_remove]
+        # "properties" is read with "or {}" rather than setdefault, so that an explicit null value is replaced as well.
+        properties = ip_group_data.get("properties") or {}
+        properties["ipAddresses"] = ip_addresses
+        ip_group_data["properties"] = properties
+        demisto.debug(f"[Azure] updating IP group {ip_group_name} with {len(ip_addresses)} IP addresses.")
+
+        response = client.ip_group_update(
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            ip_group_name=ip_group_name,
+            ip_group_data=ip_group_data,
+        )
+        provisioning_state = dict_safe_get(response, ["properties", "provisioningState"])
+        demisto.debug(f"[Azure] updated IP group {response.get('name')=} {response.get('id')=} {provisioning_state=}")
+        args["ip_group_updated"] = True
+
+        return PollResult(
+            response=None,
+            continue_to_poll=True,
+            partial_result=CommandResults(
+                readable_output=f"The update of IP group {ip_group_name} has started. Current state: {provisioning_state}."
+            ),
+            args_for_next_run=args,
+        )
+
+    return ip_group_poll_result(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        ip_group_name=ip_group_name,
+        command_name="azure-vn-ip-group-update",
+        success_message=f"The IP group {ip_group_name} was updated successfully",
+    )
+
+
+def ip_group_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Retrieves an IP group resource.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        CommandResults: The requested IP group.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    ip_group_name = args.get("ip_group_name", "")
+
+    response = client.ip_group_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, ip_group_name=ip_group_name
+    )
+    demisto.debug(f"[Azure] retrieved IP group {response.get('name')=} {response.get('id')=}")
+
+    hr = tableToMarkdown(
+        name=f"IP Group {ip_group_name}",
+        t=response,
+        removeNull=True,
+        headers=["name", "id", "location", "type"],
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.VirtualNetworks.IPGroups",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=hr,
+        raw_response=response,
+    )
+
+
+def ip_group_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Lists the IP groups in a resource group, or in the subscription when no resource group is provided.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        CommandResults: The list of IP groups.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    # The instance default resource group is deliberately not used as a fallback here, so that omitting the
+    # argument lists the IP groups of the whole subscription even when a default resource group is configured.
+    resource_group_name = args.get("resource_group_name", "")
+    next_token = args.get("next_token", "")
+
+    response = client.ip_group_list(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, next_token=next_token
+    )
+    ip_groups = response.get("value", [])
+    next_link = response.get("nextLink")
+    demisto.debug(f"[Azure] listed IP groups {len(ip_groups)=} {bool(next_link)=}")
+
+    if not ip_groups:
+        scope = f"resource group '{resource_group_name}'" if resource_group_name else f"subscription '{subscription_id}'"
+        return CommandResults(readable_output=f"No IP groups were found in {scope}.")
+
+    # The next token is written even when it is None, so that a stale token from a previous page is cleared
+    # from the context instead of lingering. remove_empty_elements must not be applied to these outputs.
+    outputs = {
+        "Azure.VirtualNetworks.IPGroups(val.id && val.id == obj.id)": ip_groups,
+        "Azure.VirtualNetworks(true)": {"IPGroupsNextToken": next_link},
+    }
+
+    hr = tableToMarkdown(
+        name="IP Groups List",
+        t=ip_groups,
+        removeNull=True,
+        headers=["name", "id", "location", "type"],
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=hr,
+        raw_response=response,
+    )
+
+
+def ip_group_delete_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Deletes an IP group resource.
+    Args:
+        client: The AzureClient
+        params: configuration parameters
+        args: args dictionary.
+    Returns:
+        CommandResults: Message that the IP group was deleted.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    ip_group_name = args.get("ip_group_name", "")
+
+    ip_group_deleted = client.ip_group_delete(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, ip_group_name=ip_group_name
+    )
+    message = ""
+    if ip_group_deleted.status_code == 202:
+        message = (
+            f"The delete request for IP group {ip_group_name} with resource group "
+            f"{resource_group_name} and subscription ID {subscription_id} "
+            f"was accepted and the operation will complete asynchronously."
+        )
+    elif ip_group_deleted.status_code == 204:
+        message = (
+            f"IP group {ip_group_name} with resource group "
+            f"{resource_group_name} and subscription ID {subscription_id} was not found."
+        )
+    else:
+        message = f"IP group {ip_group_name} was successfully deleted."
+
+    return CommandResults(readable_output=message)
+
+
+@polling_function(
+    name="azure-firewall-rule-collection-groups-create",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_rule_collection_groups_create_command(
+    args: dict[str, Any], client: AzureClient, params: dict[str, Any]
+) -> PollResult:
+    """
+    Create a network rule collection, holding a single network rule, in an Azure Firewall.
+    The firewall is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection already exists in the firewall.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args["firewall_name"]
+    collection_name = args.get("collection_name", "")
+    readable_header = f'Successfully created network rule collection "{collection_name}" in firewall "{firewall_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            firewall_name=firewall_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    collection_priority = arg_to_number(args.get("collection_priority"))
+    action = args.get("action", "")
+
+    rule = build_firewall_network_rule(args=args, is_firewall_rule=True)
+
+    firewall_data, collections = get_firewall_network_rule_collections(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+    )
+    if any(collection.get("name") == collection_name for collection in collections):
+        raise ValueError(f'Network rule collection "{collection_name}" already exists in firewall "{firewall_name}".')
+
+    collections.append(
+        remove_empty_elements(
+            {
+                "name": collection_name,
+                "properties": {"priority": collection_priority, "action": {"type": action}, "rules": [rule]},
+            }
+        )
+    )
+    demisto.debug(f"Creating the network rule collection {collection_name} in the firewall {firewall_name}.")
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-vn-firewall-policy-rule-collection-groups-create",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_policy_rule_collection_groups_create_command(
+    args: dict[str, Any], client: AzureClient, params: dict[str, Any]
+) -> PollResult:
+    """
+    Create a rule collection group, holding a single network rule, in a firewall policy.
+    The rule collection group is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned rule collection group, or an indication to poll again.
+
+    Raises:
+        ValueError: If the rule collection group already exists in the firewall policy.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+    collection_name = args.get("collection_name", "")
+    readable_header = f'Successfully created network rule collection "{collection_name}" in policy "{policy_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_policy_collection_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    collection_priority = arg_to_number(args.get("collection_priority"))
+    action = args.get("action", "")
+
+    rule = build_firewall_network_rule(args=args, is_firewall_rule=False)
+
+    if firewall_policy_network_rule_collection_exists(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    ):
+        raise ValueError(f'Network rule collection "{collection_name}" already exists in policy "{policy_name}".')
+
+    collection_data = remove_empty_elements(
+        {
+            "properties": {
+                "priority": collection_priority,
+                "ruleCollections": [
+                    {
+                        "ruleCollectionType": "FirewallPolicyFilterRuleCollection",
+                        "name": collection_name,
+                        "priority": collection_priority,
+                        "action": {"type": action},
+                        "rules": [rule],
+                    }
+                ],
+            }
+        }
+    )
+    demisto.debug(f"Creating the network rule collection {collection_name} in the policy {policy_name}.")
+
+    response = client.firewall_policy_rule_collection_group_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+        collection_data=collection_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX,
+        resource_name=collection_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-firewall-rule-collection-groups-update",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_rule_collection_groups_update_command(
+    args: dict[str, Any], client: AzureClient, params: dict[str, Any]
+) -> PollResult:
+    """
+    Update the priority or the action of a network rule collection in an Azure Firewall.
+    The firewall is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found in the firewall.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args["firewall_name"]
+    collection_name = args.get("collection_name", "")
+    readable_header = f'Successfully updated network rule collection "{collection_name}" in firewall "{firewall_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            firewall_name=firewall_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    priority = arg_to_number(args.get("priority"))
+    action = args.get("action")
+
+    # Only the provided properties are replaced, so the unset ones are pruned rather than overwriting Azure with nulls.
+    update_fields = remove_empty_elements({"priority": priority, "action": {"type": action}})
+    demisto.debug(f"Updating the network rule collection {collection_name} in the firewall {firewall_name}: {update_fields}.")
+
+    firewall_data, collections = get_firewall_network_rule_collections(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+    )
+    find_firewall_network_rule_collection(collections, collection_name).setdefault("properties", {}).update(update_fields)
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-vn-firewall-policy-rule-collection-groups-update",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_policy_rule_collection_groups_update_command(
+    args: dict[str, Any], client: AzureClient, params: dict[str, Any]
+) -> PollResult:
+    """
+    Update the priority or the action of a network rule collection in a firewall policy rule collection group.
+    The rule collection group is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned rule collection group, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found in the rule collection group.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+    collection_name = args.get("collection_name", "")
+    readable_header = f'Successfully updated network rule collection "{collection_name}" in policy "{policy_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_policy_collection_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    priority = arg_to_number(args.get("priority"))
+    action = args.get("action")
+
+    # Only the provided properties are replaced, so the unset ones are pruned rather than overwriting Azure with nulls.
+    update_fields = remove_empty_elements({"priority": priority, "action": {"type": action}})
+    demisto.debug(f"Updating the network rule collection {collection_name} in the policy {policy_name}: {update_fields}.")
+
+    collection_group = client.firewall_policy_rule_collection_group_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    )
+    get_policy_network_rule_collection(collection_group, collection_name).update(update_fields)
+    # The priority is kept in step on the rule collection group itself, which is what Azure orders the groups by.
+    collection_group.setdefault("properties", {}).update(remove_empty_elements({"priority": priority}))
+
+    response = client.firewall_policy_rule_collection_group_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+        collection_data=collection_group,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX,
+        resource_name=collection_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-firewall-rule-collection-groups-delete",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_rule_collection_groups_delete_command(
+    args: dict[str, Any], client: AzureClient, params: dict[str, Any]
+) -> PollResult:
+    """
+    Delete a network rule collection from an Azure Firewall.
+    The firewall is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found in the firewall.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args["firewall_name"]
+    collection_name = args.get("collection_name", "")
+    readable_header = f'Successfully deleted network rule collection "{collection_name}" from firewall "{firewall_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            firewall_name=firewall_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    firewall_data, collections = get_firewall_network_rule_collections(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+    )
+    collections.remove(find_firewall_network_rule_collection(collections, collection_name))
+    demisto.debug(f"Deleting the network rule collection {collection_name} from the firewall {firewall_name}.")
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-vn-firewall-policy-rule-collection-groups-delete",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_policy_rule_collection_groups_delete_command(
+    args: dict[str, Any], client: AzureClient, params: dict[str, Any]
+) -> PollResult:
+    """
+    Delete a rule collection group from a firewall policy.
+    The deletion is asynchronous, so the command polls the rule collection group until Azure reports it as deleted.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: A success message once the rule collection group is gone, or an indication to poll again.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+    collection_name = args.get("collection_name", "")
+    readable_output = f'Successfully deleted network rule collection "{collection_name}" from policy "{policy_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        # The deletion completes once Azure no longer returns the rule collection group.
+        if firewall_policy_network_rule_collection_exists(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+        ):
+            return PollResult(
+                response=None,
+                continue_to_poll=True,
+                args_for_next_run=args,
+                partial_result=CommandResults(
+                    readable_output=f'Waiting for network rule collection "{collection_name}" to be deleted.'
+                ),
+            )
+        return PollResult(response=CommandResults(readable_output=readable_output), continue_to_poll=False)
+
+    demisto.debug(f"Deleting the network rule collection {collection_name} from the policy {policy_name}.")
+    client.firewall_policy_rule_collection_group_delete(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    )
+    args["first_run"] = False
+
+    return PollResult(
+        response=None,
+        continue_to_poll=True,
+        args_for_next_run=args,
+        partial_result=CommandResults(
+            readable_output=f'The deletion of network rule collection "{collection_name}" was requested.'
+        ),
+    )
+
+
+@polling_function(
+    name="azure-firewall-network-rule-create",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_network_rule_create_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Create a network rule in an existing network rule collection of an Azure Firewall.
+    The firewall is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found, or if the network rule already exists in it.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args["firewall_name"]
+    collection_name = args.get("collection_name", "")
+    rule_name = args.get("rule_name", "")
+    readable_header = f'Successfully created network rule "{rule_name}" in collection "{collection_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            firewall_name=firewall_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    rule = build_firewall_network_rule(args=args, is_firewall_rule=True)
+
+    firewall_data, collections = get_firewall_network_rule_collections(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+    )
+    collection_properties = find_firewall_network_rule_collection(collections, collection_name).setdefault("properties", {})
+    rules = collection_properties.setdefault("rules", [])
+    if any(existing_rule.get("name") == rule_name for existing_rule in rules):
+        raise ValueError(f'Network rule "{rule_name}" already exists in collection "{collection_name}".')
+    rules.append(rule)
+    demisto.debug(f"Creating the network rule {rule_name} in the collection {collection_name} of firewall {firewall_name}.")
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-vn-firewall-policy-network-rule-create",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_policy_network_rule_create_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Create a network rule in an existing rule collection of a firewall policy rule collection group.
+    The rule collection group is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned rule collection group, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found, or if the network rule already exists in it.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+    collection_name = args.get("collection_name", "")
+    rule_name = args.get("rule_name", "")
+    readable_header = f'Successfully created network rule "{rule_name}" in collection "{collection_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_policy_collection_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    rule = build_firewall_network_rule(args=args, is_firewall_rule=False)
+
+    collection_group = client.firewall_policy_rule_collection_group_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    )
+    rules = get_policy_network_rule_collection(collection_group, collection_name).setdefault("rules", [])
+    if any(existing_rule.get("name") == rule_name for existing_rule in rules):
+        raise ValueError(f'Network rule "{rule_name}" already exists in collection "{collection_name}".')
+    rules.append(rule)
+    demisto.debug(f"Creating the network rule {rule_name} in the collection {collection_name} of policy {policy_name}.")
+
+    response = client.firewall_policy_rule_collection_group_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+        collection_data=collection_group,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX,
+        resource_name=collection_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-firewall-network-rule-update",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_network_rule_update_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Update a network rule in a network rule collection of an Azure Firewall.
+    Only the provided properties are replaced, the rest of the rule configuration is kept as is.
+    The firewall is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+
+    Raises:
+        ValueError: If the source or the destination arguments are inconsistent with their selected types.
+        ValueError: If the network rule collection or the network rule was not found.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args["firewall_name"]
+    collection_name = args.get("collection_name", "")
+    rule_name = args.get("rule_name", "")
+    readable_header = f'Successfully updated network rule "{rule_name}" in collection "{collection_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            firewall_name=firewall_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    update_fields = build_firewall_network_rule_update_fields(args=args, is_firewall_rule=True)
+    demisto.debug(f"Updating the network rule {rule_name} in the firewall {firewall_name}: {update_fields.keys()}.")
+
+    firewall_data, collections = get_firewall_network_rule_collections(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+    )
+    rules = dict_safe_get(find_firewall_network_rule_collection(collections, collection_name), ["properties", "rules"], [])
+    find_firewall_network_rule(rules, rule_name).update(update_fields)
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-vn-firewall-policy-network-rule-update",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_policy_network_rule_update_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Update a network rule in a rule collection of a firewall policy rule collection group.
+    Only the provided properties are replaced, the rest of the rule configuration is kept as is.
+    The rule collection group is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned rule collection group, or an indication to poll again.
+
+    Raises:
+        ValueError: If the source or the destination arguments are inconsistent with their selected types.
+        ValueError: If the network rule collection or the network rule was not found.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+    collection_name = args.get("collection_name", "")
+    rule_name = args.get("rule_name", "")
+    readable_header = f'Successfully updated network rule "{rule_name}" in collection "{collection_name}".'
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_policy_collection_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+            readable_header=readable_header,
+            args=args,
+        )
+
+    update_fields = build_firewall_network_rule_update_fields(args=args, is_firewall_rule=False)
+    demisto.debug(f"Updating the network rule {rule_name} in the policy {policy_name}: {update_fields.keys()}.")
+
+    collection_group = client.firewall_policy_rule_collection_group_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    )
+    rules = get_policy_network_rule_collection(collection_group, collection_name).get("rules", [])
+    find_firewall_network_rule(rules, rule_name).update(update_fields)
+
+    response = client.firewall_policy_rule_collection_group_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+        collection_data=collection_group,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=readable_header,
+        outputs_prefix=FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX,
+        resource_name=collection_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-firewall-network-rule-delete",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_network_rule_delete_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Delete network rules from a network rule collection of an Azure Firewall.
+    The firewall is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned firewall, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found, or if none of the requested network rules were found.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args["firewall_name"]
+    collection_name = args.get("collection_name", "")
+    rule_names = argToList(args.get("rule_names"))
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            firewall_name=firewall_name,
+            # The rules that were not found are reported on the first run, before the polling starts.
+            readable_header=build_firewall_network_rule_delete_header(collection_name, []),
+            args=args,
+        )
+
+    firewall_data, collections = get_firewall_network_rule_collections(
+        client=client,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+    )
+    collection_properties = find_firewall_network_rule_collection(collections, collection_name).setdefault("properties", {})
+    remaining_rules, missing_rules = remove_firewall_network_rules(collection_properties.get("rules", []), rule_names)
+    collection_properties["rules"] = remaining_rules
+    demisto.debug(f"Deleting the network rules {rule_names} from the collection {collection_name} of {firewall_name}.")
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=build_firewall_network_rule_delete_header(collection_name, missing_rules),
+        outputs_prefix=FIREWALL_OUTPUTS_PREFIX,
+        resource_name=firewall_name,
+        args=args,
+    )
+
+
+@polling_function(
+    name="azure-vn-firewall-policy-network-rule-delete",
+    interval=arg_to_number(demisto.args().get("interval_in_seconds")) or DEFAULT_INTERVAL_IN_SECONDS,
+    timeout=arg_to_number(demisto.args().get("polling_timeout")) or DEFAULT_TIMEOUT_POLLING_COMMAND,
+    requires_polling_arg=False,
+)
+def firewall_policy_network_rule_delete_command(args: dict[str, Any], client: AzureClient, params: dict[str, Any]) -> PollResult:
+    """
+    Delete network rules from a rule collection of a firewall policy rule collection group.
+    The rule collection group is provisioned asynchronously, so the command polls it until the provisioning completes.
+
+    Args:
+        args: Command arguments.
+        client: The AzureClient.
+        params: Configuration parameters.
+
+    Return:
+        PollResult: The provisioned rule collection group, or an indication to poll again.
+
+    Raises:
+        ValueError: If the network rule collection was not found, or if none of the requested network rules were found.
+    """
+    validate_firewall_polling_args(args)
+
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+    collection_name = args.get("collection_name", "")
+    rule_names = argToList(args.get("rule_names"))
+
+    if not argToBoolean(args.get("first_run", True)):
+        return poll_firewall_policy_collection_provisioning(
+            client=client,
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            policy_name=policy_name,
+            collection_name=collection_name,
+            # The rules that were not found are reported on the first run, before the polling starts.
+            readable_header=build_firewall_network_rule_delete_header(collection_name, []),
+            args=args,
+        )
+
+    collection_group = client.firewall_policy_rule_collection_group_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+    )
+    rule_collection = get_policy_network_rule_collection(collection_group, collection_name)
+    remaining_rules, missing_rules = remove_firewall_network_rules(rule_collection.get("rules", []), rule_names)
+    rule_collection["rules"] = remaining_rules
+    demisto.debug(f"Deleting the network rules {rule_names} from the collection {collection_name} of {policy_name}.")
+
+    response = client.firewall_policy_rule_collection_group_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        collection_name=collection_name,
+        collection_data=collection_group,
+    )
+    args["first_run"] = False
+
+    return firewall_poll_result(
+        response=response,
+        readable_header=build_firewall_network_rule_delete_header(collection_name, missing_rules),
+        outputs_prefix=FIREWALL_POLICY_RULE_COLLECTION_GROUP_OUTPUTS_PREFIX,
+        resource_name=collection_name,
+        args=args,
+    )
+
+
+def nsg_resource_group_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List all resource groups in the subscription.
+    Args:
+        client (AzureClient): Azure Client.
+        args (Dict[str, Any]): command arguments.
+        params (Dict[str, Any]): configuration parameters.
+    Returns:
+        Command results with raw response, outputs and readable outputs.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    filter_by_tag = azure_tag_formatter(args.get("tag")) if args.get("tag") else ""
+    limit = args.get("limit", DEFAULT_LIMIT)
+
+    response = client.list_resource_groups_request(subscription_id=subscription_id, filter_by_tag=filter_by_tag, limit=limit)
+    data_from_response = response.get("value", [])
+
+    readable_output = tableToMarkdown(
+        name="Resource Groups List",
+        t=data_from_response,
+        headers=["name", "location", "tags", "provisioningState"],
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.ResourceManagement.ResourceGroups")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=data_from_response,
+        raw_response=response,
+        readable_output=readable_output,
+    )
+
+
+def nsg_network_interfaces_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List all network interfaces in a resource group.
+    Args:
+        client (AzureClient): Azure Client.
+        args (Dict[str, Any]): command arguments.
+        params (Dict[str, Any]): configuration parameters.
+    Returns:
+        Command results with raw response, outputs and readable outputs.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    all_results = argToBoolean(args.get("all_results", "false"))
+    limit = arg_to_number(args.get("limit", DEFAULT_LIMIT))
+
+    response = client.list_networks_interfaces_request(subscription_id=subscription_id, resource_group_name=resource_group_name)
+    data_from_response = response.get("value", [])
+
+    if not all_results:
+        data_from_response = data_from_response[:limit]
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    for data in data_from_response:
+        data["etag"] = data.get("etag", "")[3:-1]
+
+    readable_output = tableToMarkdown(
+        name="Network Interfaces List",
+        t=data_from_response,
+        headers=["name", "id", "type", "etag", "location", "kind"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.NetworkInterfaces")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=data_from_response,
+        raw_response=response,
+        readable_output=readable_output,
+    )
+
+
+def nsg_public_ip_addresses_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List all network interfaces in a resource group.
+
+    Args:
+        client (AzureClient): Azure client.
+        args (Dict[str, Any]): command arguments.
+        params (Dict[str, Any]): configuration parameters.
+    Returns:
+        Command results with raw response, outputs and readable outputs.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    all_results = argToBoolean(args.get("all_results", "false"))
+    limit = arg_to_number(args.get("limit", DEFAULT_LIMIT))
+
+    response = client.list_public_ip_addresses_request(subscription_id=subscription_id, resource_group_name=resource_group_name)
+    data_from_response = response.get("value", [])
+    if not all_results:
+        data_from_response = data_from_response[:limit]
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    for output in data_from_response:
+        output["etag"] = output.get("etag", "")[3:-1]
+
+    readable_output = tableToMarkdown(
+        name="Public IP Addresses List",
+        t=data_from_response,
+        headers=["name", "id", "etag", "provisioningState", "publicIPAddressVersion", "ipAddress", "domainNameLabel", "fqdn"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.PublicIPAddresses")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=data_from_response,
+        raw_response=response,
+        readable_output=readable_output,
+    )
+
+
+def virtual_networks_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List all virtual networks in a resource group.
+    Args:
+        client (AzureClient): Azure Client.
+        args (Dict[str, Any]): command arguments.
+        params (Dict[str, Any]): configuration parameters.
+    Returns:
+        Command results with raw response, outputs and readable outputs.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    next_token = args.get("next_token", "")
+    demisto.debug(f"[Azure] Listing virtual networks with {bool(next_token)=}")
+
+    response = client.list_virtual_networks_request(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, next_token=next_token
+    )
+    data_from_response = response.get("value") or []
+    next_token = response.get("nextLink") or ""
+    demisto.debug(f"[Azure] Retrieved {len(data_from_response)} virtual networks, {bool(next_token)=}")
+
+    if not data_from_response:
+        return CommandResults(readable_output=f"No virtual networks were found in resource group '{resource_group_name}'.")
+
+    # cleans up the tag, remove the "W/\" prefix and the "\" suffix.
+    for data in data_from_response:
+        data["etag"] = data.get("etag", "")[3:-1]
+
+    # The token is always written, as null on the last page, so a stale token is cleared from the context.
+    outputs = {
+        "Azure.VirtualNetworks.VirtualNetworks(val.id && val.id == obj.id)": data_from_response,
+        "Azure.VirtualNetworks(true)": {"VirtualNetworksNextToken": next_token or None},
+    }
+
+    readable_output = tableToMarkdown(
+        name="Virtual Networks List",
+        t=data_from_response,
+        headers=["name", "id", "etag", "type", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        raw_response=response,
+        readable_output=readable_output,
+    )
+
+
+def subscriptions_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List all subscriptions the authenticated identity has access to in the tenant.
+    Args:
+        client (AzureClient): Azure Client.
+        args (Dict[str, Any]): command arguments.
+        params (Dict[str, Any]): configuration parameters.
+    Returns:
+        Command results with raw response, outputs and readable outputs.
+    """
+    next_token = args.get("next_token", "")
+    demisto.debug(f"[Azure] Listing subscriptions with {bool(next_token)=}")
+
+    response = client.list_subscriptions_request(next_token=next_token)
+    data_from_response = response.get("value") or []
+    next_token = response.get("nextLink") or ""
+    demisto.debug(f"[Azure] Retrieved {len(data_from_response)} subscriptions, {bool(next_token)=}")
+
+    if not data_from_response:
+        return CommandResults(readable_output="No subscriptions were found.")
+
+    # The token is always written, as null on the last page, so a stale token is cleared from the context.
+    outputs = {
+        "Azure.ResourceManagement.Subscriptions(val.id && val.id == obj.id)": data_from_response,
+        "Azure.ResourceManagement(true)": {"SubscriptionsNextToken": next_token or None},
+    }
+
+    readable_output = tableToMarkdown(
+        name="Subscriptions List",
+        t=data_from_response,
+        headers=["subscriptionId", "tenantId", "displayName", "state"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        raw_response=response,
+        readable_output=readable_output,
+    )
+
+
+def remove_member_from_role(client: AzureClient, args: dict) -> CommandResults:
+    """Currently not supported in the integration
+    Remove a member from a group by group id and user id.
+
+    Args:
+        client: Client object with request
+        args: Usually demisto.args()
+
+    Returns:
+        Outputs.
+    """
+    role_object_id = str(args.get("role_id"))
+    user_id = str(args.get("user_id"))
+    client.remove_member_from_role(role_object_id, user_id)
+    return CommandResults(readable_output=f"User ID {user_id} has been removed from role {role_object_id}")
+
+
+def remove_member_from_group_command(client: AzureClient, args: dict) -> CommandResults:
+    """Currently not supported in the integration
+    Remove a member from a group by group id and user id.
+
+    Args:
+        client: Client object with request
+        args: Usually demisto.args()
+
+    Returns:
+        Outputs.
+    """
+    group_id = str(args.get("group_id"))
+    user_id = str(args.get("user_id"))
+    client.remove_member_from_group(group_id, user_id)
+
+    human_readable = f'User {user_id} was removed from the Group "{group_id}" successfully.'
+    return CommandResults(readable_output=human_readable)
+
+
+def start_vm_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]):
+    """
+    Initiates the power-on operation for a specific Azure Virtual Machine (VM).
+    This function validates the VM's provisioning state and then requests Azure to
+    start the VM.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object indicating that the power-on operation
+        has been successfully initiated.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    vm_name = args.get("virtual_machine_name", "")
+
+    client.validate_provisioning_state(subscription_id, resource_group_name, vm_name)
+
+    client.start_vm_request(subscription_id, resource_group_name, vm_name)
+    vm_name = vm_name.lower()  # type: ignore
+    vm = {"name": vm_name, "resourceGroup": resource_group_name, "powerState": "VM starting"}
+
+    title = f'Power-on of Virtual Machine "{vm_name}" Successfully Initiated'
+    human_readable = tableToMarkdown(title, vm, removeNull=True, headerTransform=pascalToSpace)
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Compute.VirtualMachines")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="name",
+        outputs=vm,
+        readable_output=human_readable,
+        raw_response=vm,
+    )
+
+
+def poweroff_vm_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]):
+    """
+    Initiates the power-off operation for a specific Azure Virtual Machine (VM).
+    This function validates the VM's provisioning state and then requests Azure to
+    stop the VM, optionally skipping the guest OS shutdown.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object indicating that the power-off operation
+        has been successfully initiated.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    vm_name = args.get("virtual_machine_name", "")
+    skip_shutdown = argToBoolean(args.get("skip_shutdown", False))
+
+    client.validate_provisioning_state(subscription_id, resource_group_name, vm_name)
+
+    client.poweroff_vm_request(subscription_id, resource_group_name, vm_name, skip_shutdown)
+
+    vm_name = vm_name.lower()  # type: ignore
+    vm = {"name": vm_name, "resourceGroup": resource_group_name, "powerState": "VM stopping"}
+
+    title = f'Power-off of Virtual Machine "{vm_name}" Successfully Initiated'
+    human_readable = tableToMarkdown(name=title, t=vm, removeNull=True, headerTransform=pascalToSpace)
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Compute.VirtualMachines")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="name",
+        outputs=vm,
+        readable_output=human_readable,
+        raw_response=vm,
+    )
+
+
+def get_vm_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]):
+    """
+    Retrieves details for a specific Azure Virtual Machine (VM).
+    This function fetches configuration, storage, networking, and state information
+    for a given virtual machine within a specified resource group.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the Virtual Machine configuration details.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    vm_name = args.get("virtual_machine_name", "")
+
+    response = client.get_vm_request(subscription_id, resource_group_name, vm_name, expand=args.get("expand", ""))
+
+    properties = response.get("properties")
+    os_disk = properties.get("storageProfile", {}).get("osDisk", {})
+    statuses = properties.get("instanceView", {}).get("statuses", [])
+    power_state = None
+
+    for status in statuses:
+        status_code = status.get("code")
+        status_code_prefix = status_code[: status_code.find("/")]
+        if status_code_prefix == "PowerState":
+            power_state = status.get("displayStatus")
+
+    vm = {
+        "Name": vm_name.lower(),  # type: ignore
+        "ID": properties.get("vmId"),
+        "Size": os_disk.get("diskSizeGB", "NA"),
+        "OS": os_disk.get("osType"),
+        "ProvisioningState": properties.get("provisioningState"),
+        "Location": response.get("location"),
+        "PowerState": power_state,
+        "ResourceGroup": resource_group_name,
+        "NetworkInterfaces": properties.get("networkProfile", {}).get("networkInterfaces"),
+        "UserData": properties.get("userData"),
+        "Tags": response.get("tags"),
+    }
+
+    title = f'Properties of VM "{vm_name}"'
+    table_headers = ["Name", "ID", "Size", "OS", "ProvisioningState", "Location", "PowerState"]
+    human_readable = tableToMarkdown(title, vm, headers=table_headers, removeNull=True, headerTransform=pascalToSpace)
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Compute.VirtualMachines")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="name",
+        outputs=response,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def list_vm_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Lists all virtual machines in a resource group.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the list of Virtual Machines.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    next_token = args.get("next_token", "")
+    demisto.debug(f"[Azure] args being sent to list_vm_request {subscription_id=} {resource_group_name=}")
+
+    response = client.list_vm_request(subscription_id, resource_group_name, next_token)
+
+    demisto.debug(f"[Azure] list_vm_request response={response} end response.")
+
+    vms_list = response.get("value", [])
+
+    if not vms_list:
+        return CommandResults(readable_output="No Virtual Machines found.")
+
+    outputs = {
+        "Azure.Compute.VirtualMachines(val.id && val.id == obj.id)": vms_list,
+        "Azure.Compute(true)": {"VirtualMachinesNextToken": response.get("nextLink")},
+    }
+
+    title = "The list of Virtual Machines"
+    headers = ["name", "id", "location"]
+    human_readable = tableToMarkdown(title, vms_list, headers=headers, removeNull=True, headerTransform=pascalToSpace)
+
+    demisto.debug(f"[Azure] list_vm_request {human_readable=}")
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def assign_image_attributes(image: str) -> tuple[Any, Any, Any, Any]:
+    """
+    Retrieves the image properties determined by the chosen OS image.
+
+    Args:
+        image (str): The name of the base operating system image.
+
+    Returns:
+        tuple: The image properties as (sku, publisher, offer, version).
+    """
+    image_properties = IMAGES.get(image.lower())
+    if not image_properties:
+        raise DemistoException(
+            f"Invalid value '{image}' entered for the 'os_image' argument. Valid values are: {list(IMAGES.keys())}."
+        )
+    return (
+        image_properties.get("sku"),
+        image_properties.get("publisher"),
+        image_properties.get("offer"),
+        image_properties.get("version"),
+    )
+
+
+def create_vm_parameters(args: dict[str, Any], subscription_id: str, resource_group_name: str) -> dict[str, Any]:
+    """
+    Constructs the virtual machine object sent in the body of the create virtual machine request.
+
+    Args:
+        args (dict): Command arguments.
+        subscription_id (str): The ID of the Azure subscription.
+        resource_group_name (str): The name of the resource group in which to create the virtual machine.
+
+    Returns:
+        dict: The virtual machine object.
+    """
+    image = args.get("os_image")
+    sku = args.get("sku")
+    publisher = args.get("publisher")
+    version = args.get("version")
+    offer = args.get("offer")
+    vm_name = args["virtual_machine_name"]
+    nic_name = args["nic_name"]
+
+    if not image and not (sku and publisher and version and offer):
+        raise DemistoException(
+            "You must enter a value for the 'os_image' argument or the group of arguments, "
+            "'sku', 'publisher', 'version', and 'offer'."
+        )
+
+    if image:
+        sku, publisher, offer, version = assign_image_attributes(image)
+
+    full_nic_id = (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+        f"networkInterfaces/{nic_name}"
+    )
+
+    return remove_empty_elements(
+        {
+            "location": args.get("virtual_machine_location"),
+            "properties": {
+                "hardwareProfile": {"vmSize": args.get("vm_size")},
+                "storageProfile": {
+                    "imageReference": {"sku": sku, "publisher": publisher, "version": version, "offer": offer},
+                    "osDisk": {
+                        "caching": "ReadWrite",
+                        "managedDisk": {"storageAccountType": "Standard_LRS"},
+                        "name": vm_name,
+                        "createOption": "FromImage",
+                    },
+                },
+                "osProfile": {
+                    "adminUsername": args.get("admin_username"),
+                    "computerName": vm_name,
+                    "adminPassword": args.get("admin_password"),
+                },
+                "networkProfile": {"networkInterfaces": [{"id": full_nic_id, "properties": {"primary": "true"}}]},
+            },
+            "name": vm_name,
+        }
+    )
+
+
+def create_nic_parameters(args: dict[str, Any], subscription_id: str, resource_group_name: str) -> dict[str, Any]:
+    """
+    Constructs the network interface object sent in the body of the create network interface request.
+
+    Args:
+        args (dict): Command arguments.
+        subscription_id (str): The ID of the Azure subscription.
+        resource_group_name (str): The name of the resource group in which to create the network interface.
+
+    Returns:
+        dict: The network interface object.
+    """
+    address_assignment_method = args.get("address_assignment_method", "Dynamic")
+    private_ip_address = args.get("private_ip_address")
+    network_security_group = args.get("network_security_group")
+
+    if address_assignment_method == "Static" and not private_ip_address:
+        raise DemistoException(
+            'You have chosen to assign a "Static" IP address value to the interface, '
+            'so you must enter a value for the "private_ip_address" argument.'
+        )
+
+    subnet_id = (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+        f"virtualNetworks/{args['vnet_name']}/subnets/{args['subnet_name']}"
+    )
+    network_security_group_id = (
+        f"/subscriptions/{subscription_id}/resourceGroups/{resource_group_name}/providers/Microsoft.Network/"
+        f"networkSecurityGroups/{network_security_group}"
+        if network_security_group
+        else None
+    )
+
+    return remove_empty_elements(
+        {
+            "location": args.get("nic_location"),
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": args.get("ip_config_name"),
+                        "properties": {
+                            "privateIPAllocationMethod": address_assignment_method,
+                            "privateIPAddress": private_ip_address,
+                            "subnet": {"id": subnet_id},
+                        },
+                    }
+                ],
+                "networkSecurityGroup": {"id": network_security_group_id},
+            },
+        }
+    )
+
+
+def create_vm_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Creates an Azure Virtual Machine (VM) instance with the specified OS image.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the created Virtual Machine details.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    vm_name = args.get("virtual_machine_name", "")
+
+    virtual_machine_data = create_vm_parameters(args, subscription_id, resource_group_name)
+    demisto.debug(f"[Azure] create_vm_request payload keys: {list(virtual_machine_data.keys())} for {vm_name=}")
+    response = client.create_vm_request(subscription_id, resource_group_name, vm_name, virtual_machine_data)
+
+    properties = response.get("properties", {})
+    os_disk = properties.get("storageProfile", {}).get("osDisk", {})
+
+    readable_vm = {
+        "Name": response.get("name", vm_name),
+        "ID": properties.get("vmId"),
+        "Size": os_disk.get("diskSizeGB"),
+        "OS": os_disk.get("osType"),
+        "ProvisioningState": properties.get("provisioningState"),
+        "Location": response.get("location"),
+        "ResourceGroup": resource_group_name,
+    }
+
+    title = f'Created Virtual Machine "{readable_vm.get("Name")}"'
+    table_headers = ["Name", "ID", "Size", "OS", "ProvisioningState", "Location", "ResourceGroup"]
+    human_readable = tableToMarkdown(title, readable_vm, headers=table_headers, removeNull=True, headerTransform=pascalToSpace)
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.Compute.VirtualMachines")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def delete_vm_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Deallocates and deletes a specific Azure Virtual Machine (VM).
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object indicating that the deletion has been successfully initiated.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    vm_name = args.get("virtual_machine_name", "")
+
+    client.delete_vm_request(subscription_id, resource_group_name, vm_name)
+
+    return CommandResults(readable_output=f'"{vm_name}" VM Deletion Successfully Initiated')
+
+
+def create_network_interface_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Creates an Azure Network Interface (NIC) with the specified interface parameters.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the created Network Interface details.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    interface_name = args.get("nic_name", "")
+
+    network_interface_data = create_nic_parameters(args, subscription_id, resource_group_name)
+    demisto.debug(
+        f"[Azure] create_network_interface_request payload keys: {list(network_interface_data.keys())} " f"for {interface_name=}"
+    )
+    response = client.create_network_interface_request(
+        subscription_id, resource_group_name, interface_name, network_interface_data
+    )
+
+    properties = response.get("properties", {})
+    ip_configurations = properties.get("ipConfigurations", [])
+
+    readable_nic = {
+        "Name": response.get("name", interface_name),
+        "ID": response.get("id"),
+        "PrivateIPAddresses": [
+            ip_configuration.get("properties", {}).get("privateIPAddress") for ip_configuration in ip_configurations
+        ],
+        "NetworkSecurityGroup": properties.get("networkSecurityGroup", {}).get("id"),
+        "ProvisioningState": properties.get("provisioningState"),
+        "Location": response.get("location"),
+        "ResourceGroup": resource_group_name,
+    }
+
+    title = f'Created Network Interface "{readable_nic.get("Name")}"'
+    table_headers = ["Name", "ID", "PrivateIPAddresses", "NetworkSecurityGroup", "ProvisioningState", "Location"]
+    human_readable = tableToMarkdown(title, readable_nic, headers=table_headers, removeNull=True, headerTransform=pascalToSpace)
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.NetworkInterfaces")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def get_network_interface_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]):
+    """
+    Retrieves details for a specific Azure Network Interface (NIC).
+    This function fetches configuration, networking, and attachment properties for a given
+    network interface within a specified resource group.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the Network Interface configuration details.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    interface_name = args.get("network_interface_name", "")
+    response = client.get_network_interface_request(subscription_id, resource_group_name, interface_name)
+    properties = response.get("properties")
+
+    ip_configurations = properties.get("ipConfigurations", [])
+
+    ip_configs = []
+    for ip_configuration in ip_configurations:
+        ip_configs.append(
+            {
+                "ConfigName": ip_configuration.get("name", "NA"),
+                "ConfigID": ip_configuration.get("id", "NA"),
+                "PrivateIPAddress": ip_configuration.get("properties", {}).get("privateIPAddress", "NA"),
+                "PublicIPAddressID": ip_configuration.get("properties", {}).get("publicIPAddress", {}).get("id"),
+            }
+        )
+
+    human_readable_network_config = {
+        "Name": interface_name.lower(),  # type: ignore
+        "ID": response.get("id"),
+        "MACAddress": properties.get("macAddress", "NA"),
+        "PrivateIPAddresses": [ip.get("PrivateIPAddress") for ip in ip_configs],
+        "NetworkSecurityGroup": properties.get("networkSecurityGroup", "NA"),
+        "Location": response.get("location"),
+        "NICType": properties.get("nicType", "NA"),
+        "AttachedVirtualMachine": properties.get("virtualMachine", {}).get("id", "NA"),
+    }
+
+    title = f'Properties of Network Interface "{interface_name.lower()}"'
+    table_headers = [
+        "Name",
+        "ID",
+        "MACAddress",
+        "PrivateIPAddresses",
+        "NetworkSecurityGroup",
+        "Location",
+        "NICType",
+        "AttachedVirtualMachine",
+    ]
+    human_readable = tableToMarkdown(
+        name=title, t=human_readable_network_config, headers=table_headers, removeNull=True, headerTransform=pascalToSpace
+    )
+
+    response["etag"] = response.get("etag", "")[3:-1]
+    for ip_configuration in response.get("properties", {}).get("ipConfigurations", []):
+        ip_configuration["etag"] = ip_configuration.get("etag", "")[3:-1]
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.NetworkInterfaces")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="name",
+        outputs=response,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def network_interface_update_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Updates a specific Azure Network Interface (NIC).
+    This function retrieves the current network interface configuration, updates the specified
+    properties based on user arguments, and sends the full updated object back to Azure.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments including:
+            - network_interface_name: Name of the network interface to update (required)
+            - subscription_id: Azure subscription ID
+            - resource_group_name: Resource group containing the network interface
+            - location: The location of the network security group.
+            - enable_ip_forwarding: Enable or disable IP forwarding (true/false)
+            - enable_accelerate_networking: If the network interface is configured for accelerated networking.
+            - auxiliary_mode: Auxiliary mode of Network Interface resource.
+            - auxiliary_sku: Auxiliary sku of Network Interface resource.
+            - dns_servers: Comma-separated list of DNS server IP addresses
+            - internal_dns_name_label: Internal DNS name label for the network interface
+            - network_security_group_name: The name of the network security group.
+            - remove_network_security_group: Whether to remove the property networkSecurityGroup from the network interface.
+            - nic_type: Type of Network Interface resource.
+
+    Returns:
+        CommandResults: A CommandResults object containing the updated Network Interface configuration details.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    network_interface_name = args.get("network_interface_name", "")
+    location = args.get("location", "")
+    remove_network_security_group = arg_to_bool_or_none(args.get("remove_network_security_group"))
+
+    if args.get("network_security_group_name") and remove_network_security_group:
+        raise DemistoException("The remove_network_security_group option cannot be used with network_security_group_name.")
+
+    demisto.debug(f"[Azure] Get the current state of the network interface {network_interface_name}")
+
+    # Get the current network interface configuration
+    nic = client.get_network_interface_request(subscription_id, resource_group_name, network_interface_name)
+    demisto.debug(f"[Azure] Current network interface: {nic}")
+
+    # Update properties based on user arguments
+    properties = nic.get("properties", {})
+    update_nic_properties(args, params, properties)
+
+    nic["properties"] = remove_empty_elements(properties)
+    nic["location"] = location or nic["location"]
+
+    demisto.debug(f"[Azure] Updating the network interface {network_interface_name}: {nic}")
+
+    # Send the updated network interface
+    response = client.update_network_interface_request(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        interface_name=network_interface_name,
+        network_interface_data=nic,
+    )
+
+    # Clean up etag format
+    response["etag"] = response.get("etag", "")[3:-1]
+    for ip_configuration in response.get("properties", {}).get("ipConfigurations", []):
+        ip_configuration["etag"] = ip_configuration.get("etag", "")[3:-1]
+
+    updated_properties = response.get("properties", {})
+
+    human_readable_output = {
+        "Name": network_interface_name.lower(),
+        "ID": response.get("id"),
+        "Location": response.get("location"),
+        "NetworkSecurityGroup": updated_properties.get("networkSecurityGroup", {}).get("name")
+        if updated_properties.get("networkSecurityGroup")
+        else None,
+    }
+
+    title = f'Successfully Updated Network Interface "{network_interface_name.lower()}"'
+    table_headers = [
+        "Name",
+        "ID",
+        "Location",
+        "NetworkSecurityGroup",
+    ]
+    human_readable = tableToMarkdown(
+        name=title, t=human_readable_output, headers=table_headers, removeNull=True, headerTransform=pascalToSpace
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.VirtualNetworks.NetworkInterfaces",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def get_single_ip_details_from_list_of_ip_details(list_of_ip_details: list, ip_address):
+    """Finds the associated details of target IP Address from a list of PublicIPAddressListResult objects.
+
+    Args:
+        list_of_ip_details (list):  List of PublicIPAddressListResult objects.
+        ip_address (list | dict): IP Address to search for in list of PublicIPAddressListResult objects.
+    """
+
+    def search_entry_for_ip(data, key, value):
+        if isinstance(data, list):
+            for item in data:
+                result = search_entry_for_ip(item, key, value)
+                if result:
+                    return result
+        elif isinstance(data, dict):
+            if key in data and data[key] == value:
+                return True
+            for val in data.values():
+                result = search_entry_for_ip(val, key, value)
+                if result:
+                    return result
+        return None
+
+    for entry in list_of_ip_details:
+        result = search_entry_for_ip(entry, "ipAddress", ip_address)
+        if result:
+            return entry
+    return None
+
+
+def get_public_ip_details_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]):
+    """
+    Retrieves details for a specific Azure Public IP address.
+    This function fetches configuration and networking properties for a given Public IP,
+    either within a specified resource group or by searching all IPs under the subscription.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (Dict): Command arguments.
+
+    Returns:
+        CommandResults: An CommandResults object: Dictionary of the Public IP configuration details
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    address_name = args.get("address_name", "")
+    if resource_group_name := (args.get("resource_group_name") or params.get("resource_group_name")):
+        response = client.get_public_ip_details_request(subscription_id, resource_group_name, address_name)
+    else:
+        response_for_all_ips = client.get_all_public_ip_details_request(subscription_id).get("value")
+        response = get_single_ip_details_from_list_of_ip_details(response_for_all_ips, address_name)
+        if not response:
+            raise ValueError(
+                f"'{address_name}' was not found. Please try specifying the resource group the IP would be associated with."
+            )
+        address_id = response.get("id")
+        resource_group_name = address_id.split("resourceGroups/")[1].split("/providers")[0]
+
+    response["etag"] = response.get("etag", "")[3:-1]
+    properties = response.get("properties")
+
+    human_readable_ip_config = {
+        "PublicConfigName": response.get("name"),
+        "Location": response.get("location"),
+        "PublicIPAddress": properties.get("ipAddress", "NA"),
+        "PublicIPAddressVersion": properties.get("publicIPAddressVersion", "NA"),
+        "PublicIPAddressAllocationMethod": properties.get("publicIPAllocationMethod", "NA"),
+        "ResourceGroup": resource_group_name,
+    }
+
+    title = f'Properties of Public Address "{address_name}"'
+    table_headers = [
+        "PublicConfigName",
+        "Location",
+        "PublicIPAddress",
+        "PublicIPAddressVersion",
+        "PublicIPAddressAllocationMethod",
+        "ResourceGroup",
+    ]
+    human_readable = tableToMarkdown(
+        name=title, t=human_readable_ip_config, headers=table_headers, removeNull=True, headerTransform=pascalToSpace
+    )
+
+    command = demisto.command()
+    outputs_prefix = COMMANDS_TO_OUTPUTS_PREFIX.get(command, "Azure.VirtualNetworks.PublicIPAddresses")
+
+    return CommandResults(
+        outputs_prefix=outputs_prefix,
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=human_readable,
+        raw_response=response,
+    )
+
+
+def azure_billing_usage_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Retrieves actual usage and cost details from Azure Consumption API.
+    This command provides detailed billing usage information for Azure resources over a specified time period.
+    It supports filtering by various criteria and includes pagination for large datasets. The command returns
+    usage quantities, costs, and resource details for comprehensive billing analysis.
+    Args:
+        client (AzureClient): Azure client instance for API communication
+        params (dict): Configuration parameters from integration settings
+        args (dict): Command arguments containing:
+            - subscription_id: Azure subscription ID (required)
+            - expand_result: Expand usage details with additional properties
+            - filter: OData filter expression for filtering results
+            - metric: Specific metric to retrieve (e.g., ActualCost, UsageQuantity)
+            - max_results: Maximum number of results to return (default: 50)
+            - next_page_token: Token for pagination
+    Returns:
+        CommandResults: Contains usage data with costs, quantities, and time periods,
+                      including pagination support via next page tokens
+    Raises:
+        DemistoException: If Azure API call fails, subscription not found, or invalid parameters provided
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    expand = args.get("expand_result", "")
+    filter_ = args.get("filter", "")
+    metric = args.get("metric", "")
+    max_results = int(args.get("max_results", 50))
+    next_page_token = args.get("next_page_token", "")
+
+    res = client.billing_usage_list(
+        subscription_id=subscription_id,
+        expand=expand,
+        filter_=filter_,
+        metric=metric,
+        max_results=max_results,
+        next_page_token=next_page_token,
+    )
+
+    items = res.get("value", [])
+    next_token = res.get("nextLink", "")
+    demisto.debug(f"Azure billing usage response - results count: {len(items)},\n nextLink: {bool(next_token)}")
+    results = []
+    for item in items:
+        start_date = item.get("properties", {}).get("billingPeriodStartDate")
+        end_date = item.get("properties", {}).get("billingPeriodEndDate")
+        results.append(
+            {
+                "Name": item.get("name"),
+                "Product": item.get("properties", {}).get("product"),
+                "PayGCostUSD": item.get("properties", {}).get("payGPrice"),
+                "UsageQuantity": item.get("properties", {}).get("quantity"),
+                "PeriodStartDate": datetime.strptime(start_date, "%Y-%m-%dT%H:%M:%S.%f0Z").strftime("%Y-%m-%d"),
+                "PeriodEndDate": datetime.strptime(end_date, "%Y-%m-%dT%H:%M:%S.%f0Z").strftime("%Y-%m-%d"),
+            }
+        )
+    metadata = (
+        "Run the following command to retrieve the next batch of billings:\n"
+        f"!azure-billing-usage-list subscription_id={subscription_id} next_page_token={next_token}"
+        if next_token
+        else None
+    )
+    readable_output = tableToMarkdown(
+        "Azure Billing Usage",
+        results,
+        headers=["Name", "Product", "PayGCostUSD", "UsageQuantity", "PeriodStartDate", "PeriodEndDate"],
+        headerTransform=pascalToSpace,
+        metadata=metadata,
+    )
+
+    outputs = {
+        "Azure.Billing.Usage(val.name && val.name == obj.name)": items,
+        "Azure.Billing(true)": {"UsageNextToken": next_token},
+    }
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=res,
+    )
+
+
+def azure_billing_forecast_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Returns cost forecast for a subscription over a given time range.
+    This command retrieves cost forecast data from Azure Cost Management API using the Forecasts - Usage endpoint.
+    It provides forecasted cost information for Azure resources based on historical usage patterns.
+    Args:
+        client (AzureClient): Azure client instance for API communication
+        params (dict): Configuration parameters from integration settings
+        args (dict): Command arguments containing:
+            - subscription_id: Azure subscription ID (required)
+            - type: Forecast type (Usage, Actual Cost, Amortized Cost) (required)
+            - aggregation_function_name: Aggregation function name (Pre Tax Cost USD, Cost, Cost USD, Pre Tax Cost) (required)
+            - aggregation_function_type: Aggregation function type (default: "Sum")
+            - granularity: Data granularity (default: "Daily")
+            - start_date: Start date (default: 7 days ago)
+            - end_date: End date (default: current time)
+            - filter: URL parameter to filter forecasts
+            - include_actual_cost: Include actual cost data (default: False)
+            - include_fresh_partial_cost: Include fresh partial cost data (default: False)
+    Returns:
+        CommandResults: Contains forecast data with Name, Time Period, Charge, Currency, and Grain information
+    Raises:
+        DemistoException: If Azure API call fails, subscription not found, or invalid parameters provided
+    """
+    subscription_id = args.get("subscription_id", "")
+    forecast_type = args.get("type", "")
+    aggregation_function_name = args.get("aggregation_function_name", "")
+
+    aggregation_function_type = args.get("aggregation_function_type", "Sum")
+    granularity = args.get("granularity", "Daily")
+    include_actual_cost = argToBoolean(args.get("include_actual_cost", False))
+    include_fresh_partial_cost = argToBoolean(args.get("include_fresh_partial_cost", False))
+    filter_param = args.get("filter", "")
+    start_date = args.get("start_date", "")
+    end_date = args.get("end_date", "")
+
+    response = client.billing_forecast_list(
+        subscription_id=subscription_id,
+        forecast_type=forecast_type,
+        aggregation_function_name=aggregation_function_name,
+        aggregation_function_type=aggregation_function_type,
+        granularity=granularity,
+        start_date=start_date,
+        end_date=end_date,
+        filter_param=filter_param,
+        include_actual_cost=include_actual_cost,
+        include_fresh_partial_cost=include_fresh_partial_cost,
+    )
+
+    parsed_data = parse_forecast_table_to_dict(response)
+    demisto.debug(f"Parsed data:\n {parsed_data}\n")
+
+    results = [
+        {
+            aggregation_function_name: obj.get(aggregation_function_name),
+            "UsageDate": datetime.strptime(str(obj.get("UsageDate")), "%Y%m%d").strftime("%Y-%m-%d"),
+            "CostStatus": obj.get("CostStatus"),
+            "Currency": obj.get("Currency"),
+        }
+        for obj in parsed_data
+    ]
+
+    context = {"Azure.Billing.Forecast": results}
+    readable = tableToMarkdown(
+        "Azure Billing Forecast",
+        results,
+        headers=[aggregation_function_name, "UsageDate", "CostStatus", "Currency"],
+        removeNull=True,
+    )
+
+    return CommandResults(
+        readable_output=readable,
+        outputs=context,
+        raw_response=response,
+    )
+
+
+def sql_servers_list_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Lists all SQL servers, optionally filtered by resource group.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including optional resource_group_name and next_link.
+
+    Returns:
+        CommandResults: The list of SQL servers formatted for display.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = args.get("resource_group_name") or params.get("resource_group_name")
+    next_token = args.get("next_token")
+
+    response = client.sql_servers_list(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, next_link=next_token
+    )
+
+    servers = response.get("value", [])
+
+    name = f"SQL Servers in resource group: {resource_group_name}" if resource_group_name else "SQL Servers List"
+    if not servers:
+        return CommandResults(readable_output="No SQL servers found.")
+
+    outputs = remove_empty_elements(
+        {
+            "Azure.SqlDB.Servers(val.id && val.id == obj.id)": servers,
+            "Azure.SqlDB(true)": {"ServersNextToken": response.get("nextLink")},
+        }
+    )
+    readable_output = tableToMarkdown(name, servers, headerTransform=pascalToSpace, removeNull=True)
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def sql_db_list_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Lists all databases for a SQL server.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name.
+
+    Returns:
+        CommandResults: The list of SQL databases formatted for display.
+    """
+    server_name = args.get("server_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    next_token = args.get("next_token")
+
+    response = client.sql_db_list(
+        server_name=server_name, subscription_id=subscription_id, resource_group_name=resource_group_name, next_link=next_token
+    )
+
+    databases = response.get("value", [])
+
+    if not databases:
+        return CommandResults(readable_output=f"No databases found for server {server_name}.")
+
+    outputs = remove_empty_elements(
+        {
+            "Azure.SqlDB.Databases(val.id && val.id == obj.id)": databases,
+            "Azure.SqlDB(true)": {"DatabasesNextToken": response.get("nextLink")},
+        }
+    )
+    readable_output = tableToMarkdown(
+        f"Databases for server {server_name}",
+        databases,
+        headers=["name", "location", "kind", "type"],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def sql_db_server_auditing_settings_list_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Lists the auditing settings for a SQL database.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name and db_name.
+
+    Returns:
+        CommandResults: The list of database audit settings formatted for display.
+    """
+    server_name = args.get("server_name", "")
+    db_name = args.get("db_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    next_token = args.get("next_token")
+
+    response = client.sql_db_server_auditing_settings_list(
+        server_name=server_name,
+        db_name=db_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        next_link=next_token,
+    )
+
+    policies = response.get("value", [])
+
+    if not policies:
+        return CommandResults(readable_output=f"No audit policies found for database {db_name}.")
+
+    outputs = remove_empty_elements(
+        {
+            "Azure.SqlDB.ServerAuditingSettings(val.id && val.id == obj.id)": policies,
+            "Azure.SqlDB(true)": {"ServerAuditingSettingsNextToken": response.get("nextLink")},
+        }
+    )
+    readable_output = tableToMarkdown(
+        f"Database Audit Settings for {server_name}/{db_name}",
+        policies,
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def sql_db_audit_policy_create_update_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Creates or updates the auditing policy for a SQL database.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name, db_name, state, and optional audit settings.
+
+    Returns:
+        CommandResults: The updated audit policy formatted for display.
+    """
+    server_name = args.get("server_name", "")
+    db_name = args.get("db_name", "")
+    state = args.get("state", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    response = client.sql_db_audit_policy_create_update(
+        server_name=server_name,
+        db_name=db_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        state=state,
+        audit_actions_groups=argToList(args.get("audit_actions_groups")),
+        is_azure_monitor_target_enabled=arg_to_bool_or_none(args.get("is_azure_monitor_target_enabled")),
+        is_storage_secondary_key_in_use=arg_to_bool_or_none(args.get("is_storage_secondary_key_in_use")),
+        queue_delay_ms=args.get("queue_delay_ms"),
+        retention_days=arg_to_number(args.get("retention_days")),
+        storage_account_access_key=args.get("storage_account_access_key"),
+        storage_account_subscription_id=args.get("storage_account_subscription_id"),
+        storage_endpoint=args.get("storage_endpoint"),
+        is_managed_identity_in_use=arg_to_bool_or_none(args.get("is_managed_identity_in_use")),
+    )
+
+    readable_output = tableToMarkdown(
+        f"Create Or Update Database Auditing Settings for {server_name}/{db_name}",
+        response,
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.SqlDB.ServerAuditingSettings",
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def sql_db_threat_policy_create_update_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Creates or updates the threat detection policy for a SQL database.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name, db_name, state, and optional threat settings.
+
+    Returns:
+        CommandResults: The updated threat detection policy formatted for display.
+    """
+    server_name = args.get("server_name", "")
+    db_name = args.get("db_name", "")
+    state = args.get("state", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    disabled_alerts_raw = argToList(args.get("disabled_alerts"))
+    disabled_alerts = [""] if "None" in disabled_alerts_raw else disabled_alerts_raw
+
+    properties = assign_params(
+        state=state,
+        retentionDays=arg_to_number(args.get("retention_days")),
+        storageAccountAccessKey=args.get("storage_account_access_key"),
+        storageEndpoint=args.get("storage_endpoint"),
+        disabledAlerts=disabled_alerts or None,
+        emailAccountAdmins=arg_to_bool_or_none(args.get("email_account_admins")),
+        emailAddresses=argToList(args.get("email_addresses")) or None,
+    )
+    current = {"properties": properties} if properties else {}
+
+    response = client.sql_db_threat_policy_update(
+        server_name=server_name,
+        db_name=db_name,
+        subscription_id=subscription_id,
+        current=current,
+        resource_group_name=resource_group_name,
+    )
+
+    readable_output = tableToMarkdown(
+        f"Create Or Update Database Threat Detection Policies for {server_name}/{db_name}",
+        response,
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.SqlDB.SecurityAlertPolicies",
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def sql_firewall_rules_list_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Lists firewall rules for a SQL server, or retrieves a specific rule.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name and optional firewall_rule_name.
+
+    Returns:
+        CommandResults: The list of firewall rules formatted for display.
+    """
+    server_name = args.get("server_name", "")
+    firewall_rule_name = args.get("firewall_rule_name")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    next_token = args.get("next_token")
+
+    response = client.sql_firewall_rules_list(
+        server_name=server_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_rule_name=firewall_rule_name,
+        next_link=next_token,
+    )
+
+    if firewall_rule_name:
+        readable_output = tableToMarkdown(
+            "Firewall Rules",
+            [response],
+            headers=["id", "name", "type"],
+            headerTransform=pascalToSpace,
+            removeNull=True,
+        )
+        return CommandResults(
+            readable_output=readable_output,
+            outputs_prefix="Azure.SqlDB.FirewallRules",
+            outputs_key_field="id",
+            outputs=response,
+            raw_response=response,
+        )
+
+    rules = response.get("value", [])
+    if not rules:
+        return CommandResults(readable_output="No firewall rules were found.")
+
+    outputs = remove_empty_elements(
+        {
+            "Azure.SqlDB.FirewallRules(val.id && val.id == obj.id)": rules,
+            "Azure.SqlDB(true)": {"FirewallRulesNextToken": response.get("nextLink")},
+        }
+    )
+    readable_output = tableToMarkdown(
+        "Firewall Rules",
+        rules,
+        headers=["id", "name", "type"],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def sql_firewall_rule_create_update_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Creates or updates a firewall rule for a SQL server.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name, firewall_rule_name, start_ip_address, end_ip_address.
+
+    Returns:
+        CommandResults: A success message with the updated firewall rule.
+    """
+    server_name = args.get("server_name", "")
+    firewall_rule_name = args.get("firewall_rule_name", "")
+    start_ip_address = args.get("start_ip_address", "")
+    end_ip_address = args.get("end_ip_address", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    response = client.sql_firewall_rule_create_update(
+        server_name=server_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_rule_name=firewall_rule_name,
+        start_ip_address=start_ip_address,
+        end_ip_address=end_ip_address,
+    )
+    return CommandResults(
+        readable_output=f"Successfully updated the firewall rule {firewall_rule_name}.",
+        outputs_prefix="Azure.SqlDB.FirewallRules",
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def sql_firewall_rule_delete_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Deletes a firewall rule from a SQL server.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name and firewall_rule_name.
+
+    Returns:
+        CommandResults: A success message confirming deletion.
+    """
+    server_name = args.get("server_name", "")
+    firewall_rule_name = args.get("firewall_rule_name", "")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    client.sql_firewall_rule_delete(
+        server_name=server_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_rule_name=firewall_rule_name,
+    )
+    return CommandResults(readable_output=f"The firewall rule {firewall_rule_name} has been successfully deleted.")
+
+
+def sql_firewall_rule_replace_command(client: AzureClient, params: dict, args: Dict[str, Any]) -> CommandResults:
+    """
+    Replaces all firewall rules on a SQL server.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including server_name and either entry_id or rule IP arguments.
+
+    Returns:
+        CommandResults: A success message with the updated firewall rules.
+    """
+    server_name = args.get("server_name", "")
+    entry_id = args.get("entry_id")
+    firewall_rule_name = args.get("firewall_rule_name")
+    start_ip_address = args.get("start_ip_address")
+    end_ip_address = args.get("end_ip_address")
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    request_body = None
+    if entry_id:
+        if firewall_rule_name or start_ip_address or end_ip_address:
+            raise DemistoException(
+                "When 'entry_id' is provided, the 'firewall_rule_name', 'start_ip_address', and "
+                "'end_ip_address' arguments must not be set, as the request body is taken entirely from the file."
+            )
+        file_path = demisto.getFilePath(entry_id).get("path")
+        if not file_path:
+            raise DemistoException(f"Could not find a file for entry_id '{entry_id}'. Verify the entry ID is correct.")
+        with open(file_path) as f:
+            try:
+                request_body = json.loads(f.read())
+            except json.JSONDecodeError as e:
+                raise DemistoException(f"Failed to parse the JSON file in entry_id '{entry_id}': {e}")
+    else:
+        if not (firewall_rule_name and start_ip_address and end_ip_address):
+            raise DemistoException(
+                "Either 'entry_id' must be provided, or all of 'firewall_rule_name', 'start_ip_address', "
+                "and 'end_ip_address' must be provided."
+            )
+
+    response = client.sql_firewall_rule_replace(
+        server_name=server_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_rule_name=firewall_rule_name,
+        start_ip_address=start_ip_address,
+        end_ip_address=end_ip_address,
+        request_body=request_body,
+    )
+    return CommandResults(
+        readable_output="Successfully updated the firewall rules.",
+        outputs_prefix="Azure.SqlDB.FirewallRules",
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def azure_billing_budgets_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Retrieves budget information from Azure Consumption API.
+    This command lists all configured budgets for a specified Azure subscription or resource group,
+    providing detailed information about budget limits, current spending, and time periods.
+    Supports retrieving either all budgets or a specific budget by name for targeted analysis.
+    Args:
+        client (AzureClient): Azure client instance for API communication
+        params (dict): Configuration parameters from integration settings
+        args (dict): Command arguments containing:
+            - subscription_id: Azure subscription ID (required)
+            - budget_name: Optional specific budget name to retrieve (if not provided, returns all budgets)
+    Returns:
+        CommandResults: Contains budget data including names, amounts, current spending,
+                      resource types, and time periods for budget monitoring
+    Raises:
+        DemistoException: If Azure API call fails, subscription not found, budget doesn't exist, or invalid parameters provided
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    budget_name = args.get("budget_name", "")
+
+    res = client.billing_budgets_list(subscription_id=subscription_id, budget_name=budget_name)
+
+    response_data = res.json() if hasattr(res, "json") else res
+    if budget_name:
+        # Single budget response
+        items = [response_data]
+        demisto.debug(f"Azure billing budgets response - single budget: {response_data.get('name', '')}")
+    else:
+        # List of budgets response
+        items = response_data.get("value", [])
+        demisto.debug(f"Azure billing budgets response - budgets count: {len(items)}")
+
+    results = []
+    for item in items:
+        time_period = item.get("properties", {}).get("timePeriod", {})
+        start_raw = time_period.get("startDate")
+        end_raw = time_period.get("endDate")
+
+        start = datetime.fromisoformat(start_raw.replace("Z", "+00:00")).strftime("%Y-%m-%d") if start_raw else None
+        end = datetime.fromisoformat(end_raw.replace("Z", "+00:00")).strftime("%Y-%m-%d") if end_raw else None
+        results.append(
+            {
+                "BudgetName": item.get("name"),
+                "ResourceType": item.get("type"),
+                "TimePeriod": f"{start} - {end}",
+                "Amount": item.get("properties", {}).get("amount"),
+                "CurrentSpend": item.get("properties", {}).get("currentSpend", {}).get("amount"),
+            }
+        )
+    outputs = {"Azure.Billing.Budget": items}
+    readable = tableToMarkdown(
+        "Azure Budgets", results, headers=["BudgetName", "ResourceType", "TimePeriod", "Amount", "CurrentSpend"]
+    )
+    return CommandResults(
+        readable_output=readable,
+        outputs=outputs,
+        raw_response=res,
+    )
+
+
+def firewall_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Lists the Azure firewalls in a resource group or in the whole subscription.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the list of Azure firewalls.
+    """
+    # The subscription scopes the request in both scopes, so it is always resolved and validated as non-empty.
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource = args.get("resource", "resource_group")
+    next_token = args.get("next_token", "")
+    # The resource group scopes the request only when listing a resource group, so it is resolved - and
+    # validated as non-empty - only in that scope.
+    resource_group_name = (
+        get_from_args_or_params(args=args, params=params, key="resource_group_name") if resource == "resource_group" else ""
+    )
+
+    demisto.debug(f"[Azure] Listing firewalls with {subscription_id=}, {resource=}, {resource_group_name=}")
+    response = client.firewall_list_request(subscription_id, resource_group_name, resource, next_token)
+    firewalls = response.get("value", [])
+    demisto.debug(f"[Azure] Received {len(firewalls)} firewalls, {bool(response.get('nextLink'))=}")
+
+    if not firewalls:
+        scope = f"resource group '{resource_group_name}'" if resource == "resource_group" else f"subscription '{subscription_id}'"
+        return CommandResults(readable_output=f"No Azure firewalls were found in the {scope}.")
+
+    outputs = {
+        "Azure.Firewall.Firewalls(val.id && val.id == obj.id)": firewalls,
+        "Azure.Firewall(true)": {"FirewallsNextToken": response.get("nextLink")},
+    }
+    readable_output = tableToMarkdown(
+        "Azure Firewalls List",
+        build_firewall_readable_data(firewalls),
+        headers=["name", "id", "location", "subnet", "threatIntelMode", "privateIPAddress", "provisioningState"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Retrieves the information of a specific Azure firewall, and optionally its rule collections of a given type.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the Azure firewall information.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    firewall_name = args.get("firewall_name", "")
+    rule_type = args.get("rule_type", "")
+
+    demisto.debug(f"[Azure] Getting firewall with {subscription_id=}, {resource_group_name=}, {firewall_name=}, {rule_type=}")
+    response = client.firewall_get_request(subscription_id, resource_group_name, firewall_name)
+
+    readable_output = tableToMarkdown(
+        f"Azure Firewall {firewall_name} Information",
+        build_firewall_readable_data([response]),
+        headers=["name", "id", "location", "subnet", "threatIntelMode", "privateIPAddress", "provisioningState"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    if rule_type:
+        # The rule collections are nested in the firewall response, so they are displayed in their own table.
+        rule_collections = get_firewall_rule_collections(response, rule_type)
+        demisto.debug(f"[Azure] Received {len(rule_collections)} rule collections of {rule_type=}")
+        readable_output += tableToMarkdown(
+            f"Azure Firewall {firewall_name} {rule_type} Rule Collections",
+            [
+                {
+                    "name": collection.get("name"),
+                    "action": dict_safe_get(collection, ["properties", "action", "type"]),
+                    "priority": dict_safe_get(collection, ["properties", "priority"]),
+                }
+                for collection in rule_collections
+            ],
+            headers=["name", "action", "priority"],
+            removeNull=True,
+            headerTransform=pascalToSpace,
+        )
+
+    return CommandResults(
+        outputs_prefix="Azure.Firewall.Firewalls",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_policy_rule_collection_groups_list_command(
+    client: AzureClient, params: dict[str, Any], args: dict[str, Any]
+) -> CommandResults:
+    """
+    Lists the rule collection groups of an Azure firewall policy.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the list of rule collection groups.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    policy_name: str = args.get("policy_name", "")
+    rule_type = args.get("rule_type", "")
+    next_token = args.get("next_token", "")
+
+    demisto.debug(
+        f"[Azure] Listing policy rule collection groups with {subscription_id=}, {resource_group_name=}, "
+        f"{policy_name=}, {rule_type=}"
+    )
+    response = client.firewall_policy_rule_collection_list_request(subscription_id, resource_group_name, policy_name, next_token)
+    collection_groups = filter_policy_rule_collections(response.get("value", []), rule_type)
+    next_link = response.get("nextLink")
+    demisto.debug(f"[Azure] Received {len(collection_groups)} rule collection groups, {bool(next_link)=}")
+
+    if not collection_groups:
+        # A page can hold no rule collection groups of the requested type while later pages still hold some, so the
+        # token is returned to let the user keep paging, and is set to None otherwise to clear a stale token.
+        readable_output = f"No {rule_type} rule collection groups were found in '{policy_name}'."
+        if next_link:
+            readable_output += " More pages of results are available. Run the command with the next_token argument to view them."
+        return CommandResults(
+            outputs={"Azure.VirtualNetworks(true)": {"FirewallPolicyRuleCollectionGroupsNextToken": next_link}},
+            readable_output=readable_output,
+        )
+
+    readable_data = []
+    for collection_group in collection_groups:
+        # A rule collection group can hold several rule collections, so a row is displayed for each one of them.
+        for rule_collection in dict_safe_get(collection_group, ["properties", "ruleCollections"], []):
+            readable_data.append(
+                {
+                    "name": rule_collection.get("name"),
+                    "action": dict_safe_get(rule_collection, ["action", "type"]),
+                    "priority": rule_collection.get("priority"),
+                }
+            )
+
+    outputs = {
+        "Azure.VirtualNetworks.FirewallPolicyRuleCollectionGroups(val.id && val.id == obj.id)": collection_groups,
+        "Azure.VirtualNetworks(true)": {"FirewallPolicyRuleCollectionGroupsNextToken": next_link},
+    }
+    readable_output = tableToMarkdown(
+        f"{policy_name} Rule Collection Groups List",
+        readable_data,
+        headers=["name", "action", "priority"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_rule_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Lists the rules of an Azure firewall rule collection or of a firewall policy rule collection group.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the list of rules.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    firewall_name: str = args.get("firewall_name", "")
+    policy_name: str = args.get("policy_name", "")
+    rule_type = args.get("rule_type", "")
+    collection_name = args.get("collection_name", "")
+
+    validate_firewall_or_policy_provided(firewall_name, policy_name)
+
+    demisto.debug(
+        f"[Azure] Listing rules with {subscription_id=}, {resource_group_name=}, "
+        f"{firewall_name=}, {policy_name=}, {rule_type=}, {collection_name=}"
+    )
+    if firewall_name:
+        if not rule_type:
+            raise DemistoException("The 'rule_type' argument must be provided when the 'firewall_name' argument is used.")
+
+        response = client.firewall_get_request(subscription_id, resource_group_name, firewall_name)
+        rules = get_rules_of_collection(get_firewall_rule_collections(response, rule_type), collection_name)
+    else:
+        response, rules = get_policy_rule_collection_rules(
+            client, subscription_id, resource_group_name, policy_name, collection_name
+        )
+    demisto.debug(f"[Azure] Received {len(rules)} rules.")
+
+    if not rules:
+        return CommandResults(
+            readable_output=(
+                f"No rules were found in the '{collection_name}' rule collection of '{firewall_name or policy_name}'."
+            )
+        )
+
+    readable_output = tableToMarkdown(
+        f"{firewall_name or policy_name} {collection_name} Rules List",
+        rules,
+        headers=["name", "ruleType"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.Firewall.Rules",
+        outputs_key_field="name",
+        outputs=rules,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_rule_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Retrieves the information of a specific Azure firewall or firewall policy rule.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the rule information.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    resource_group_name = get_from_args_or_params(args=args, params=params, key="resource_group_name")
+    firewall_name: str = args.get("firewall_name", "")
+    policy_name: str = args.get("policy_name", "")
+    rule_type = args.get("rule_type", "")
+    collection_name = args.get("collection_name", "")
+    rule_name = args.get("rule_name", "")
+
+    validate_firewall_or_policy_provided(firewall_name, policy_name)
+
+    demisto.debug(
+        f"[Azure] Getting rule with {subscription_id=}, {resource_group_name=}, "
+        f"{firewall_name=}, {policy_name=}, {rule_type=}, {collection_name=}, {rule_name=}"
+    )
+    if firewall_name:
+        if not rule_type:
+            raise DemistoException("The 'rule_type' argument must be provided when the 'firewall_name' argument is used.")
+
+        response = client.firewall_get_request(subscription_id, resource_group_name, firewall_name)
+        rules = get_rules_of_collection(get_firewall_rule_collections(response, rule_type), collection_name)
+    else:
+        response, rules = get_policy_rule_collection_rules(
+            client, subscription_id, resource_group_name, policy_name, collection_name
+        )
+
+    rule = next((rule for rule in rules if rule.get("name") == rule_name), None)
+
+    if not rule:
+        raise DemistoException(
+            f"The rule '{rule_name}' was not found in the '{collection_name}' rule collection "
+            f"of '{firewall_name or policy_name}'."
+        )
+
+    readable_output = tableToMarkdown(
+        f"Rule {rule_name} Information",
+        rule,
+        headers=["name", "ruleType"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.Firewall.Rules",
+        outputs_key_field="name",
+        outputs=rule,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_service_tag_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Lists the service tag information resources of a given location.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: A CommandResults object containing the list of service tags.
+    """
+    subscription_id = get_from_args_or_params(args=args, params=params, key="subscription_id")
+    location = args.get("location", "")
+    next_token = args.get("next_token", "")
+
+    demisto.debug(f"[Azure] Listing service tags with {subscription_id=}, {location=}")
+    response = client.firewall_service_tag_list_request(subscription_id, location, next_token)
+    service_tags = response.get("value", [])
+    demisto.debug(f"[Azure] Received {len(service_tags)} service tags, {bool(response.get('nextLink'))=}")
+
+    if not service_tags:
+        return CommandResults(readable_output=f"No service tags were found in the '{location}' location.")
+
+    outputs = {
+        "Azure.VirtualNetworks.ServiceTagsInformation(val.id && val.id == obj.id)": service_tags,
+        "Azure.VirtualNetworks(true)": {"ServiceTagsInformationNextToken": response.get("nextLink")},
+    }
+    readable_output = tableToMarkdown(
+        "Azure Service Tags List",
+        service_tags,
+        headers=["name", "id"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def resource_graph_operations_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Lists all available Azure Resource Graph operations and their descriptions.
+
+    Args:
+        client (AzureClient): Azure client instance for API communication.
+        params (dict): Configuration parameters from integration settings.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: Contains the list of Azure Resource Graph operations.
+    """
+    response = client.resource_graph_list_operations()
+    operations = [{"Name": operation.get("name"), "Display": operation.get("display")} for operation in response.get("value", [])]
+
+    if not operations:
+        return CommandResults(readable_output="No Azure Resource Graph operations were found.", raw_response=response)
+
+    readable_output = tableToMarkdown(
+        "List of Azure Resource Graph Operations",
+        operations,
+        headers=["Name", "Display"],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.ResourceGraph.Operations",
+        outputs_key_field="Name",
+        outputs=operations,
+        raw_response=response,
+    )
+
+
+def resource_graph_query_resources_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Executes an Azure Resource Graph query (KQL) and returns the matching resources.
+
+    Args:
+        client (AzureClient): Azure client instance for API communication.
+        params (dict): Configuration parameters from integration settings.
+        args (dict): Command arguments including the required query and the optional limit,
+            page_size, page, management_groups, subscriptions, and next_token.
+
+    Returns:
+        CommandResults: Contains the resources returned by the query.
+    """
+    limit = arg_to_number(args.get("limit") or DEFAULT_LIMIT)
+    page_size = arg_to_number(args.get("page_size"))
+    page_number = arg_to_number(args.get("page"))
+    validate_limit(limit, max_limit=RESOURCE_GRAPH_MAX_PAGE_SIZE)
+    validate_limit(page_size, max_limit=RESOURCE_GRAPH_MAX_PAGE_SIZE)
+    management_groups = argToList(args.get("management_groups"))
+    subscriptions = argToList(args.get("subscriptions"))
+    next_token = args.get("next_token")
+    query = args.get("query", "")
+
+    if page_number is not None and page_number < 1:
+        raise DemistoException(f'The "page" argument must be a positive integer. Currently the value is {page_number}.')
+    if page_number and not page_size:
+        raise DemistoException('Please enter a value for "page_size" when using "page".')
+    if page_size and not page_number:
+        raise DemistoException('Please enter a value for "page" when using "page_size".')
+
+    if page_number and page_size:
+        paging_options: dict[str, Any] = {"$skip": (page_number - 1) * page_size, "$top": page_size}
+    else:
+        # The API supports $top, so the limit is sent to the API instead of being enforced client-side.
+        paging_options = remove_empty_elements({"$top": limit, "$skipToken": next_token})
+
+    response = client.resource_graph_query_resources(
+        query=query, paging_options=paging_options, management_groups=management_groups, subscriptions=subscriptions
+    )
+    list_of_query_results = response.get("data", [])
+    total_records = response.get("totalRecords", 0)
+    response_skip_token = response.get("$skipToken", "")
+
+    if not list_of_query_results:
+        readable_output = "No resources were found for the given query."
+        if response_skip_token:
+            readable_output += " More pages are available - re-run the command with the next_token argument to continue."
+        # The token is always written, as null when there are no more results, so a stale token is cleared from the context.
+        return CommandResults(
+            readable_output=readable_output,
+            outputs={"Azure.ResourceGraph(true)": {"QueryNextToken": response_skip_token or None}},
+            raw_response=response,
+        )
+
+    metadata = (
+        "Run the following command to retrieve the next batch of results:\n"
+        f'!azure-rg-query query="{query}" next_token={response_skip_token}'
+        if response_skip_token
+        else None
+    )
+    title = f"Results of query:\n```{query}```\n\n Total Number of Possible Records: {total_records} \n"
+    readable_output = tableToMarkdown(
+        title,
+        list_of_query_results,
+        headers=["id", "name", "type"],
+        headerTransform=pascalToSpace,
+        removeNull=True,
+        metadata=metadata,
+    )
+
+    outputs: dict[str, Any] = {
+        "Azure.ResourceGraph.Query(val.id && val.id == obj.id)": list_of_query_results,
+        "Azure.ResourceGraph(true)": {"QueryNextToken": response_skip_token or None},
+    }
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=outputs,
+        raw_response=response,
+    )
+
+
+def parse_forecast_table_to_dict(response: dict) -> list[dict]:
+    """
+    Parses a generic Azure table-like API response and organizes the data into a list of dictionaries.
+    Args:
+        response (dict): The raw JSON response from the Azure API.
+    Returns:
+        list[dict]: A list of dictionaries, where each dictionary represents a row
+                    and maps column names to their corresponding values.
+    Raises:
+        DemistoException: If the response is not in the expected format.
+    """
+    try:
+        properties = response.get("properties", {})
+        columns = [column["name"] for column in properties.get("columns", [])]
+        rows = properties.get("rows", [])
+
+        parsed_data = []
+        for row in rows:
+            if len(row) != len(columns):
+                # This check ensures data integrity.
+                demisto.debug(f"Mismatched data: Found {len(row)} values for {len(columns)} columns. Skipping row.")
+                continue
+
+            # Map column names to row values to create a dictionary for each row.
+            row_dict = dict(zip(columns, row))
+            parsed_data.append(row_dict)
+
+        return parsed_data
+
+    except (KeyError, TypeError) as e:
+        raise DemistoException(f"Failed to parse API response. Malformed data structure: {e}")
+
+
+def waf_policy_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Retrieve a single Application Gateway WAF policy by name.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments, including the policy name.
+
+    Returns:
+        CommandResults: The requested WAF policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+
+    policy = client.waf_policy_get(
+        policy_name=policy_name, subscription_id=subscription_id, resource_group_name=resource_group_name
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"WAF Policy {policy_name}",
+        t=policy,
+        headers=WAF_POLICY_HEADERS,
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.ApplicationGateway.WAFPolicies",
+        outputs_key_field="id",
+        outputs=policy,
+        readable_output=readable_output,
+        raw_response=policy,
+    )
+
+
+def waf_policy_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List Application Gateway WAF policies.
+
+    When a resource group is supplied the policies of that resource group are listed,
+    otherwise the policies of the entire subscription are listed.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: The list of WAF policies.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    # Intentionally not falling back to the instance parameter, so that an instance configured
+    # with a default resource group can still list the policies of the entire subscription.
+    resource_group_name = args.get("resource_group_name", "")
+    next_token = args.get("next_token", "")
+
+    response = client.waf_policy_list(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, next_token=next_token
+    )
+    policies = response.get("value", [])
+
+    if not policies:
+        scope = f"resource group '{resource_group_name}'" if resource_group_name else f"subscription '{subscription_id}'"
+        # Clear the token of the previous page, so that a playbook paging until the token is
+        # empty does not keep reading a stale token from the context and loop forever.
+        return CommandResults(
+            outputs={"Azure.ApplicationGateway(true)": {"WAFPoliciesNextToken": None}},
+            readable_output=f"No WAF policies were found in {scope}.",
+        )
+
+    response_next_token = response.get("nextLink")
+    outputs = {
+        "Azure.ApplicationGateway.WAFPolicies(val.id && val.id == obj.id)": policies,
+        "Azure.ApplicationGateway(true)": {"WAFPoliciesNextToken": response_next_token},
+    }
+
+    readable_output = tableToMarkdown(
+        name="WAF Policies",
+        t=policies,
+        headers=WAF_POLICY_HEADERS,
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    return CommandResults(outputs=outputs, readable_output=readable_output, raw_response=response)
+
+
+def waf_policy_create_or_update_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Create or update an Application Gateway WAF policy.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments, including the policy name, location and managed rules.
+
+    Returns:
+        CommandResults: The created or updated WAF policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+
+    # Maps each command argument to its dotted location in the request body.
+    body = build_waf_policy_body(
+        args,
+        {
+            "resource_id": "id",
+            "location": "location",
+            "tags": "tags",
+            "policy_settings": "properties.policySettings",
+            "custom_rules": "properties.customRules",
+            "managed_rules": "properties.managedRules",
+        },
+    )
+
+    policy = client.waf_policy_upsert(
+        policy_name=policy_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        data=body,
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"WAF Policy {policy_name} was created or updated successfully",
+        t=policy,
+        headers=WAF_POLICY_HEADERS,
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.ApplicationGateway.WAFPolicies",
+        outputs_key_field="id",
+        outputs=policy,
+        readable_output=readable_output,
+        raw_response=policy,
+    )
+
+
+def waf_policy_delete_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Delete an Application Gateway WAF policy.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments, including the policy name.
+
+    Returns:
+        CommandResults: A message describing the outcome of the delete operation.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+
+    response = client.waf_policy_delete(
+        policy_name=policy_name, subscription_id=subscription_id, resource_group_name=resource_group_name
+    )
+
+    if response.status_code == 204:
+        message = f"WAF Policy {policy_name} was not found."
+    elif response.status_code == 202:
+        message = f"The delete request for WAF Policy {policy_name} was accepted and the operation will complete asynchronously."
+    else:
+        message = f"WAF Policy {policy_name} was deleted successfully."
+
+    return CommandResults(readable_output=message)
+
+
+def waf_front_door_policy_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Retrieve a single Front Door WAF policy by name.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments, including the policy name.
+
+    Returns:
+        CommandResults: The requested Front Door WAF policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+
+    policy = client.waf_front_door_policy_get(
+        policy_name=policy_name, subscription_id=subscription_id, resource_group_name=resource_group_name
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Front Door WAF Policy {policy_name}",
+        t=policy,
+        headers=WAF_POLICY_HEADERS,
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.FrontDoor.Policies",
+        outputs_key_field="id",
+        outputs=policy,
+        readable_output=readable_output,
+        raw_response=policy,
+    )
+
+
+def waf_front_door_policy_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List Front Door WAF policies.
+
+    When a resource group is supplied the policies of that resource group are listed,
+    otherwise the policies of the entire subscription are listed.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: The list of Front Door WAF policies.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    # Intentionally not falling back to the instance parameter, so that an instance configured
+    # with a default resource group can still list the policies of the entire subscription.
+    resource_group_name = args.get("resource_group_name", "")
+    next_token = args.get("next_token", "")
+
+    response = client.waf_front_door_policy_list(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, next_token=next_token
+    )
+    policies = response.get("value", [])
+
+    if not policies:
+        scope = f"resource group '{resource_group_name}'" if resource_group_name else f"subscription '{subscription_id}'"
+        # Clear the token of the previous page, so that a playbook paging until the token is
+        # empty does not keep reading a stale token from the context and loop forever.
+        return CommandResults(
+            outputs={"Azure.FrontDoor(true)": {"PoliciesNextToken": None}},
+            readable_output=f"No Front Door WAF policies were found in {scope}.",
+        )
+
+    response_next_token = response.get("nextLink")
+    outputs = {
+        "Azure.FrontDoor.Policies(val.id && val.id == obj.id)": policies,
+        "Azure.FrontDoor(true)": {"PoliciesNextToken": response_next_token},
+    }
+
+    readable_output = tableToMarkdown(
+        name="Front Door WAF Policies",
+        t=policies,
+        headers=WAF_POLICY_HEADERS,
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    return CommandResults(outputs=outputs, readable_output=readable_output, raw_response=response)
+
+
+def waf_front_door_policy_create_or_update_command(
+    client: AzureClient, params: dict[str, Any], args: dict[str, Any]
+) -> CommandResults:
+    """
+    Create or update a Front Door WAF policy.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments, including the policy name and managed rules.
+
+    Returns:
+        CommandResults: The created or updated Front Door WAF policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+
+    # Maps each command argument to its dotted location in the request body.
+    body = build_waf_policy_body(
+        args,
+        {
+            "location": "location",
+            "tags": "tags",
+            "etag": "etag",
+            "sku": "sku.name",
+            "policy_settings": "properties.policySettings",
+            "custom_rules": "properties.customRules",
+            "managed_rules": "properties.managedRules",
+        },
+    )
+    # Front Door WAF policies are global resources, and the API requires a SKU on create.
+    body.setdefault("location", "Global")
+    body.setdefault("sku", {"name": "Classic_AzureFrontDoor"})
+
+    policy = client.waf_front_door_policy_upsert(
+        policy_name=policy_name,
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        data=body,
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Front Door WAF Policy {policy_name} was created or updated successfully",
+        t=policy,
+        headers=WAF_POLICY_HEADERS,
+        removeNull=True,
+        headerTransform=string_to_table_header,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.FrontDoor.Policies",
+        outputs_key_field="id",
+        outputs=policy,
+        readable_output=readable_output,
+        raw_response=policy,
+    )
+
+
+def waf_front_door_policy_delete_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Delete a Front Door WAF policy.
+
+    Args:
+        client (AzureClient): The authenticated Azure client used to make API requests.
+        params (dict): Integration or instance-level parameters containing default values.
+        args (dict): Command arguments, including the policy name.
+
+    Returns:
+        CommandResults: A message describing the outcome of the delete operation.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args["policy_name"]
+
+    response = client.waf_front_door_policy_delete(
+        policy_name=policy_name, subscription_id=subscription_id, resource_group_name=resource_group_name
+    )
+
+    if response.status_code == 204:
+        message = f"Front Door WAF Policy {policy_name} was not found."
+    elif response.status_code == 202:
+        message = (
+            f"The delete request for Front Door WAF Policy {policy_name} was accepted "
+            f"and the operation will complete asynchronously."
+        )
+    else:
+        message = f"Front Door WAF Policy {policy_name} was deleted successfully."
+
+    return CommandResults(readable_output=message)
+
+
+def firewall_policy_create_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Create a firewall policy. The command only creates the policy resource. To attach the policy to a firewall,
+    run the azure-firewall-policy-attach command.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: The created firewall policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args.get("policy_name", "")
+
+    policy_data = remove_empty_elements(
+        {
+            "location": args.get("location"),
+            "properties": {
+                "threatIntelMode": args.get("threat_intelligence_mode"),
+                "threatIntelWhitelist": {
+                    "ipAddresses": argToList(args.get("ips")),
+                    "fqdns": argToList(args.get("domains")),
+                },
+                "dnsSettings": {
+                    "servers": argToList(args.get("dns_servers")),
+                    "enableProxy": arg_to_bool_or_none(args.get("enable_proxy")),
+                },
+                "basePolicy": {"id": args.get("base_policy_id")},
+                "sku": {"tier": args.get("tier")},
+            },
+        }
+    )
+    demisto.debug(f"[Azure] Creating firewall policy {policy_name} with {policy_data.keys()=}")
+
+    response = client.firewall_policy_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        policy_data=policy_data,
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Successfully created firewall policy {policy_name}",
+        t=response,
+        headers=["name", "id", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.VirtualNetworks.FirewallPolicies",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_policy_update_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Update a firewall policy. Only the provided arguments are updated, the rest of the policy is left unchanged.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: The updated firewall policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args.get("policy_name", "")
+
+    policy_data = client.firewall_policy_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, policy_name=policy_name
+    )
+    properties = policy_data.get("properties") or {}
+    policy_data["properties"] = properties
+
+    updated_properties = remove_empty_elements(
+        {
+            "threatIntelMode": args.get("threat_intelligence_mode"),
+            "threatIntelWhitelist": {
+                "ipAddresses": argToList(args.get("ips")),
+                "fqdns": argToList(args.get("domains")),
+            },
+            "basePolicy": {"id": args.get("base_policy_id")},
+            "dnsSettings": {
+                "servers": argToList(args.get("dns_servers")),
+                "enableProxy": arg_to_bool_or_none(args.get("enable_proxy")),
+            },
+        }
+    )
+    # Merge one level deep so that sibling fields the user did not provide are preserved, for example
+    # the existing DNS servers when only enable_proxy is updated.
+    for field_name, value in updated_properties.items():
+        if isinstance(value, dict):
+            existing_value = properties.get(field_name) or {}
+            existing_value.update(value)
+            properties[field_name] = existing_value
+        else:
+            properties[field_name] = value
+
+    demisto.debug(f"[Azure] Updating firewall policy {policy_name} with {updated_properties.keys()=}")
+
+    response = client.firewall_policy_create_or_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        policy_name=policy_name,
+        policy_data=policy_data,
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Successfully updated firewall policy {policy_name}",
+        t=response,
+        headers=["name", "id", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.VirtualNetworks.FirewallPolicies",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_policy_get_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Retrieve a firewall policy.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: The requested firewall policy.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args.get("policy_name", "")
+    demisto.debug(f"[Azure] Retrieving firewall policy {policy_name}")
+
+    response = client.firewall_policy_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, policy_name=policy_name
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Firewall policy {policy_name}",
+        t=response,
+        headers=["name", "id", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.VirtualNetworks.FirewallPolicies",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_policy_delete_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Delete a firewall policy.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: A message indicating the result of the delete operation.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    policy_name = args.get("policy_name", "")
+    demisto.debug(f"[Azure] Deleting firewall policy {policy_name}")
+
+    response = client.firewall_policy_delete(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, policy_name=policy_name
+    )
+
+    if response.status_code == 202:
+        message = f"The delete request for firewall policy {policy_name} was accepted and will complete asynchronously."
+    elif response.status_code == 204:
+        message = (
+            f"Firewall policy {policy_name} with resource group {resource_group_name} "
+            f"and subscription ID {subscription_id} does not exist."
+        )
+    else:
+        message = f"Firewall policy {policy_name} was successfully deleted."
+
+    return CommandResults(readable_output=message)
+
+
+def firewall_policy_list_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    List the firewall policies in a resource group.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: The list of firewall policies.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    next_token = args.get("next_token", "")
+    demisto.debug(f"[Azure] Listing firewall policies with {bool(next_token)=}")
+
+    response = client.firewall_policy_list(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, next_token=next_token
+    )
+    policies = response.get("value") or []
+    next_token = response.get("nextLink") or ""
+    demisto.debug(f"[Azure] Retrieved {len(policies)} firewall policies, {bool(next_token)=}")
+
+    if not policies:
+        return CommandResults(readable_output=f"No firewall policies were found in resource group '{resource_group_name}'.")
+
+    # The token is always written, as null on the last page, so a stale token is cleared from the context.
+    outputs = {
+        "Azure.VirtualNetworks.FirewallPolicies(val.id && val.id == obj.id)": policies,
+        "Azure.VirtualNetworks(true)": {"FirewallPoliciesNextToken": next_token or None},
+    }
+
+    readable_output = tableToMarkdown(
+        name="Firewall Policies List",
+        t=policies,
+        headers=["name", "id", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs=outputs,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_policy_attach_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Attach a firewall policy to a firewall. The policy and the firewall must belong to the same tier.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: The updated firewall.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args.get("firewall_name", "")
+    policy_id = args.get("policy_id", "")
+
+    firewall_data = client.firewall_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, firewall_name=firewall_name
+    )
+    firewall_properties = firewall_data.get("properties") or {}
+    firewall_properties["firewallPolicy"] = {"id": policy_id}
+    firewall_data["properties"] = firewall_properties
+    demisto.debug(f"[Azure] Attaching firewall policy {policy_id} to firewall {firewall_name}")
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Successfully attached the firewall policy to firewall {firewall_name}",
+        t=response,
+        headers=["name", "id", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.Firewall.Firewalls",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def firewall_policy_detach_command(client: AzureClient, params: dict[str, Any], args: dict[str, Any]) -> CommandResults:
+    """
+    Detach the firewall policy from a firewall. The command detaches the policy from the firewall, but does not
+    delete the policy.
+
+    Args:
+        client (AzureClient): The Azure client.
+        params (dict[str, Any]): The configuration parameters.
+        args (dict[str, Any]): The command arguments.
+
+    Returns:
+        CommandResults: The updated firewall.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    firewall_name = args.get("firewall_name", "")
+
+    firewall_data = client.firewall_get(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, firewall_name=firewall_name
+    )
+    (firewall_data.get("properties") or {}).pop("firewallPolicy", None)
+    demisto.debug(f"[Azure] Detaching the firewall policy from firewall {firewall_name}")
+
+    response = client.firewall_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        firewall_name=firewall_name,
+        firewall_data=firewall_data,
+    )
+
+    readable_output = tableToMarkdown(
+        name=f"Successfully detached the firewall policy from firewall {firewall_name}",
+        t=response,
+        headers=["name", "id", "location"],
+        removeNull=True,
+        headerTransform=pascalToSpace,
+    )
+
+    return CommandResults(
+        outputs_prefix="Azure.Firewall.Firewalls",
+        outputs_key_field="id",
+        outputs=response,
+        readable_output=readable_output,
+        raw_response=response,
+    )
+
+
+def log_analytics_saved_searches_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    List the saved searches of a Log Analytics workspace.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments.
+
+    Returns:
+        CommandResults: The list of saved searches.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+
+    response = client.log_analytics_saved_searches_list(
+        subscription_id=subscription_id, resource_group_name=resource_group_name, workspace_name=workspace_name
+    )
+    output = response.get("value", [])
+
+    readable_output = tableToMarkdown(
+        "Saved Searches", output, headers=LOG_ANALYTICS_SAVED_SEARCH_HEADERS, headerTransform=pascalToSpace, removeNull=True
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.LogAnalytics.SavedSearches",
+        outputs_key_field="id",
+        outputs=output,
+        raw_response=response,
+    )
+
+
+def log_analytics_saved_search_get_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Get a specified saved search from a Log Analytics workspace.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including saved_search_id.
+
+    Returns:
+        CommandResults: The requested saved search.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+    saved_search_id = args.get("saved_search_id", "")
+
+    response = client.log_analytics_saved_search_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        workspace_name=workspace_name,
+        saved_search_id=saved_search_id,
+    )
+    readable_output = tableToMarkdown(
+        f"Saved search `{saved_search_id}` properties",
+        response,
+        headers=LOG_ANALYTICS_SAVED_SEARCH_HEADERS,
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.LogAnalytics.SavedSearches",
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def log_analytics_saved_search_create_update_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Create or update a saved search in a Log Analytics workspace.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including saved_search_id, category, display_name, and query.
+
+    Returns:
+        CommandResults: The created or updated saved search.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+    saved_search_id = args.get("saved_search_id", "")
+    display_name = args.get("display_name", "")
+    category = args.get("category", "")
+    query = args.get("query", "")
+    etag = args.get("etag")
+
+    if not etag and not (category and query and display_name):
+        raise DemistoException("You must specify category, display_name and query arguments for creating a new saved search.")
+
+    data: dict = {
+        "properties": remove_empty_elements(
+            {
+                "category": category,
+                "displayName": display_name,
+                "functionAlias": args.get("function_alias"),
+                "functionParameters": args.get("function_parameters"),
+                "query": query,
+                "tags": log_analytics_tags_arg_to_request_format(args.get("tags")),
+            }
+        )
+    }
+    if etag:
+        data["etag"] = etag
+
+    response = client.log_analytics_saved_search_create_update(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        workspace_name=workspace_name,
+        saved_search_id=saved_search_id,
+        data=data,
+    )
+    readable_output = tableToMarkdown(
+        f"Saved search `{saved_search_id}` properties",
+        response,
+        headers=LOG_ANALYTICS_SAVED_SEARCH_HEADERS,
+        headerTransform=pascalToSpace,
+        removeNull=True,
+    )
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_prefix="Azure.LogAnalytics.SavedSearches",
+        outputs_key_field="id",
+        outputs=response,
+        raw_response=response,
+    )
+
+
+def log_analytics_saved_search_delete_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Delete a specified saved search from a Log Analytics workspace.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including saved_search_id.
+
+    Returns:
+        CommandResults: A success message.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+    saved_search_id = args.get("saved_search_id", "")
+
+    client.log_analytics_saved_search_delete(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        workspace_name=workspace_name,
+        saved_search_id=saved_search_id,
+    )
+    return CommandResults(readable_output=f"Successfully deleted the saved search {saved_search_id}.")
+
+
+def log_analytics_workspaces_list_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    List Log Analytics workspaces in a resource group.
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including optional subscription_id and resource_group_name.
+
+    Returns:
+        CommandResults: The list of workspaces.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+
+    response = client.log_analytics_workspaces_list(subscription_id=subscription_id, resource_group_name=resource_group_name)
+    value = response.get("value", [])
+
+    workspaces = [
+        {
+            "Name": workspace.get("name"),
+            "Location": workspace.get("location"),
+            "Tags": workspace.get("tags"),
+            "ProvisioningState": workspace.get("properties", {}).get("provisioningState"),
+        }
+        for workspace in value
+    ]
+    readable_output = tableToMarkdown("Workspaces List", workspaces, removeNull=True, headerTransform=pascalToSpace)
+
+    return CommandResults(
+        outputs_prefix="Azure.LogAnalytics.Workspaces",
+        outputs_key_field="id",
+        outputs=value,
+        raw_response=value,
+        readable_output=readable_output,
+    )
+
+
+def log_analytics_table_get_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Get a Log Analytics workspace table (search job).
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including table_name.
+
+    Returns:
+        CommandResults: The search job table.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+    table_name = args.get("table_name", "")
+
+    response = client.log_analytics_table_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        workspace_name=workspace_name,
+        table_name=table_name,
+    )
+    properties: dict = response.get("properties", {})
+    schema: dict = properties.get("schema", {})
+    # The response sometimes returns searchResults in schema and sometimes in properties.
+    # https://github.com/MicrosoftDocs/azure-docs/issues/116671
+    search_results: dict = schema.get("searchResults", {}) or properties.get("searchResults", {})
+
+    readable = {
+        "Name": schema.get("name"),
+        "Create Date": properties.get("createDate"),
+        "Plan": properties.get("plan"),
+        "Query": search_results.get("query"),
+        "Description": search_results.get("description"),
+        "startSearchTime": search_results.get("startSearchTime"),
+        "endSearchTime": search_results.get("endSearchTime"),
+        "provisioningState": properties.get("provisioningState"),
+    }
+    return CommandResults(
+        readable_output=tableToMarkdown("Search Job", readable, removeNull=True, headerTransform=pascalToSpace),
+        outputs=response,
+        outputs_prefix="Azure.LogAnalytics.Tables",
+        outputs_key_field="id",
+    )
+
+
+@polling_function(
+    name="azure-log-analytics-table-run",
+    interval=arg_to_number(demisto.args().get("interval", 60)),
+    timeout=arg_to_number(demisto.args().get("timeout", 600)),
+    requires_polling_arg=False,  # always polls
+)
+def log_analytics_table_run_command(args: dict, client: AzureClient, params: dict = {}) -> PollResult:
+    """
+    Run a Log Analytics search job and poll until the resulting table is provisioned.
+
+    Args:
+        args (dict): Command arguments including table_name, query, and polling state (first_run).
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+
+    Returns:
+        PollResult: The polling result.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+    table_name = args.get("table_name", "")
+    if not table_name.endswith(LOG_ANALYTICS_TABLE_NAME_SUFFIX):
+        raise DemistoException(f"The table_name should end with '{LOG_ANALYTICS_TABLE_NAME_SUFFIX}' suffix.")
+
+    if argToBoolean(args.get("first_run", True)):
+        start_search_time = arg_to_datetime(args.get("start_search_time", "1 day ago"))
+        end_search_time = arg_to_datetime(args.get("end_search_time", "now"))
+        data = {
+            "properties": {
+                "searchResults": remove_empty_elements(
+                    {
+                        "query": args.get("query"),
+                        "limit": arg_to_number(args.get("limit")),
+                        "startSearchTime": start_search_time.isoformat() if start_search_time else None,
+                        "endSearchTime": end_search_time.isoformat() if end_search_time else None,
+                    }
+                )
+            }
+        }
+        demisto.debug(f"First execution {subscription_id} {resource_group_name} {workspace_name} {table_name} {data}")
+        res = client.log_analytics_table_run(
+            subscription_id=subscription_id,
+            resource_group_name=resource_group_name,
+            workspace_name=workspace_name,
+            table_name=table_name,
+            data=data,
+        )
+        demisto.debug(f"First execution {res=}")
+        args["first_run"] = False
+        return PollResult(
+            response=None,
+            args_for_next_run=args,
+            continue_to_poll=True,
+            partial_result=CommandResults(
+                readable_output=(
+                    "The command was sent successfully. "
+                    "You can check the status by running !azure-log-analytics-table-get or wait."
+                )
+            ),
+        )
+
+    demisto.debug(f"Second execution {subscription_id} {resource_group_name} {workspace_name} {table_name}")
+    response = client.log_analytics_table_get(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        workspace_name=workspace_name,
+        table_name=table_name,
+    )
+    demisto.debug(f"Second execution {response=}")
+    status = response.get("properties", {}).get("provisioningState")
+    if status != "Succeeded":
+        return PollResult(continue_to_poll=True, args_for_next_run=args, response=None)
+
+    return PollResult(
+        continue_to_poll=False,
+        response=CommandResults(
+            outputs_prefix="Azure.LogAnalytics.Tables",
+            outputs_key_field="TableName",
+            outputs={"TableName": table_name, "Query": args.get("query")},
+            readable_output=(
+                f"The {table_name} table created successfully. "
+                f"The table can be inspected by running the following command !azure-log-analytics-table-get"
+            ),
+        ),
+    )
+
+
+def log_analytics_table_delete_command(client: AzureClient, params: dict, args: dict) -> CommandResults:
+    """
+    Delete a Log Analytics workspace table (search job).
+
+    Args:
+        client (AzureClient): The Azure client instance.
+        params (dict): Configuration parameters.
+        args (dict): Command arguments including table_name.
+
+    Returns:
+        CommandResults: A success message.
+    """
+    subscription_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+    resource_group_name = get_from_args_or_params(params=params, args=args, key="resource_group_name")
+    workspace_name = get_from_args_or_params(params=params, args=args, key="workspace_name")
+    table_name = args.get("table_name", "")
+    if not table_name.endswith(LOG_ANALYTICS_TABLE_NAME_SUFFIX):
+        raise DemistoException(f"Deleting tables without '{LOG_ANALYTICS_TABLE_NAME_SUFFIX}' suffix is not allowed.")
+
+    client.log_analytics_table_delete(
+        subscription_id=subscription_id,
+        resource_group_name=resource_group_name,
+        workspace_name=workspace_name,
+        table_name=table_name,
+    )
+    return CommandResults(readable_output=f"Search job {table_name} deleted successfully.")
+
+
+def test_module(client: AzureClient) -> str:
+    """Tests API connectivity and authentication.
+
+    Returning 'ok' indicates that the integration works like it is supposed to.
+    Raises exceptions if something goes wrong.
+
+    :type AzureClient: ``Client``
+    :param Client: client to use
+    :return: 'ok' if test passed.
+    :rtype: ``str``
+    """
+    if "Device Code" in client.connection_type:
+        raise DemistoException(
+            "When using the Device Code authentication type, the Test button cannot validate the "
+            "connection. Save the instance, run the `!azure-auth-start` and `!azure-auth-complete` "
+            "commands to log in, and then run the `!azure-auth-test` command to validate the connection. "
+            "For more details, see the Detailed Instructions (?) Help section in the integration configuration."
+        )
+    try:
+        if "Azure Managed Identities" in client.connection_type:
+            # The roleAssignments call requires the Microsoft.Authorization/roleAssignments/read
+            # permission, which a Managed Identity often lacks even when it can run other commands.
+            # Validate the connection with a lightweight resource-groups list call, which only requires
+            # the baseline Microsoft.Resources/subscriptions/resourceGroups/read permission.
+            client.http_request(
+                method="GET",
+                full_url=f"{PREFIX_URL_AZURE}{client.subscription_id}/resourcegroups",
+                params={"$top": "1"},
+            )
+        else:
+            client.http_request(
+                method="GET",
+                full_url=f"{PREFIX_URL_AZURE}{client.subscription_id}/providers/Microsoft.Authorization/roleAssignments",
+                params={"api-version": PERMISSIONS_VERSION},
+            )
+    except (ConnectionError, Timeout) as conn_err:
+        raise Exception("Connectivity Error: Cannot reach Azure endpoint") from conn_err
+    return "ok"
+
+
+def _get_ms_client(client: AzureClient) -> "MicrosoftClient":
+    """Return the MicrosoftClient used for the marketplace auth flows.
+
+    The MicrosoftClient only exists on the Cortex XSOAR / Cortex XSIAM (marketplace) path. On the
+    Cortex Platform (COOC) path authentication is handled automatically via the cloud connector, so
+    the auth helper commands are not applicable there.
+
+    Raises:
+        DemistoException: If called on the Cortex Platform path (no MicrosoftClient available).
+    """
+    ms_client = getattr(client, "ms_client", None)
+    if ms_client is None:
+        raise DemistoException(
+            "This command is supported only on Cortex XSOAR and Cortex XSIAM. On the Cortex Platform, "
+            "authentication is handled automatically and does not require these auth commands."
+        )
+    return ms_client
+
+
+def test_connection(client: AzureClient) -> str:
+    """Validate the Azure connection by requesting an access token (marketplace flows).
+
+    Args:
+        client (AzureClient): The Azure client used to obtain the underlying Microsoft client.
+
+    Returns:
+        str: "Success!" if an access token was retrieved successfully.
+
+    Raises:
+        Exception: Propagated from MicrosoftApiModule if authentication fails.
+    """
+    _get_ms_client(client).get_access_token()  # If fails, MicrosoftApiModule raises an error
+    return "Success!"
+
+
+def start_auth(client: AzureClient) -> CommandResults:
+    """Start the interactive (Device Code) authorization process (marketplace flows).
+
+    Args:
+        client (AzureClient): The Azure client used to obtain the underlying Microsoft client.
+
+    Returns:
+        CommandResults: A result containing the device-code authorization instructions for the user,
+            who must then run the `!azure-auth-complete` command to finish the flow.
+    """
+    result = _get_ms_client(client).start_auth("!azure-auth-complete")
+    return CommandResults(readable_output=result)
+
+
+def complete_auth(client: AzureClient) -> str:
+    """Complete the interactive (Device Code) authorization process (marketplace flows).
+
+    Args:
+        client (AzureClient): The Azure client used to obtain the underlying Microsoft client.
+
+    Returns:
+        str: A confirmation message indicating the authorization completed successfully.
+
+    Raises:
+        Exception: Propagated from MicrosoftApiModule if the access token cannot be retrieved.
+    """
+    _get_ms_client(client).get_access_token()
+    return "Authorization completed successfully."
+
+
+def health_check(shared_creds: dict, subscription_id: str, connector_id: str) -> HealthCheckError | None:  # pragma: no cover
+    """
+    Tests connectivity to Azure and checks for required permissions.
+    This function is specifically used for COOC (Connect on our Cloud) health checks
+    to verify connectivity and permissions.
+    Args:
+        shared_creds (dict): Pre-fetched cloud credentials (format varies by provider).
+        subscription_id (str): The Azure subscription ID to check against.
+        connector_id (str): The connector ID for the Cloud integration.
+    Returns:
+        HealthCheckError or None: HealthCheckError if there's an issue, None if successful.
+    """
+    if not subscription_id:
+        return HealthCheckError(
+            account_id=subscription_id,
+            connector_id=connector_id,
+            message="Missing Subscription ID for Azure integration",
+            error_type=ErrorType.INTERNAL_ERROR,
+        )
+    try:
+        token = shared_creds.get("access_token")
+        if not token:
+            return HealthCheckError(
+                account_id=subscription_id,
+                connector_id=connector_id,
+                message="Failed to authenticate with Azure",
+                error_type=ErrorType.CONNECTIVITY_ERROR,
+            )
+
+        demisto.debug("Using token-based credentials for health check")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+        client = AzureClient(subscription_id=subscription_id, headers=headers)
+        test_module(client)
+
+    except Exception as e:
+        return HealthCheckError(
+            account_id=subscription_id,
+            connector_id=connector_id,
+            message=f"Failed to connect to Azure: {str(e)}",
+            error_type=ErrorType.CONNECTIVITY_ERROR,
+        )
+
+    return None
+
+
+# Auth-helper commands establish or reset authentication and therefore must not require the
+# Authorization code, which is only obtained by first running azure-generate-login-url. Requiring
+# it here would create a chicken-and-egg block on the command whose purpose is to produce the code.
+AUTH_HELPER_COMMANDS = {
+    "azure-generate-login-url",
+    "azure-auth-start",
+    "azure-auth-complete",
+    "azure-auth-reset",
+    "azure-auth-test",
+}
+
+
+def validate_auth_params(params: dict, connection_type: str, command: str = "") -> None:
+    """Validate that all mandatory parameters for the selected authentication type are configured.
+
+    This runs only on the Cortex XSOAR / Cortex XSIAM (marketplace) path.
+
+    The mandatory parameters per authentication type are:
+        - Client Credentials:     Application ID, Tenant ID, Client Secret, Default Subscription ID
+        - Device Code:            Application ID, Default Subscription ID
+        - Authorization Code:     Application ID, Application redirect URI, Authorization code,
+                                  Default Subscription ID
+        - Azure Managed Identities: Azure Managed Identities Client ID, Default Subscription ID
+
+    The Authorization code is not required for auth-helper commands (e.g. azure-generate-login-url),
+    since those commands are used to obtain/establish authentication before a code exists.
+
+    Raises:
+        DemistoException: If one or more mandatory parameters for the selected auth type are missing.
+    """
+    app_id = params.get("app_id")
+    subscription_id = params.get("subscription_id")
+    tenant_id = params.get("tenant_id")
+    client_secret = (params.get("credentials") or {}).get("password")
+    auth_code = (params.get("auth_code") or {}).get("password")
+    redirect_uri = params.get("redirect_uri")
+    managed_identities_client_id = get_azure_managed_identities_client_id(params)
+
+    authorization_code_required: dict[str, Any] = {
+        "Application ID": app_id,
+        "Application redirect URI": redirect_uri,
+        "Default Subscription ID": subscription_id,
+    }
+    # Only demand the Authorization code itself when the caller is an actual data command, not an
+    # auth-helper command such as azure-generate-login-url that is run to obtain the code.
+    if command not in AUTH_HELPER_COMMANDS:
+        authorization_code_required["Authorization code"] = auth_code
+
+    required_by_auth_type: dict[str, dict[str, Any]] = {
+        "Client Credentials": {
+            "Application ID": app_id,
+            "Tenant ID": tenant_id,
+            "Client Secret": client_secret,
+            "Default Subscription ID": subscription_id,
+        },
+        "Device Code": {
+            "Application ID": app_id,
+            "Default Subscription ID": subscription_id,
+        },
+        "Authorization Code": authorization_code_required,
+        "Azure Managed Identities": {
+            "Azure Managed Identities Client ID": managed_identities_client_id,
+            "Default Subscription ID": subscription_id,
+        },
+    }
+
+    required_params = required_by_auth_type.get(connection_type, {})
+    missing = [display_name for display_name, value in required_params.items() if not value]
+    if missing:
+        raise DemistoException(
+            f"Missing required parameter(s) for the '{connection_type}' authentication type: "
+            f"{', '.join(missing)}. Configure these in the integration instance and try again."
+        )
+
+
+def get_azure_client(params: dict, args: dict, command: str, azure_ad_endpoint: str = DEFAULT_AZURE_AD_ENDPOINT):
+    headers = {}
+    client_scope, token_scopes = get_command_and_token_scopes(command)
+    resource = get_command_resource(command)
+    connection_type = params.get("auth_type") or "Client Credentials"
+    # The Cortex Platform (COOC) path is selected when a connector ID is present. There, the CTS
+    # token flow (get_cloud_credentials -> demisto._platformAPICall) handles authentication.
+    # On Cortex XSOAR / Cortex XSIAM (version < 3.0) there is no connector, so authentication is done
+    # by MicrosoftClient using the configured auth_type.
+    if get_connector_id():
+        credentials = get_cloud_credentials(
+            CloudTypes.AZURE.value,
+            get_from_args_or_params(params=params, args=args, key="subscription_id"),
+            scopes=token_scopes,
+        )
+        token = credentials.get("access_token")
+        if not token:
+            raise DemistoException("Failed to retrieve AZURE access token - token is missing from credentials")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+        demisto.debug("Using CTS.")
+    else:
+        # Marketplace path: ensure all mandatory parameters for the selected auth type are configured
+        # before attempting any API call.
+        validate_auth_params(params, connection_type, command)
+    client = AzureClient(
+        app_id=params.get("app_id", ""),
+        subscription_id=params.get("subscription_id", ""),
+        resource_group_name=params.get("resource_group_name", ""),
+        verify=not params.get("insecure", False),
+        proxy=params.get("proxy", False),
+        tenant_id=params.get("tenant_id"),
+        enc_key=(params.get("credentials") or {}).get("password"),
+        resource=resource,
+        scope=client_scope,
+        headers=headers,
+        connection_type=connection_type,
+        azure_ad_endpoint=azure_ad_endpoint,
+        auth_code=(params.get("auth_code", {}) or {}).get("password"),
+        redirect_uri=params.get("redirect_uri"),
+        managed_identities_client_id=get_azure_managed_identities_client_id(params),
+    )
+    return client
+
+
+def get_command_and_token_scopes(command: str) -> tuple[str, list[str]]:
+    """Get the command and token scopes for the command. Default is DEFAULT_SCOPE and [TokenScope.DEFAULT]."""
+    # There are 'azure-storage-blob' commands (such as azure-storage-blob-service-properties-get) that don't need this update.
+    if "storage-container" in command or command in STORAGE_BLOB_SPECIAL_COMMANDS:
+        return STORAGE_SCOPE, [TokenScope.STORAGE]
+    return DEFAULT_SCOPE, [TokenScope.DEFAULT]
+
+
+def get_command_resource(command: str) -> str:
+    """Get the resource for the command. Default is management_azure."""
+    # There are 'azure-storage-blob' commands (such as azure-storage-blob-service-properties-get) that don't need this update.
+    if "storage-container" in command or command in STORAGE_BLOB_SPECIAL_COMMANDS:
+        return STORAGE_RESOURCE
+    return DEFAULT_RESOURCE
+
+
+def switch_to_gov_account() -> None:
+    global BLOB_SERVICE_PREFIX
+    global SCOPE_BY_CONNECTION
+    global DEFAULT_SCOPE
+    global DEFAULT_RESOURCE
+    global PREFIX_URL_AZURE
+    global PREFIX_URL_MS_GRAPH
+
+    BLOB_SERVICE_PREFIX = "blob.core.usgovcloudapi.net"
+    SCOPE_BY_CONNECTION = {
+        "Device Code": "https://management.usgovcloudapi.net/user_impersonation offline_access user.read",
+        "Authorization Code": "https://management.usgovcloudapi.net/.default",
+        "Client Credentials": "https://management.usgovcloudapi.net/.default",
+    }
+    DEFAULT_SCOPE = "https://management.usgovcloudapi.net/.default"
+    DEFAULT_RESOURCE = "https://management.usgovcloudapi.net/"
+    PREFIX_URL_AZURE = "https://management.usgovcloudapi.net/subscriptions/"
+    PREFIX_URL_MS_GRAPH = "https://graph.microsoft.us/v1.0"
+
+
+def main():  # pragma: no cover
+    params = demisto.params()
+    command = demisto.command()
+    args = demisto.args()
+
+    demisto.debug(f"Command being called is {command}")
+    connector_id = get_connector_id()
+    demisto.debug(f"{connector_id=}")
+    handle_proxy()
+    try:
+        commands_with_params_and_args = {
+            "azure-rg-list-operations": resource_graph_operations_list_command,
+            "azure-rg-operations-list": resource_graph_operations_list_command,
+            "azure-rg-query": resource_graph_query_resources_command,
+            "azure-nsg-security-rule-update": update_security_rule_command,
+            "azure-vn-security-rule-update": update_security_rule_command,
+            "azure-billing-usage-list": azure_billing_usage_list_command,
+            "azure-billing-forecast-list": azure_billing_forecast_list_command,
+            "azure-billing-budgets-list": azure_billing_budgets_list_command,
+            "azure-storage-accounts-list": storage_account_list_command,
+            "azure-storage-blob-containers-list": storage_blob_container_list_command,
+            "azure-storage-account-update": storage_account_update_command,
+            "azure-storage-blob-service-properties-set": storage_blob_service_properties_set_command,
+            "azure-storage-blob-service-property-set": storage_blob_service_properties_set_command,
+            "azure-storage-blob-service-properties-get": storage_blob_service_properties_get_command,
+            "azure-storage-blob-service-property-get": storage_blob_service_properties_get_command,
+            "azure-storage-blob-containers-update": storage_blob_containers_update_command,
+            "azure-storage-blob-container-update": storage_blob_containers_update_command,
+            "azure-storage-container-property-get": storage_container_property_get_command,
+            "azure-storage-container-create": storage_container_create_command,
+            "azure-storage-container-delete": storage_container_delete_command,
+            "azure-storage-container-blob-create": storage_container_blob_create_command,
+            "azure-storage-blob-create": storage_container_blob_create_command,
+            "azure-storage-container-blob-get": storage_container_blob_get_command,
+            "azure-storage-blob-get": storage_container_blob_get_command,
+            "azure-storage-container-blob-tag-get": storage_container_blob_tag_get_command,
+            "azure-storage-blob-tag-get": storage_container_blob_tag_get_command,
+            "azure-storage-container-blob-tag-set": storage_container_blob_tag_set_command,
+            "azure-storage-blob-tag-set": storage_container_blob_tag_set_command,
+            "azure-storage-container-blob-property-get": storage_container_blob_property_get_command,
+            "azure-storage-blob-property-get": storage_container_blob_property_get_command,
+            "azure-storage-container-blob-property-set": storage_container_blob_property_set_command,
+            "azure-storage-blob-property-set": storage_container_blob_property_set_command,
+            "azure-storage-container-public-access-block": storage_container_block_public_access_command,
+            "azure-storage-table-create": create_table_command,
+            "azure-storage-table-delete": delete_table_command,
+            "azure-storage-tables-list": list_tables_command,
+            "azure-storage-table-entity-insert": insert_entity_command,
+            "azure-storage-table-entity-update": update_entity_command,
+            "azure-storage-table-entity-replace": replace_entity_command,
+            "azure-storage-table-entity-query": query_entity_command,
+            "azure-storage-table-entity-delete": delete_entity_command,
+            "azure-storage-containers-list": storage_container_list_command,
+            "azure-storage-blobs-list": storage_container_blob_list_command,
+            "azure-storage-blob-update": storage_container_blob_update_command,
+            "azure-storage-blob-delete": storage_container_blob_delete_command,
+            "azure-storage-container-sas-create": generate_sas_token_command,
+            "azure-policy-assignment-create": create_policy_assignment_command,
+            "azure-postgres-config-set": set_postgres_config_command,
+            "azure-postgres-server-update": postgres_server_update_command,
+            "azure-webapp-config-set": set_webapp_config_command,
+            "azure-appservice-webapp-config-update": set_webapp_config_command,
+            "azure-webapp-auth-update": update_webapp_auth_command,
+            "azure-appservice-webapp-auth-settings-update": update_webapp_auth_command,
+            "azure-mysql-flexible-server-param-set": mysql_flexible_server_param_set_command,
+            "azure-postgres-flexible-server-configuration-update": postgres_flexible_server_configuration_update_command,
+            "azure-postgres-flexible-server-set-disconnection-logging-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-postgres-flexible-server-set-checkpoint-logging-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-postgres-flexible-server-set-connection-throttling-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-postgres-flexible-server-set-session-connection-logging-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-postgres-flexible-server-set-log-retention-period-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-postgres-flexible-server-set-statement-logging-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-postgres-flexible-server-set-secure-transport-quick-action": postgres_flexible_server_configuration_update_command,  # noqa: E501
+            "azure-monitor-log-profile-update": monitor_log_profile_update_command,
+            "azure-disk-update": disk_update_command,
+            "azure-compute-disk-update": disk_update_command,
+            "azure-webapp-update": webapp_update_command,
+            "azure-webapp-set-webapp-to-https-only-quick-action": webapp_update_command,
+            "azure-webapp-enable-client-cert-quick-action": webapp_update_command,
+            "azure-appservice-webapp-update": webapp_update_command,
+            "azure-acr-update": acr_update_command,
+            "azure-cr-registry-update": acr_update_command,
+            "azure-key-vault-update": update_key_vault_command,
+            "azure-key-vault-purge-and-soft-delete-enable-quick-action": update_key_vault_command,
+            "azure-sqldb-servers-list": sql_servers_list_command,
+            "azure-sqldb-databases-list": sql_db_list_command,
+            "azure-sqldb-server-auditing-settings-list": sql_db_server_auditing_settings_list_command,
+            "azure-sqldb-audit-policy-create-update": sql_db_audit_policy_create_update_command,
+            "azure-sqldb-security-alert-policy-create": sql_db_threat_policy_create_update_command,
+            "azure-sqldb-firewall-rules-list": sql_firewall_rules_list_command,
+            "azure-sqldb-firewall-rule-create-update": sql_firewall_rule_create_update_command,
+            "azure-sqldb-firewall-rule-delete": sql_firewall_rule_delete_command,
+            "azure-sqldb-firewall-rule-replace": sql_firewall_rule_replace_command,
+            "azure-sql-db-threat-policy-update": sql_db_threat_policy_update_command,
+            "azure-sql-db-threat-policy-update-quick-action": sql_db_threat_policy_update_command,
+            "azure-keyvault-vault-update": update_key_vault_command,
+            "azure-sqldb-security-alert-policy-update": sql_db_threat_policy_update_command,
+            "azure-sql-db-transparent-data-encryption-set": sql_db_tde_set_command,
+            "azure-sql-db-transparent-data-encryption-enable-tde-quick-action": sql_db_tde_set_command,
+            "azure-aks-managed-clusters-list": aks_clusters_list_command,
+            "azure-aks-managed-cluster-addon-update": aks_cluster_addon_update_command,
+            "azure-cosmos-db-update": cosmosdb_update_command,
+            "azure-cosmos-db-disable-key-quick-action": cosmosdb_update_command,
+            "azure-cosmosdb-db-account-update": cosmosdb_update_command,
+            "azure-nsg-security-groups-list": nsg_security_groups_list_command,
+            "azure-vn-security-groups-list": nsg_security_groups_list_command,
+            "azure-nsg-security-rule-get": nsg_security_rule_get_command,
+            "azure-vn-security-group-create": nsg_security_group_create_command,
+            "azure-vn-security-rule-get": nsg_security_rule_get_command,
+            "azure-nsg-security-rules-list": nsg_security_rules_list_command,
+            "azure-vn-security-rules-list": nsg_security_rules_list_command,
+            "azure-nsg-security-rule-create": nsg_security_rule_create_command,
+            "azure-vn-security-rule-create": nsg_security_rule_create_command,
+            "azure-nsg-security-rule-delete": nsg_security_rule_delete_command,
+            "azure-vn-security-rule-delete": nsg_security_rule_delete_command,
+            "azure-vn-ip-group-get": ip_group_get_command,
+            "azure-vn-ip-groups-list": ip_group_list_command,
+            "azure-vn-ip-group-delete": ip_group_delete_command,
+            "azure-nsg-resource-group-list": nsg_resource_group_list_command,
+            "azure-rm-resource-groups-list": nsg_resource_group_list_command,
+            "azure-nsg-network-interfaces-list": nsg_network_interfaces_list_command,
+            "azure-vn-network-interfaces-list": nsg_network_interfaces_list_command,
+            "azure-nsg-public-ip-addresses-list": nsg_public_ip_addresses_list_command,
+            "azure-vn-public-ip-addresses-list": nsg_public_ip_addresses_list_command,
+            "azure-vn-virtual-networks-list": virtual_networks_list_command,
+            "azure-rm-subscriptions-list": subscriptions_list_command,
+            "azure-vm-instance-start": start_vm_command,
+            "azure-compute-vm-start": start_vm_command,
+            "azure-vm-instance-power-off": poweroff_vm_command,
+            "azure-compute-vm-power-off": poweroff_vm_command,
+            "azure-vm-instance-details-get": get_vm_command,
+            "azure-compute-vm-list": list_vm_command,
+            "azure-compute-vm-create": create_vm_command,
+            "azure-compute-vm-delete": delete_vm_command,
+            "azure-vm-network-interface-details-get": get_network_interface_command,
+            "azure-vn-network-interface-update": network_interface_update_command,
+            "azure-vn-network-interface-create": create_network_interface_command,
+            "azure-compute-vm-get": get_vm_command,
+            "azure-vn-network-interface-get": get_network_interface_command,
+            "azure-vm-public-ip-details-get": get_public_ip_details_command,
+            "azure-vn-public-ip-address-get": get_public_ip_details_command,
+            "azure-webapp-assign-managed-identity-quick-action": webapp_update_command,
+            "azure-appservice-webapp-update-quick-action": webapp_update_command,
+            "azure-storage-allow-access-quick-action": storage_account_update_command,
+            "azure-webapp-set-http2-quick-action": set_webapp_config_command,
+            "azure-appservice-webapp-config-update-http2-quick-action": set_webapp_config_command,
+            "azure-webapp-auth-update-quick-action": update_webapp_auth_command,
+            "azure-appservice-webapp-auth-settings-update-quick-action": update_webapp_auth_command,
+            "azure-storage-disable-cross-tenant-replication-quick-action": storage_account_update_command,
+            "azure-set-function-app-http-version2-0-quick-action": set_webapp_config_command,
+            "azure-storage-disable-storage-account-public-access-quick-action": storage_account_update_command,
+            "azure-webapp-disable-remote-debugging-quick-action": set_webapp_config_command,
+            "azure-appservice-webapp-config-disable-remote-debugging-quick-action": set_webapp_config_command,
+            "azure-nsg-security-rule-delete-quick-action": nsg_security_rule_delete_command,
+            "azure-webapp-set-min-tls-version-quick-action": set_webapp_config_command,
+            "azure-appservice-webapp-config-update-min-tls-version-quick-action": set_webapp_config_command,
+            "azure-function-app-set-min-tls-version-quick-action": set_webapp_config_command,
+            "azure-mysql-set-secure-transport-quick-action": mysql_flexible_server_param_set_command,
+            "azure-network-disable-storage-account-access-quick-action": storage_account_update_command,
+            "azure-monitor-log-retention-period-quick-action": monitor_log_profile_update_command,
+            "azure-set-storage-account-https-only-quick-action": storage_account_update_command,
+            "azure-webapp-update-assign-managed-identity-quick-action": webapp_update_command,
+            "azure-storage-blob-enable-soft-delete-quick-action": storage_blob_service_properties_set_command,
+            "azure-storage-blob-soft-deletion-enable-quick-action": storage_blob_service_properties_set_command,
+            "azure-disable-public-private-access-vm-disk-quick-action": disk_update_command,
+            "azure-disable-public-n-private-access-vm-disk-quick-action": disk_update_command,
+            "azure-disk-set-data-access-ad-quick-action": disk_update_command,
+            "azure-compute-disk-update-data-access-ad-quick-action": disk_update_command,
+            "azure-acr-disable-public-private-access-quick-action": acr_update_command,
+            "azure-cr-disable-public-private-access-quick-action": acr_update_command,
+            "azure-acr-disable-authentication-as-arm-quick-action": acr_update_command,
+            "azure-cr-disable-anonymous-pull-quick-action": acr_update_command,
+            "azure-cr-disable-authentication-as-arm-quick-action": acr_update_command,
+            "azure-acr-disable-anonymous-pull-quick-action": acr_update_command,
+            "azure-policy-assignment-create-quick-action": create_policy_assignment_command,
+            "azure-postgres-config-set-disconnection-logging-quick-action": set_postgres_config_command,
+            "azure-postgres-config-set-checkpoint-logging-quick-action": set_postgres_config_command,
+            "azure-postgres-config-set-connection-throttling-quick-action": set_postgres_config_command,
+            "azure-postgres-config-set-session-connection-logging-quick-action": set_postgres_config_command,
+            "azure-postgres-config-set-log-retention-period-quick-action": set_postgres_config_command,
+            "azure-postgres-config-set-statement-logging-quick-action": set_postgres_config_command,
+            "azure-postgres-server-update-ssl-enforcement-quick-action": postgres_server_update_command,
+            "azure-application-gateway-waf-policy-get": waf_policy_get_command,
+            "azure-application-gateway-waf-policies-list": waf_policy_list_command,
+            "azure-application-gateway-waf-policy-create-or-update": waf_policy_create_or_update_command,
+            "azure-application-gateway-waf-policy-delete": waf_policy_delete_command,
+            "azure-front-door-policy-get": waf_front_door_policy_get_command,
+            "azure-front-door-policies-list": waf_front_door_policy_list_command,
+            "azure-front-door-policy-create-or-update": waf_front_door_policy_create_or_update_command,
+            "azure-front-door-policy-delete": waf_front_door_policy_delete_command,
+            "azure-vn-firewall-policy-create": firewall_policy_create_command,
+            "azure-vn-firewall-policy-update": firewall_policy_update_command,
+            "azure-vn-firewall-policy-get": firewall_policy_get_command,
+            "azure-vn-firewall-policy-delete": firewall_policy_delete_command,
+            "azure-vn-firewall-policy-list": firewall_policy_list_command,
+            "azure-firewall-policy-attach": firewall_policy_attach_command,
+            "azure-firewall-policy-detach": firewall_policy_detach_command,
+            "azure-vn-ip-group-create": ip_group_create_command,
+            "azure-vn-ip-group-update": ip_group_update_command,
+            "azure-firewall-list": firewall_list_command,
+            "azure-firewall-get": firewall_get_command,
+            "azure-vn-firewall-policy-rule-collection-groups-list": firewall_policy_rule_collection_groups_list_command,
+            "azure-firewall-rules-list": firewall_rule_list_command,
+            "azure-firewall-rule-get": firewall_rule_get_command,
+            "azure-firewall-service-tags-information-list": firewall_service_tag_list_command,
+            "azure-firewall-rule-collection-groups-create": firewall_rule_collection_groups_create_command,
+            "azure-firewall-rule-collection-groups-update": firewall_rule_collection_groups_update_command,
+            "azure-firewall-rule-collection-groups-delete": firewall_rule_collection_groups_delete_command,
+            "azure-vn-firewall-policy-rule-collection-groups-create": firewall_policy_rule_collection_groups_create_command,
+            "azure-vn-firewall-policy-rule-collection-groups-update": firewall_policy_rule_collection_groups_update_command,
+            "azure-vn-firewall-policy-rule-collection-groups-delete": firewall_policy_rule_collection_groups_delete_command,
+            "azure-firewall-network-rule-create": firewall_network_rule_create_command,
+            "azure-firewall-network-rule-update": firewall_network_rule_update_command,
+            "azure-firewall-network-rule-delete": firewall_network_rule_delete_command,
+            "azure-vn-firewall-policy-network-rule-create": firewall_policy_network_rule_create_command,
+            "azure-vn-firewall-policy-network-rule-update": firewall_policy_network_rule_update_command,
+            "azure-vn-firewall-policy-network-rule-delete": firewall_policy_network_rule_delete_command,
+            "azure-log-analytics-saved-searches-list": log_analytics_saved_searches_list_command,
+            "azure-log-analytics-saved-search-get": log_analytics_saved_search_get_command,
+            "azure-log-analytics-saved-search-create-update": log_analytics_saved_search_create_update_command,
+            "azure-log-analytics-saved-search-delete": log_analytics_saved_search_delete_command,
+            "azure-log-analytics-workspaces-list": log_analytics_workspaces_list_command,
+            "azure-log-analytics-table-get": log_analytics_table_get_command,
+            "azure-log-analytics-table-delete": log_analytics_table_delete_command,
+            "azure-log-analytics-table-run": log_analytics_table_run_command,
+        }
+
+        azure_ad_endpoint = params.get("azure_ad_endpoint") or DEFAULT_AZURE_AD_ENDPOINT
+
+        if connector_id:
+            if command == "test-module":
+                if is_gov_account(connector_id):  # type: ignore
+                    switch_to_gov_account()
+                demisto.debug(f"Running health check for connector ID: {connector_id}")
+                return return_results(run_health_check_for_accounts(connector_id, CloudTypes.AZURE.value, health_check))
+
+            account_id = get_from_args_or_params(params=params, args=args, key="subscription_id")
+            if is_gov_account(connector_id, account_id):  # type: ignore
+                switch_to_gov_account()
+        else:
+            if azure_ad_endpoint.rstrip("/") != DEFAULT_AZURE_AD_ENDPOINT:
+                demisto.debug(f"Non-commercial Azure AD endpoint configured ({azure_ad_endpoint}); switching to Gov account.")
+                switch_to_gov_account()
+
+        if command == "azure-auth-reset":
+            return return_results(reset_auth())
+
+        client = get_azure_client(params, args, command, azure_ad_endpoint)
+
+        if command == "test-module":
+            return_results(test_module(client))
+        elif command == "azure-auth-start":
+            return_results(start_auth(client))
+        elif command == "azure-auth-complete":
+            return_results(complete_auth(client))
+        elif command == "azure-auth-test":
+            return_results(test_connection(client))
+        elif command == "azure-generate-login-url":
+            return_results(generate_login_url(_get_ms_client(client), azure_ad_endpoint))
+        elif command in POLLING_COMMANDS:
+            # Polling commands are decorated with @polling_function and therefore take args as their first
+            # positional argument instead of receiving it as a keyword argument.
+            return_results(commands_with_params_and_args[command](args, client=client, params=params))
+        elif command in commands_with_params_and_args:
+            return_results(commands_with_params_and_args[command](client=client, params=params, args=args))
+        else:
+            raise NotImplementedError(f"Command {command} is not implemented")
+
+    except Exception as e:
+        demisto.error(traceback.format_exc())  # print the traceback
+        return_error(f"Failed to execute {demisto.command()} command.\nError:\n{e!s}")
+
+
+if __name__ in ("__main__", "__builtin__", "builtins"):  # pragma: no cover
+    main()

@@ -1,0 +1,23 @@
+## Wiz Inc.
+This section explains how to fully configure the instance of Wiz Defend Integration in Cortex XSOAR.
+### Integration flow
+- If "Fetch incidents" is checked, on initialization, XSOAR pulls all Wiz Detections as XSOAR incidents (this may take time, depending on the number of Issues to pull). By default, only 7 days back will be fetched. This can be increased upon Integration creation.
+
+
+## Steps to follow
+- In Wiz, navigate to [Settings > Integrations ↗](https://app.wiz.io/settings/automation/integrations) then click **Add Integration**
+  - Under the required category or by using the search bar, select the third-party tool.
+  - On the New Integration page
+      - For **Name** —Enter a meaningful name.
+      - For **Scope** —Set the Project's scope.
+  - Click **Add Integration**. A new service account is created.
+  - Copy and save the **client ID**, **client secret**, **API Endpoint URL** and **Authenticate API URL** for the next steps.
+  - Make sure the service account includes the following scopes:
+    - `write:comments`: Required by `wiz-defend-set-threat-comment` and the note arguments of `wiz-defend-resolve-threat` and `wiz-defend-reopen-threat`.
+    - `read:comments` and `write:comments`: Required by `wiz-defend-clear-threat-comments`.
+    - `admin:comments`: Required to delete other authors' comments. Note that this does not replace the read/write scopes.
+- In the Cortex XSOAR Integration instance configuration window:
+    - Check **Fetches incidents** radio button
+    - Choose **Wiz Classifier** as your classifier
+    - Choose Wiz **Mapper Webhook** as your mapper
+    - Paste the credentials obtained from Wiz in the previous step.

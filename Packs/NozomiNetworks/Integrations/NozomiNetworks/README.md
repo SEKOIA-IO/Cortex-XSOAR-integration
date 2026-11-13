@@ -1,67 +1,94 @@
-The Nozomi Networks Guardian platform is a hardware or virtual appliance that is used to monitor OT/IoT/IT networks. It combines asset discovery, network visualization, vulnerability assessment, risk monitoring and threat detection in a single solution.
-  This integration is used to gather alert and asset information from Nozomi.
+The Nozomi Networks integration enables the collection of alert and asset information from Nozomi’s suite of products, including Guardian, CMC, and the cloud-based Vantage platform. These solutions provide comprehensive OT/IoT/IT network monitoring through asset discovery, network visualization, vulnerability assessment, risk monitoring, and threat detection — all within a unified platform.
 
-## Configure Nozomi Networks on Cortex XSOAR
+This integration is used to gather alert and asset information from Nozomi.
 
-1. Navigate to **Settings** > **Integrations** > **Servers & Services**.
-2. Search for Nozomi Networks.
-3. Click **Add instance** to create and configure a new integration instance.
+## Features
 
-| **Parameter** | **Description** | **Required** |
-| --- | --- | --- |
-| endpoint | Endpoint url | True |
-| username | Username | True |
-| password | Password | True |
-| insecure | Trust any certificate \(not secure\) | False |
-| proxy | Use system proxy settings | False |
-| isFetch | Fetch incidents | False |
-| fetchTime | Get incidents from last | False |
-| riskFrom | Get incidents from risk level | False |
-| fecthAlsoIncidents | Fetch also nozomi incidents | False |
+The integration provides the following capabilities:
 
-4. Click **Test** to validate the URLs, token, and connection.
+1. **Fetch Incidents**: Retrieve incidents directly from Nozomi Networks.
+2. **Execute Commands**: Perform actions to gather and update data from Nozomi Networks.
+
+## Configure Nozomi Networks in Cortex
+
+| **Parameter** | **Description**                                        | **Required** |
+| --- |--------------------------------------------------------| --- |
+| endpoint | Endpoint url                                           | True |
+| username | Username                                               | True |
+| password | Password                                               | True |
+| insecure | Trust any certificate \(not secure\)                   | False |
+| proxy | Use system proxy settings                              | False |
+| isFetch | Fetch incidents                                        | False |
+| fetchTime | Get incidents from last                                | False |
+| riskFrom | Get incidents from risk level                          | False |
+| fecthAlsoIncidents | Fetch also nozomi incidents                            | False |
+| incidentPerRun | Specifies the maximum number of incidents to retrieve  | False |
+| customAlertFilter | Custom alert filter. An additional Nozomi query language filter appended to the alerts query, combined with the other fetch filters (for example `where risk >= 8`). The leading `\|` is optional. | False |
+| defaultIncidentRole | Default incident role. The Cortex XSOAR role (or comma-separated roles) assigned to incidents created from fetched alerts. Leave empty to not assign a role. | False |
+| Custom incident name pattern | The pattern used to build the incident name from Nozomi alert fields, for example `{type_id}_{id} - {description}`. Leave empty to use the default name `{name}_{id}`. See [Custom incident name](#custom-incident-name). | False |
+
+Fetched alerts are mapped to Cortex XSOAR incident severity based on the Nozomi risk: 1-5 Low, 6-7 Medium, 8-9 High, 10 Critical.
+
+### Custom incident name
+
+By default the incident name is `{name}_{id}`, built from the Nozomi alert name and id. Set **Custom incident name pattern** to build the name from other Nozomi alert fields. If the parameter is empty (or contains only whitespace), or the rendered name is empty, the default name is used, so existing instances are unaffected.
+
+Pattern syntax:
+
+- `{field}` is replaced with the value of that Nozomi alert field. Use the exact alert field name, for example `{id}`, `{name}`, `{description}`, `{type_id}`, `{type_name}`, `{ip_src}`, `{ip_dst}`, `{status}`.
+- Missing, empty or unknown fields are rendered as empty text.
+- Use `{{` and `}}` for literal braces.
+- Values are inserted as plain text only (they are never evaluated or re-interpolated). HTML angle brackets (`<`, `>`) are removed, control characters and newlines are replaced by spaces, and repeated whitespace is collapsed.
+- The name is limited to 76 characters (36 for the alert id plus 40; longer names are truncated with `...`).
+- The name depends only on the alert data, so it is the same on every fetch.
+
+Example: `{type_id}_{id} - {description}` produces `NET:RST-FROM-SLAVE_1af93f46-65c1-4f52-a46a-2a181597fb0c - The slave 10.19...`.
+
 ## Commands
-You can execute these commands from the Cortex XSOAR CLI, as part of an automation, or in a playbook.
+
+You can execute these commands from the CLI, as part of an automation, or in a playbook.
 After you successfully execute a command, a DBot message appears in the War Room with the command details.
+
 ### nozomi-find-assets
+
 ***
 This command permits you to get some assets from Nozomi, you can use the query filter to to refine your search. With the limits you can decide the max number of assets you can retrieve from Nozomi, the limit can't be bigger than 1000.
-
 
 #### Base Command
 
 `nozomi-find-assets`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| filter | You can add a filter to get exactly the assets you want. For example 'where ip match 10.0.1.10', 'where vendor ==  Selta Telematica S.p.a' | Optional | 
-| limit | Maximun number of assets get from Nozomi, can't be bigger than 1000 | Optional | 
-
+| filter | You can add a filter to get exactly the assets you want. For example 'where ip match 10.0.1.10', 'where vendor ==  Selta Telematica S.p.a' | Optional |
+| limit | Maximun number of assets get from Nozomi, can't be bigger than 1000 | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| Nozomi.Asset.id | String | uniq id of an asset | 
-| Nozomi.Asset.level | Number | network layer | 
-| Nozomi.Asset.capture_device | String | source from which the asset was captured | 
-| Nozomi.Asset.ip | Unknown | array of asset ip | 
-| Nozomi.Asset.mac_address | Unknown | array of asset mac address | 
-| Nozomi.asset.mac_vendor | Unknown | array of mac vendor | 
-| os | String | operating system | 
-| vendor | String | asset vendor | 
-| Nozomi.Asset.firmware_version | String | firmaware version | 
-| serial_number | String | serial number | 
-| product_name | String | product name | 
-| type | String | asset type as 'OT\_device' | 
-| protocols | Unknown | array of asset protocols | 
-
+| Nozomi.Asset.id | String | uniq id of an asset |
+| Nozomi.Asset.level | Number | network layer |
+| Nozomi.Asset.capture_device | String | source from which the asset was captured |
+| Nozomi.Asset.ip | Unknown | array of asset ip |
+| Nozomi.Asset.mac_address | Unknown | array of asset mac address |
+| Nozomi.asset.mac_vendor | Unknown | array of mac vendor |
+| os | String | operating system |
+| vendor | String | asset vendor |
+| Nozomi.Asset.firmware_version | String | firmaware version |
+| serial_number | String | serial number |
+| product_name | String | product name |
+| type | String | asset type as 'OT\_device' |
+| protocols | Unknown | array of asset protocols |
 
 #### Command Example
+
 ```!nozomi-find-assets limit=3 filter="| where level == 4"```
 
 #### Context Example
+
 ```
 {
     "Nozomi": {
@@ -134,33 +161,34 @@ This command permits you to get some assets from Nozomi, you can use the query f
 >Nozomi Networks - No assets found
 
 ### nozomi-close-incidents-as-security
+
 ***
 Close incidents as security
-
 
 #### Base Command
 
 `nozomi-close-incidents-as-security`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| ids | List of IDs to close as security | Optional | 
-
+| ids | List of IDs to close as security | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| Nozomi.CloseStatus | String | Status of the request | 
-| Ids | Unknown | Ids closed | 
-| CloseAction | String | As the incidents are closed | 
-
+| Nozomi.CloseStatus | String | Status of the request |
+| Ids | Unknown | Ids closed |
+| CloseAction | String | As the incidents are closed |
 
 #### Command Example
+
 ```!nozomi-close-incidents-as-security ids=['fa441619-39d4-46c1-a2fb-fc3b285c0b64']```
 
 #### Context Example
+
 ```
 {
     "Nozomi": {
@@ -178,33 +206,34 @@ Close incidents as security
 >Command changes the status of alerts passed as "closed_as_security" in Nozomi Networks platform.
 
 ### nozomi-close-incidents-as-change
+
 ***
 Close incidents as change
-
 
 #### Base Command
 
 `nozomi-close-incidents-as-change`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| ids | List of IDs to close as change. | Optional | 
-
+| ids | List of IDs to close as change. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| Nozomi.CloseStatus | String | Status of the request | 
-| Ids | Unknown | Ids closed | 
-| CloseAction | String | As the incidents are closed | 
-
+| Nozomi.CloseStatus | String | Status of the request |
+| Ids | Unknown | Ids closed |
+| CloseAction | String | As the incidents are closed |
 
 #### Command Example
+
 ```!nozomi-close-incidents-as-change ids=['fa441619-39d4-46c1-a2fb-fc3b285c0b64']```
 
 #### Context Example
+
 ```
 {
     "Nozomi": {
@@ -222,34 +251,35 @@ Close incidents as change
 >Command changes the status of alerts passed as "closed_as_change" in Nozomi Networks platform.
 
 ### nozomi-query
+
 ***
 Can execute a nozomi query to get all the information you want.
 A query can be something like that: "alerts | select id name status ack | where status == open"
 Take a look to n2os manual to know how to do a query.
 
-
 #### Base Command
 
 `nozomi-query`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| query | A valid query  | Required | 
-
+| query | A valid query  | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| Nozomi.Query.Result | Unknown | An array of items | 
-| Nozomi.Error | String | In case the query is not correct the errors shows you the reason. | 
-
+| Nozomi.Query.Result | Unknown | An array of items |
+| Nozomi.Error | String | In case the query is not correct the errors shows you the reason. |
 
 #### Command Example
+
 ```!nozomi-query query="links | where from match 192.168.10.2 | where protocol match ssh"```
 
 #### Context Example
+
 ```
 {
     "Nozomi": {
@@ -261,37 +291,38 @@ Take a look to n2os manual to know how to do a query.
 #### Human Readable Output
 
 >### Nozomi Networks - Results for Query
+>
 >**No entries.**
 
-
 ### nozomi-find-ip-by-mac
+
 ***
 Find a node ip from a mac address
-
 
 #### Base Command
 
 `nozomi-find-ip-by-mac`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| mac | a mac address | Required | 
-| only_nodes_confirmed | This argument permit you to return only the nodes IPs from a mac address of nodes having the status to 'confirmed'. Default value is True.  | Optional | 
-
+| mac | a mac address | Required |
+| only_nodes_confirmed | This argument permit you to return only the nodes IPs from a mac address of nodes having the status to 'confirmed'. Default value is True.  | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| Nozomi.IpByMac.ips | Unknown | Array of ips found for the mac address passed, empty if not found. | 
-| Nozomi.Error | String | Usually an ip not found error | 
-
+| Nozomi.IpByMac.ips | Unknown | Array of ips found for the mac address passed, empty if not found. |
+| Nozomi.Error | String | Usually an ip not found error |
 
 #### Command Example
+
 ```!nozomi-find-ip-by-mac mac='00:0c:29:22:50:26' only_nodes_confirmed='True'```
 
 #### Context Example
+
 ```
 {
     "Nozomi": {

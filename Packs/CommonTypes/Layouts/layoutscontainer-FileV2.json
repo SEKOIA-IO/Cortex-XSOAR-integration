@@ -1027,7 +1027,7 @@
 						"maxW": 3,
 						"minH": 1,
 						"moved": false,
-						"name": "Reputation",
+						"name": "Verdict",
 						"static": false,
 						"type": "reputationSources",
 						"w": 1,
@@ -1066,5 +1066,9 @@
     "system": false,
     "version": -1,
     "fromVersion": "6.10.0",
-    "description": "File Indicator Layout"
+    "description": "File Indicator Layout",
+	"supportedModules": [
+		"agentix",
+		"xsiam"
+	]
 }

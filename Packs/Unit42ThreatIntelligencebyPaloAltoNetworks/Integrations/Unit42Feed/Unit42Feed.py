@@ -1,0 +1,1309 @@
+from CommonServerPython import *
+from CommonServerUserPython import *
+import urllib3
+
+# Disable insecure warnings
+urllib3.disable_warnings()
+
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+INTEGRATION_NAME = "Unit 42 Feed"
+API_LIMIT = 5000
+TOTAL_INDICATOR_LIMIT = 20000
+THREAT_OBJECTS_FETCH_INTERVAL_HOURS = 24
+THREAT_OBJECTS_LIMIT = 5000
+
+# List of all indicator types
+INDICATOR_TYPES_LIST = ["File", "IP", "URL", "Domain"]
+
+# Feed type option strings, matching the "feed_types" parameter options in the YAML.
+THREAT_OBJECTS_TYPE = "Threat Objects"
+INDICATORS_TYPE = "Indicators"
+
+# API endpoints
+BASE_URL = "https://prod-us.tas.crtx.paloaltonetworks.com"
+INDICATORS_ENDPOINT = "/api/v1/feeds/indicators"
+THREAT_OBJECTS_ENDPOINT = "/api/v1/feeds/threat_objects"
+
+# Retry configuration
+RETRY_COUNT = 5
+STATUS_CODES_TO_RETRY = list(range(429, 600))
+
+# Mapping from API indicator types to XSOAR indicator types
+INDICATOR_TYPE_MAPPING = {
+    "ip": FeedIndicatorType.IP,
+    "domain": FeedIndicatorType.Domain,
+    "url": FeedIndicatorType.URL,
+    "file": FeedIndicatorType.File,
+    "filehash_sha256": FeedIndicatorType.File,
+    "exploit": FeedIndicatorType.CVE,
+    "vulnerability": FeedIndicatorType.CVE,
+    "malware_family": ThreatIntel.ObjectsNames.MALWARE,
+    "grayware": ThreatIntel.ObjectsNames.MALWARE,
+    "actor": ThreatIntel.ObjectsNames.THREAT_ACTOR,
+    "threat_actor": ThreatIntel.ObjectsNames.THREAT_ACTOR,
+    "campaign": ThreatIntel.ObjectsNames.CAMPAIGN,
+    "attack pattern": ThreatIntel.ObjectsNames.ATTACK_PATTERN,
+    "attack_pattern": ThreatIntel.ObjectsNames.ATTACK_PATTERN,
+    "technique": ThreatIntel.ObjectsNames.ATTACK_PATTERN,
+    "malicious_behavior": ThreatIntel.ObjectsNames.ATTACK_PATTERN,
+    "malicious behavior": ThreatIntel.ObjectsNames.ATTACK_PATTERN,
+    "malicious_tool": ThreatIntel.ObjectsNames.TOOL,
+}
+
+VERDICT_TO_SCORE = {
+    "malicious": Common.DBotScore.BAD,
+    "suspicious": Common.DBotScore.SUSPICIOUS,
+    "benign": Common.DBotScore.GOOD,
+    "unknown": Common.DBotScore.NONE,
+}
+
+# Define valid regions enum
+VALID_REGIONS = {
+    "australia and oceania": "Australia And Oceania",
+    "antarctica": "Antarctica",
+    "north america": "North America",
+    "south asia": "South Asia",
+    "europe": "Europe",
+    "central america and the caribbean": "Central America And The Caribbean",
+    "africa": "Africa",
+    "east and southeast asia": "East And Southeast Asia",
+    "middle east": "Middle East",
+    "central asia": "Central Asia",
+    "south america": "South America",
+}
+
+
+def unit42_error_handler(res: requests.Response):
+    """
+    Custom error handler for Unit 42 API requests.
+    Extracts and logs X-Request-ID header for failed requests (4xx/5xx errors).
+
+    Args:
+        res: Response object from failed request
+
+    Returns:
+        Error message string including X-Request-ID if available
+    """
+    request_id = res.headers.get("X-Request-ID", "N/A")
+    demisto.debug(f"{INTEGRATION_NAME} API Error - X-Request-ID: {request_id}, Status: {res.status_code}, URL: {res.url}")
+
+    error_msg = f"Error in API request [Status: {res.status_code}]\n"
+    error_msg += f"[X-Request-ID: {request_id}]\n"
+    error_msg += f"Response text - {res.text}"
+
+    return_error(error_msg)
+
+
+class Client(BaseClient):
+    def __init__(self, headers, verify=False, proxy=False):
+        """Implements class for Unit 42 feed.
+
+        Args:
+            headers: headers for the request.
+            verify: boolean, if *false*, feed HTTPS server certificate is verified. Default: *false*
+            proxy: boolean, if *false* feed HTTPS server certificate will not use proxies. Default: *false*
+        """
+        super().__init__(base_url=BASE_URL, headers=headers, verify=verify, proxy=proxy)
+
+    def get_indicators(
+        self,
+        indicator_types: list | None = None,
+        limit: int = API_LIMIT,
+        start_time: str | None = None,
+        next_page_token: str | None = None,
+    ) -> dict:
+        """Get indicators from the Unit 42 feed.
+
+        Args:
+            indicator_types: A list of indicator types to fetch (ip, filehash_sha256, domain, url)
+            limit: Maximum number of indicators to return
+            start_time: Start time for fetching indicators
+            next_page_token: Token for pagination
+
+        Returns:
+            Dict containing indicators and pagination info
+        """
+        params: dict[str, Any] = {}
+        if indicator_types:
+            params["indicator_types"] = [i.lower().replace("file", "filehash_sha256") for i in indicator_types]
+        if limit:
+            params["limit"] = limit
+        if start_time:
+            params["start_time"] = start_time
+        if next_page_token:
+            params["page_token"] = next_page_token
+
+        response = self._http_request(
+            method="GET",
+            url_suffix=INDICATORS_ENDPOINT,
+            params=params,
+            error_handler=unit42_error_handler,
+            retries=RETRY_COUNT,
+            status_list_to_retry=STATUS_CODES_TO_RETRY,
+        )
+        return response
+
+    def get_threat_objects(self, limit: int = API_LIMIT, next_page_token: str | None = None) -> dict:
+        """Get threat objects from the Unit 42 feed.
+
+        Args:
+            limit: Maximum number of threat objects to return
+            next_page_token: Token for pagination
+
+        Returns:
+            Dict containing threat objects and pagination info
+        """
+        params: dict[str, Any] = {}
+        if limit:
+            params["limit"] = limit
+        if next_page_token:
+            params["page_token"] = next_page_token
+
+        response = self._http_request(
+            method="GET",
+            url_suffix=THREAT_OBJECTS_ENDPOINT,
+            params=params,
+            error_handler=unit42_error_handler,
+            retries=RETRY_COUNT,
+            status_list_to_retry=STATUS_CODES_TO_RETRY,
+        )
+        return response
+
+
+def create_publications(publications_data: list) -> list:
+    """
+    Creates the publications list of the indicator
+
+    Args:
+        publications_data: A list of all publications from threat object
+
+    Returns:
+        A list of publications of the indicator
+    """
+    publications = []
+
+    for data in publications_data:
+        timestamp = data.get("created_at", "")
+        title = data.get("title", "")
+        url = data.get("url", "")
+        source = data.get("source", INTEGRATION_NAME)
+
+        publications.append({"link": url, "title": title, "timestamp": timestamp, "source": source})
+
+    return publications
+
+
+def get_threat_object_score(threat_class: str) -> int:
+    """
+    Get the appropriate score for a threat object based on its class
+
+    Args:
+        threat_class: The threat object class (lowercase)
+
+    Returns:
+        Appropriate ThreatIntel score or Common.DBotScore.NONE as default
+    """
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        return Common.DBotScore.NONE
+
+    threat_type = INDICATOR_TYPE_MAPPING[threat_class]
+
+    if threat_type == ThreatIntel.ObjectsNames.MALWARE:
+        return ThreatIntel.ObjectsScore.MALWARE
+    elif threat_type == ThreatIntel.ObjectsNames.THREAT_ACTOR:
+        return ThreatIntel.ObjectsScore.THREAT_ACTOR
+    elif threat_type == ThreatIntel.ObjectsNames.CAMPAIGN:
+        return ThreatIntel.ObjectsScore.CAMPAIGN
+    elif threat_type == ThreatIntel.ObjectsNames.ATTACK_PATTERN:
+        return ThreatIntel.ObjectsScore.ATTACK_PATTERN
+
+    return Common.DBotScore.NONE
+
+
+def create_location_indicators_and_relationships(threat_obj: dict[str, Any], threat_actor_name: str) -> list[dict[str, Any]]:
+    """
+    Create location indicators from affected regions and origin field and build relationships
+
+    Args:
+        threat_obj: The threat object data
+        threat_actor_name: Name of the threat actor to create relationships with
+
+    Returns:
+        List of location indicators with relationships
+    """
+    location_indicators: list[dict[str, Any]] = []
+
+    # Handle affected regions
+    affected_regions = demisto.get(threat_obj, "battlecard_details.threat_actor_details.affected_regions", [])
+
+    # in case affected_regions is "null", return empty list.
+    if not isinstance(affected_regions, list):
+        return location_indicators
+
+    for region in affected_regions:
+        if isinstance(region, str) and region.strip():
+            region_lower = region.strip().lower()
+
+            # Use the standardized region name if it matches our enum
+            standardized_region = VALID_REGIONS.get(region_lower)
+            if not standardized_region:
+                demisto.debug(f"Skipping region {region} as it is not in the valid regions enum")
+                continue
+
+            # Create EntityRelationship for the location
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.TARGETS,
+                entity_a=threat_actor_name,
+                entity_a_type=ThreatIntel.ObjectsNames.THREAT_ACTOR,
+                entity_b=standardized_region,
+                entity_b_type=FeedIndicatorType.Location,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+            )
+
+            location_indicator = {
+                "value": standardized_region,
+                "type": FeedIndicatorType.Location,
+                "score": Common.DBotScore.NONE,
+                "service": INTEGRATION_NAME,
+                "relationships": [entity_relationship.to_entry()],
+                "fields": {
+                    "geocountry": standardized_region,
+                },
+            }
+            location_indicators.append(location_indicator)
+
+    return location_indicators
+
+
+def build_threat_object_description(threat_obj: dict[str, Any]) -> str:
+    """
+    Build a comprehensive description for a threat object including highlights, methods, and targets
+
+    Args:
+        threat_obj: The threat object data
+
+    Returns:
+        Formatted description string with sections for highlights, methods, and targets
+    """
+    description = threat_obj.get("description", "").replace("\\n", "\n")
+
+    # Add highlights section if available
+    highlights = demisto.get(threat_obj, "battlecard_details.highlights", "").replace("\\n", "\n")
+    if highlights and highlights != "Highlights / Key Takeaways (external)":  # Do not add if it is only the default title
+        description += "\n\n##"
+        description += highlights
+
+    # Add methods section if available (for threat actors)
+    methods = demisto.get(threat_obj, "battlecard_details.threat_actor_details.methods", "").replace("\\n", "\n")
+    if methods:
+        description += "\n\n##"
+        description += methods
+
+    # Add targets section if available (for threat actors)
+    targets = demisto.get(threat_obj, "battlecard_details.threat_actor_details.targets", "").replace("\\n", "\n")
+    if targets:
+        description += "\n\n##"
+        description += targets
+
+    return description
+
+
+def create_vulnerabilities_relationships(threat_obj: dict[str, Any], threat_actor_name: str, threat_class: str) -> list[dict]:
+    """
+    Create vulnerabilities relationships from vulnerabilities associations
+
+    Args:
+        threat_obj: The threat object data
+        threat_actor_name: Name of the threat actor
+        threat_class: The threat object class
+
+    Returns:
+        List of EntityRelationship objects
+    """
+    relationships: list[dict] = []
+
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        demisto.debug(f"Skipping create_vulnerabilities_relationships for unknown threat_class {threat_class!r}")
+        return relationships
+
+    vulnerabilities = demisto.get(threat_obj, "battlecard_details.threat_actor_details.vulnerability_associations", [])
+
+    for vulnerability in vulnerabilities:
+        cve_id = vulnerability.get("cve")
+
+        if cve_id:
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.EXPLOITS,
+                entity_a=threat_actor_name,
+                entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                entity_b=cve_id.upper(),
+                entity_b_type=FeedIndicatorType.CVE,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+            )
+            relationships.append(entity_relationship.to_entry())
+
+    return relationships
+
+
+def create_actor_relationships(threat_obj: dict[str, Any], malware_family_name: str, threat_class: str) -> list[dict]:
+    """
+    Create actor relationships from actor_associations
+
+    Args:
+        threat_obj: The threat object data
+        malware_family_name: Name of the malware family
+        threat_class: The threat object class
+
+    Returns:
+        List of EntityRelationship objects
+    """
+    relationships: list[dict] = []
+
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        demisto.debug(f"Skipping create_actor_relationships for unknown threat_class {threat_class!r}")
+        return relationships
+
+    actor_associations = demisto.get(threat_obj, "battlecard_details.malware_family_details.actor_associations", [])
+
+    for relationship in actor_associations:
+        aliases = relationship.get("aliases", [])
+        name = relationship.get("name")
+
+        if aliases:
+            # Create a relationship for each alias
+            for alias in aliases:
+                entity_relationship = EntityRelationship(
+                    name=EntityRelationship.Relationships.USED_BY,
+                    entity_a=malware_family_name,
+                    entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                    entity_b=string_to_table_header(alias),
+                    entity_b_type=ThreatIntel.ObjectsNames.THREAT_ACTOR,
+                    source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                    brand=INTEGRATION_NAME,
+                )
+                relationships.append(entity_relationship.to_entry())
+        elif name:
+            # Create a relationship using the name if no aliases exist
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.USED_BY,
+                entity_a=malware_family_name,
+                entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                entity_b=string_to_table_header(name),
+                entity_b_type=ThreatIntel.ObjectsNames.THREAT_ACTOR,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+            )
+            relationships.append(entity_relationship.to_entry())
+
+    return relationships
+
+
+def create_tools_relationships(threat_obj: dict[str, Any], threat_actor_name: str, threat_class: str) -> list[dict]:
+    """
+    Create tools relationships from tools associations
+
+    Args:
+        threat_obj: The threat object data
+        threat_actor_name: Name of the threat actor
+        threat_class: The threat object class
+
+    Returns:
+        List of EntityRelationship objects
+    """
+    relationships: list[dict] = []
+
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        demisto.debug(f"Skipping create_tools_relationships for unknown threat_class {threat_class!r}")
+        return relationships
+
+    tools_associations = demisto.get(threat_obj, "battlecard_details.threat_actor_details.tools", [])
+
+    for tool in tools_associations:
+        tool_name = tool.get("name")
+
+        if tool_name:
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.USES,
+                entity_a=threat_actor_name,
+                entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                entity_b=string_to_table_header(tool_name),
+                entity_b_type=ThreatIntel.ObjectsNames.TOOL,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+                fields={"tags": f"mitre-id: {tool.get('mitreid')}" if tool.get("mitreid") else ""},
+            )
+            relationships.append(entity_relationship.to_entry())
+
+    return relationships
+
+
+def create_malware_relationships(threat_obj: dict[str, Any], threat_actor_name: str, threat_class: str) -> list[dict]:
+    """
+    Create malware relationships from malware_associations
+
+    Args:
+        threat_obj: The threat object data
+        threat_actor_name: Name of the threat actor
+        threat_class: The threat object class
+
+    Returns:
+        List of EntityRelationship objects
+    """
+    relationships: list[dict] = []
+
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        demisto.debug(f"Skipping create_malware_relationships for unknown threat_class {threat_class!r}")
+        return relationships
+
+    malware_associations = demisto.get(threat_obj, "battlecard_details.threat_actor_details.malware_associations", [])
+
+    for relationship in malware_associations:
+        name = relationship.get("name")
+        aliases = relationship.get("aliases", [])
+
+        if name:
+            # Create a relationship using the name
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.USES,
+                entity_a=threat_actor_name,
+                entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                entity_b=string_to_table_header(name),
+                entity_b_type=ThreatIntel.ObjectsNames.MALWARE,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+            )
+            relationships.append(entity_relationship.to_entry())
+        elif aliases:
+            # Create a relationship for each alias if no name exists
+            for alias in aliases:
+                entity_relationship = EntityRelationship(
+                    name=EntityRelationship.Relationships.USES,
+                    entity_a=threat_actor_name,
+                    entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                    entity_b=string_to_table_header(alias),
+                    entity_b_type=ThreatIntel.ObjectsNames.MALWARE,
+                    source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                    brand=INTEGRATION_NAME,
+                )
+                relationships.append(entity_relationship.to_entry())
+
+    return relationships
+
+
+def create_attack_patterns_relationships(threat_obj: dict[str, Any], threat_actor_name: str, threat_class: str) -> list[dict]:
+    """
+    Create attack patterns relationships from attack patterns associations
+
+    Args:
+        threat_obj: The threat object data
+        threat_actor_name: Name of the threat actor
+        threat_class: The threat object class
+
+    Returns:
+        List of EntityRelationship objects
+    """
+    relationships: list[dict] = []
+
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        demisto.debug(f"Skipping create_attack_patterns_relationships for unknown threat_class {threat_class!r}")
+        return relationships
+
+    attack_patterns = demisto.get(threat_obj, "battlecard_details.attack_patterns", [])
+
+    for pattern in attack_patterns:
+        mitre_id = pattern.get("mitreid", "")
+        pattern_name = pattern.get("name", "")
+
+        # Skip items with a dot in the mitreid
+        if "." in mitre_id:
+            demisto.debug(f"Skipping attack pattern {pattern_name} with mitreid {mitre_id}")
+            continue
+
+        if pattern_name and pattern_name.endswith("(enterprise)"):
+            # Remove (enterprise) suffix if present
+            pattern_name = pattern_name.removesuffix("(enterprise)").strip()
+
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.USES,
+                entity_a=threat_actor_name,
+                entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                entity_b=string_to_table_header(pattern_name),
+                entity_b_type=ThreatIntel.ObjectsNames.ATTACK_PATTERN,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+            )
+            relationships.append(entity_relationship.to_entry())
+
+    return relationships
+
+
+def create_campaigns_relationships(threat_obj: dict[str, Any], threat_object_name: str, threat_class: str) -> list[dict]:
+    """
+    Create campaigns relationships from campaigns list
+
+    Args:
+        threat_obj: The threat object data
+        threat_object_name: Name of the threat object
+        threat_class: The threat object class
+
+    Returns:
+        List of EntityRelationship objects
+    """
+    relationships: list[dict] = []
+
+    if threat_class not in INDICATOR_TYPE_MAPPING:
+        demisto.debug(f"Skipping create_campaigns_relationships for unknown threat_class {threat_class!r}")
+        return relationships
+
+    campaigns = demisto.get(threat_obj, "battlecard_details.campaigns", [])
+
+    for campaign in campaigns:
+        if isinstance(campaign, str) and campaign.strip():
+            entity_relationship = EntityRelationship(
+                name=EntityRelationship.Relationships.RELATED_TO,
+                entity_a=threat_object_name,
+                entity_a_type=INDICATOR_TYPE_MAPPING[threat_class],
+                entity_b=string_to_table_header(campaign),
+                entity_b_type=ThreatIntel.ObjectsNames.CAMPAIGN,
+                source_reliability=DBotScoreReliability.A_PLUS_PLUS,
+                brand=INTEGRATION_NAME,
+            )
+            relationships.append(entity_relationship.to_entry())
+
+    return relationships
+
+
+def create_relationships_and_tags(
+    indicator_value: str, indicator_type: str, threat_object_associations: list
+) -> tuple[list[Any], list[str]]:
+    """
+    Create relationships and tags from threat object associations
+
+    Args:
+        indicator_value: The indicator value (entity_a)
+        indicator_type: The indicator type for mapping
+        threat_object_associations: List of threat object associations
+
+    Returns:
+        Tuple of List of EntityRelationship objects and tags
+    """
+    relationships: list[Any] = []
+    tags: list[str] = []
+
+    for assoc in threat_object_associations:
+        if not assoc or not assoc.get("name") or not assoc.get("threat_object_class"):
+            continue
+
+        threat_name = assoc.get("name")
+        threat_class = assoc.get("threat_object_class")
+
+        tags.append(threat_name)
+
+        if argToBoolean(demisto.params().get("create_relationships") or False):
+            reliability = demisto.params().get("feedReliability", "A++ - Reputation script")
+
+            # Map threat class to XSOAR threat intel object type
+            entity_a_type = INDICATOR_TYPE_MAPPING.get(indicator_type, Common.Indicator)
+            entity_b_type = INDICATOR_TYPE_MAPPING.get(threat_class, Common.Indicator)
+
+            # Determine relationship type based on threat class
+            if threat_class in ["actor", "threat_actor"]:
+                relationship_name = EntityRelationship.Relationships.USED_BY
+            elif threat_class == "campaign":
+                relationship_name = EntityRelationship.Relationships.PART_OF
+            elif threat_class in ["attack pattern", "technique"]:
+                relationship_name = EntityRelationship.Relationships.USES
+            elif threat_class == "exploit":
+                relationship_name = EntityRelationship.Relationships.EXPLOITS
+            elif threat_class in ["malicious behavior", "malicious_behavior"]:
+                relationship_name = EntityRelationship.Relationships.INDICATOR_OF
+            else:
+                relationship_name = EntityRelationship.Relationships.RELATED_TO
+
+            relationship = EntityRelationship(
+                name=relationship_name,
+                entity_a=indicator_value,
+                entity_a_type=entity_a_type,
+                entity_b=threat_name,
+                entity_b_type=entity_b_type,
+                source_reliability=reliability,
+                brand=INTEGRATION_NAME,
+            )
+
+            relationships.append(relationship.to_entry())
+
+    return relationships, tags
+
+
+def map_indicator(indicator_data: dict, feed_tags: list = [], tlp_color: str | None = None) -> dict:
+    """Map an indicator from the Unit 42 API to XSOAR format.
+
+    Args:
+        indicator_data: Indicator data from the API.
+        feed_tags: List of tags to add to the indicator.
+        tlp_color: Traffic Light Protocol color to add to the indicator.
+
+    Returns:
+        Indicator in XSOAR format.
+    """
+    indicator_value = indicator_data.get("indicator_value", "")
+    indicator_type = indicator_data.get("indicator_type", "")
+
+    # Map the indicator type to XSOAR type
+    xsoar_indicator_type = INDICATOR_TYPE_MAPPING.get(indicator_type, Common.Indicator)
+
+    # Create DBotScore
+    verdict = str(indicator_data.get("verdict") or "")
+    dbot_score = VERDICT_TO_SCORE.get(verdict, Common.DBotScore.NONE)
+
+    # Create relationships and tags
+    relationships: list[Any] = []
+    tags: list[str] = []
+    if indicator_data.get("threat_object_associations"):
+        relationships, tags = create_relationships_and_tags(
+            indicator_value, indicator_type, indicator_data.get("threat_object_associations") or []
+        )
+
+    # Create fields
+    fields = {
+        "updateddate": indicator_data.get("updated_at"),
+        "creationdate": indicator_data.get("first_seen"),
+        "reportedby": indicator_data.get("source"),
+        "tags": list(set(feed_tags + tags)),
+        "trafficlightprotocol": tlp_color,
+    }
+    if xsoar_indicator_type == FeedIndicatorType.File:
+        fields["md5"] = demisto.get(indicator_data, "indicator_details.file_hashes.md5")
+        fields["sha1"] = demisto.get(indicator_data, "indicator_details.file_hashes.sha1")
+        fields["sha256"] = demisto.get(indicator_data, "indicator_details.file_hashes.sha256")
+        fields["ssdeep"] = demisto.get(indicator_data, "indicator_details.file_hashes.ssdeep")
+        fields["imphash"] = demisto.get(indicator_data, "indicator_details.file_hashes.imphash")
+        fields["pehash"] = demisto.get(indicator_data, "indicator_details.file_hashes.pehash")
+        fields["filetype"] = demisto.get(indicator_data, "indicator_details.file_type")
+        fields["fileextension"] = demisto.get(indicator_data, "indicator_details.file_type", "").split(".")[-1]
+        fields["size"] = demisto.get(indicator_data, "indicator_details.file_size")
+
+    # Create the indicator object
+    indicator: dict = {
+        "value": indicator_value,
+        "type": xsoar_indicator_type,
+        "score": dbot_score,
+        "service": INTEGRATION_NAME,
+        "relationships": relationships,
+        "fields": fields,
+        "rawJSON": indicator_data,
+    }
+
+    return indicator
+
+
+def map_threat_object(threat_object: dict, feed_tags: list = [], tlp_color: str | None = None) -> list:
+    """Map a threat object from the Unit 42 API to XSOAR format.
+
+    Args:
+        threat_object: Threat object data from the API.
+        feed_tags: List of tags to add to the threat object.
+        tlp_color: Traffic Light Protocol color to add to the threat object.
+
+    Returns:
+        List of threat objects in XSOAR format.
+    """
+    result: list = []
+
+    # Get basic threat object properties
+    name = threat_object.get("name", "")
+    threat_class = threat_object.get("threat_object_class", "").lower()
+
+    # Map the threat object class to XSOAR type
+    xsoar_indicator_type = INDICATOR_TYPE_MAPPING.get(str(threat_class), Common.Indicator)
+
+    # Create relationships
+    relationships, tags = create_relationships_and_tags(name, threat_class, threat_object.get("related_threat_objects", []))
+    if argToBoolean(demisto.params().get("create_relationships") or False):
+        relationships += create_campaigns_relationships(threat_object, name, threat_class)
+        relationships += create_attack_patterns_relationships(threat_object, name, threat_class)
+        relationships += create_malware_relationships(threat_object, name, threat_class)
+        relationships += create_tools_relationships(threat_object, name, threat_class)
+        relationships += create_vulnerabilities_relationships(threat_object, name, threat_class)
+        relationships += create_actor_relationships(threat_object, name, threat_class)
+
+        # Create location indicators and relationships
+        location_indicators = create_location_indicators_and_relationships(threat_object, name)
+        result.extend(location_indicators)
+
+    fields = {
+        "description": build_threat_object_description(threat_object),
+        "lastseenbysource": threat_object.get("last_hit", ""),
+        "reportedby": threat_object.get("sources", []),
+        "aliases": [string_to_table_header(alias) for alias in threat_object.get("aliases", [])],
+        "industrysectors": [
+            string_to_table_header(industry) for industry in demisto.get(threat_object, "battlecard_details.industries", [])
+        ],
+        "primarymotivation": string_to_table_header(
+            demisto.get(threat_object, "battlecard_details.threat_actor_details.primary_motivation", "")
+        ),
+        "publications": create_publications(threat_object.get("publications", [])),
+        "geocountry": demisto.get(threat_object, "battlecard_details.threat_actor_details.origin", "").upper(),
+        "tags": tags + feed_tags,
+        "trafficlightprotocol": tlp_color,
+        "ismalwarefamily": "True" if threat_class == "malware_family" else "False",
+    }
+
+    # Create the threat object
+    result.append(
+        {
+            "value": name,
+            "type": xsoar_indicator_type,
+            "score": get_threat_object_score(threat_class),
+            "service": INTEGRATION_NAME,
+            "relationships": relationships,
+            "fields": fields,
+            "rawJSON": threat_object,
+        }
+    )
+
+    return result
+
+
+def parse_indicators(indicators_data: list, feed_tags: list = [], tlp_color: str | None = None) -> list:
+    """Parse indicators from the Unit 42 API into XSOAR format.
+
+    Args:
+        indicators_data: List of indicators from the API.
+        feed_tags: List of tags to add to the indicators.
+        tlp_color: Traffic Light Protocol color to add to the indicators.
+
+    Returns:
+        List of parsed indicators in XSOAR format.
+    """
+    indicators = []
+
+    if indicators_data and isinstance(indicators_data, list):
+        for indicator_data in indicators_data:
+            indicator = map_indicator(indicator_data, feed_tags, tlp_color)
+            indicators.append(indicator)
+
+    return indicators
+
+
+def parse_threat_objects(threat_objects_data: list, feed_tags: list = [], tlp_color: str | None = None) -> list:
+    """Parse threat objects from the Unit 42 API into XSOAR format.
+
+    Args:
+        threat_objects_data: List of threat objects from the API.
+        feed_tags: List of tags to add to the threat objects.
+        tlp_color: Traffic Light Protocol color to add to the threat objects.
+
+    Returns:
+        List of parsed threat objects in XSOAR format.
+    """
+    threat_objects = []
+
+    if threat_objects_data and isinstance(threat_objects_data, list):
+        for threat_object_data in threat_objects_data:
+            new_threat_objects = map_threat_object(threat_object_data, feed_tags, tlp_color)
+            threat_objects.extend(new_threat_objects)
+
+    return threat_objects
+
+
+def push_indicators_in_batches(indicators: list, batch_size: int = 2000) -> None:
+    """
+    Push indicators to the server immediately in fixed-size batches.
+
+    This avoids holding large lists of already-fetched indicators in memory:
+    each page fetched from the API is pushed to the server right away instead
+    of being accumulated together with all other pages/types until the end
+    of the fetch cycle.
+
+    Args:
+        indicators: List of indicators (or threat objects) to push
+        batch_size: Maximum number of indicators to send in a single createIndicators call
+    """
+    for indicators_batch in batch(indicators, batch_size=batch_size):
+        demisto.createIndicators(indicators_batch)
+
+
+def fetch_indicator_type(
+    client: Client,
+    indicator_types: list,
+    limit: int,
+    start_time: str,
+    feed_tags: list,
+    tlp_color: str | None,
+    next_page_token: str | None = None,
+) -> tuple[int, str | None]:
+    """
+    Fetch indicators for the given indicator types with pagination and limit enforcement.
+
+    All configured indicator types are queried together in a single combined paginated
+    query (the API accepts a list of types), rather than one type at a time.
+
+    Each fetched page (up to API_LIMIT indicators) is parsed and immediately pushed
+    to the server in batches of 2000, instead of being accumulated in memory until
+    the entire fetch cycle completes. This prevents out-of-memory issues when large
+    numbers of indicators are fetched.
+
+    Args:
+        client: Client object
+        indicator_types: List of types to fetch together (e.g. ["IP", "Domain", "URL", "File"])
+        limit: Maximum number to fetch for this combined query
+        start_time: Start time for fetching
+        feed_tags: Tags to add to indicators
+        tlp_color: TLP color
+        next_page_token: Page token to resume an interrupted fetch from
+
+    Returns:
+        Tuple of the number of indicators fetched and pushed (may exceed limit by up to one
+        page, since the final page is pushed whole), and the page token to resume from on the
+        next fetch (None when the query was exhausted).
+    """
+    total_fetched = 0
+    types_label = ", ".join(indicator_types) if indicator_types else "indicators"
+
+    while total_fetched < limit:
+        # Calculate how many more we need
+        remaining = limit - total_fetched
+        page_limit = min(API_LIMIT, remaining)
+
+        demisto.debug(f"UNIT42FEED: Fetching indicators [{types_label}] page ({page_limit=}, {total_fetched=})")
+
+        # Make API call
+        response = client.get_indicators(
+            indicator_types=indicator_types, limit=page_limit, start_time=start_time, next_page_token=next_page_token
+        )
+
+        # Parse response
+        if not response or not isinstance(response, dict):
+            demisto.debug(f"UNIT42FEED: Invalid response for indicators [{types_label}], stopping")
+            next_page_token = None
+            break
+
+        data = response.get("data", [])
+        if not data or not isinstance(data, list):
+            demisto.debug(f"UNIT42FEED: No more data for indicators [{types_label}], stopping")
+            next_page_token = None
+            break
+
+        # Parse indicators for this page
+        page_indicators = parse_indicators(data, feed_tags, tlp_color)
+
+        # Push the full page even if the API returned more than requested: the page token
+        # below acknowledges the whole page, so dropping the surplus would lose it
+        # permanently. Overshooting by one page is cheaper, and createIndicators dedups.
+        push_indicators_in_batches(page_indicators)
+
+        total_fetched += len(page_indicators)
+
+        demisto.debug(f"UNIT42FEED: Parsed and pushed {len(page_indicators)} indicators [{types_label}] (total: {total_fetched})")
+
+        # Check for next page
+        metadata = response.get("metadata", {})
+        next_page_token = metadata.get("next_page_token") if isinstance(metadata, dict) else None
+
+        if not next_page_token:
+            demisto.debug(f"UNIT42FEED: No more pages for indicators [{types_label}]")
+            break
+
+    return total_fetched, next_page_token
+
+
+def fetch_threat_objects_with_limit(
+    client: Client, limit: int, feed_tags: list, tlp_color: str | None, next_page_token: str | None = None
+) -> tuple[int, str | None]:
+    """
+    Fetch threat objects with pagination and limit enforcement.
+
+    Each fetched page (up to API_LIMIT threat objects) is parsed and immediately pushed
+    to the server in batches of 2000, instead of being accumulated in memory until
+    the entire fetch cycle completes. This prevents out-of-memory issues when large
+    numbers of threat objects are fetched.
+
+    Args:
+        client: Client object
+        limit: Maximum number to fetch
+        feed_tags: Tags to add to threat objects
+        tlp_color: TLP color
+        next_page_token: Page token to resume an interrupted fetch from
+
+    Returns:
+        Tuple of the number of threat objects fetched and pushed (may exceed limit by up to one
+        page, since the final page is pushed whole), and the page token to resume from on the
+        next fetch (None when there is nothing left to fetch).
+    """
+    total_fetched = 0
+
+    while total_fetched < limit:
+        # Calculate how many more we need
+        remaining = limit - total_fetched
+        page_limit = min(API_LIMIT, remaining)
+
+        demisto.debug(f"UNIT42FEED: Fetching threat objects page ({page_limit=}, {total_fetched=})")
+
+        # Make API call
+        response = client.get_threat_objects(limit=page_limit, next_page_token=next_page_token)
+
+        # Parse response
+        if not response or not isinstance(response, dict):
+            demisto.debug("UNIT42FEED: Invalid response for threat objects, stopping")
+            next_page_token = None
+            break
+
+        data = response.get("data", [])
+        if not data or not isinstance(data, list):
+            demisto.debug("UNIT42FEED: No more threat objects data, stopping")
+            next_page_token = None
+            break
+
+        # Parse threat objects for this page (note: this may include extra location
+        # indicators derived from a single threat object, so it can exceed len(data))
+        page_objects = parse_threat_objects(data, feed_tags, tlp_color)
+
+        # Push the whole page as one unit: a threat object and its derived location
+        # indicators must not be split, or we persist locations whose parent is missing.
+        push_indicators_in_batches(page_objects)
+
+        # Count objects consumed from the API - not the indicators they expand into -
+        # so the limit stays aligned with the page token used to resume.
+        total_fetched += len(data)
+
+        demisto.debug(f"UNIT42FEED: Parsed and pushed {len(page_objects)} threat objects (total: {total_fetched})")
+
+        # Check for next page
+        metadata = response.get("metadata", {})
+        next_page_token = metadata.get("next_page_token") if isinstance(metadata, dict) else None
+
+        if not next_page_token:
+            demisto.debug("UNIT42FEED: No more pages for threat objects")
+            break
+
+    return total_fetched, next_page_token
+
+
+def test_module(client: Client) -> str:
+    """Builds the iterator to check that the feed is accessible.
+    Args:
+        client: Client object.
+
+    Returns:
+        Outputs.
+    """
+    fetch_interval = arg_to_number(demisto.params().get("feedFetchInterval"))
+    if fetch_interval != 60:
+        return (
+            "This integration requires a fetch interval of 1 hour. The fetch interval cannot be changed on an "
+            "existing instance - please create a new integration instance to apply the correct interval."
+        )
+
+    # Test connection by getting a small number of indicators
+    try:
+        client.get_indicators(limit=1)
+        return "ok"
+    except Exception as e:
+        return f"Failed to connect to Unit 42 API. Check your Server URL and License. Error: {str(e)}"
+
+
+def _should_fetch_indicators(feed_enabled: bool, cycle_in_progress: bool, feed_token: str | None) -> bool:
+    if not feed_enabled:
+        return False
+    if not cycle_in_progress:
+        # Fresh cycle: the feed has work.
+        return True
+    # Resumed cycle: the feed has work only if it left a resume token last run.
+    return feed_token is not None
+
+
+def _should_fetch_threat_objects(feed_enabled: bool, cycle_in_progress: bool, feed_token: str | None, due: bool) -> bool:
+    if not feed_enabled:
+        return False
+    if feed_token is not None:
+        # Mid-cycle resume: always continue an interrupted fetch, ignoring the 24h window.
+        return True
+    if cycle_in_progress:
+        # Resumed cycle but threat objects already completed earlier in it: do not refetch.
+        return False
+    # Fresh cycle: fetch only when the 24h window has elapsed.
+    return due
+
+
+def fetch_indicators(client: Client, params: dict, current_time: datetime) -> tuple[int, dict]:
+    """Retrieves indicators and threat objects from the feed, each capped by its own independent limit.
+
+    Indicators/threat objects are pushed to the server as soon as each page is
+    fetched and parsed, instead of being accumulated in memory for the entire fetch cycle.
+    This function only tracks and returns the total count fetched, to avoid holding all
+    indicators in memory at once and causing out-of-memory issues.
+
+    The fetch is incremental: when a feed's limit is hit and the API still has more pages,
+    the pending state (the start time and the per-feed page tokens of the feeds that were
+    not exhausted) is returned as the next run, so the following fetch resumes exactly where
+    this one stopped. Otherwise, the next run only holds the last successful run time.
+
+    Args:
+        client: Client object with request
+        params: demisto.params()
+        current_time: The current fetch time.
+    Returns:
+        Tuple of the total number of indicators/threat objects fetched and pushed to the
+        server, and the next run object to store with demisto.setLastRun().
+    """
+    # Get configuration
+    feed_types = argToList(params.get("feed_types"))
+    indicator_types = argToList(params.get("indicator_types")) or INDICATOR_TYPES_LIST
+    feed_tags = argToList(params.get("feedTags", []))
+    tlp_color = params.get("tlp_color")
+
+    # NOTE: A fetch cycle can span multiple runs. Two distinct timestamps track it:
+    #   start_time - the API time window this cycle queries. Held constant across resumed
+    #     runs so page tokens always pair with the window they were minted against.
+    #   cycle_start_time - when the current cycle began. Recorded as last_successful_run on
+    #     completion, so the next cycle starts querying from there. (Using start_time instead
+    #     would re-ingest; using the current run's time would skip data.)
+    default_start = (current_time - timedelta(hours=24)).strftime(DATE_FORMAT)
+    last_run = demisto.getLastRun() or {}
+    cycle_in_progress = bool(last_run.get("page_tokens"))
+    if cycle_in_progress:
+        start_time = last_run.get("start_time") or default_start
+    else:
+        start_time = last_run.get("last_successful_run") or default_start
+
+    cycle_start_time = last_run.get("cycle_start_time") or current_time.strftime(DATE_FORMAT)
+
+    # Parse the indicators fetch limit.
+    indicators_limit = arg_to_number(params.get("limit"))  # noqa: ucp-param-default
+    if indicators_limit is None or indicators_limit <= 0:
+        indicators_limit = TOTAL_INDICATOR_LIMIT
+
+    demisto.debug(
+        f"UNIT42FEED: Starting fetch with {indicators_limit=}, threat_objects_limit={THREAT_OBJECTS_LIMIT}, {feed_types=}"
+    )
+    demisto.debug(f"UNIT42FEED: {indicator_types=}, {start_time=}, {cycle_in_progress=}")
+
+    # Incoming per-feed resume tokens from an interrupted fetch.
+    incoming_page_tokens = last_run.get("page_tokens", {})
+    threat_objects_token = incoming_page_tokens.get("threat_objects")
+    indicators_token = incoming_page_tokens.get("indicators")
+
+    # Threat Objects are fetched at most once every THREAT_OBJECTS_FETCH_INTERVAL_HOURS hours.
+    # The window is measured from the last COMPLETED threat-objects fetch.
+    prev_threat_objects_fetch = last_run.get("last_threat_objects_fetch")
+    if prev_threat_objects_fetch:
+        next_to_fetch_due = datetime.strptime(prev_threat_objects_fetch, DATE_FORMAT) + timedelta(
+            hours=THREAT_OBJECTS_FETCH_INTERVAL_HOURS
+        )
+        threat_objects_due = current_time >= next_to_fetch_due
+    else:
+        # Never fetched before -> due now.
+        threat_objects_due = True
+
+    demisto.debug(
+        f"UNIT42FEED: {threat_objects_due=}, threat_objects_token={'set' if threat_objects_token else 'none'}, "
+        f"last_threat_objects_fetch={prev_threat_objects_fetch}"
+    )
+
+    if cycle_in_progress:
+        resuming_feeds = [
+            feed for feed, token in (("threat_objects", threat_objects_token), ("indicators", indicators_token)) if token
+        ]
+        demisto.debug(
+            f"UNIT42FEED: Resuming an in-progress fetch cycle started at {cycle_start_time}. "
+            f"Feeds with a pending resume token: {resuming_feeds}."
+        )
+
+    # Per-feed page tokens to resume on the next fetch (only feeds with more pages).
+    page_tokens: dict = {}
+
+    # Set when a threat-objects fetch completes this run, to reset the 24h window.
+    threat_objects_completed_at: str | None = None
+
+    # Per-feed fetch counters.
+    threat_objects_fetched = 0
+    indicators_fetched = 0
+
+    # Threat Objects are fetched first.
+    should_fetch_threat_objects = _should_fetch_threat_objects(
+        THREAT_OBJECTS_TYPE in feed_types, cycle_in_progress, threat_objects_token, threat_objects_due
+    )
+    if should_fetch_threat_objects:
+        demisto.debug(f"UNIT42FEED: Fetching threat objects (limit={THREAT_OBJECTS_LIMIT}, page_token={threat_objects_token})")
+        threat_objects_fetched, next_page_token = fetch_threat_objects_with_limit(
+            client=client,
+            limit=THREAT_OBJECTS_LIMIT,
+            feed_tags=feed_tags,
+            tlp_color=tlp_color,
+            next_page_token=threat_objects_token,
+        )
+        if next_page_token:
+            page_tokens["threat_objects"] = next_page_token
+        else:
+            # TOs fully fetched this run -> reset the 24h window from now.
+            threat_objects_completed_at = current_time.strftime(DATE_FORMAT)
+        demisto.debug(f"UNIT42FEED: Fetched {threat_objects_fetched} threat objects (limit {THREAT_OBJECTS_LIMIT}).")
+
+    # Then all configured indicator types together in one combined query.
+    # On a resumed run only if indicators still had a pending token.
+    should_fetch_indicators = _should_fetch_indicators(INDICATORS_TYPE in feed_types, cycle_in_progress, indicators_token)
+    if should_fetch_indicators:
+        demisto.debug(f"UNIT42FEED: Fetching indicators (limit={indicators_limit}, page_token={indicators_token})")
+        indicators_fetched, next_page_token = fetch_indicator_type(
+            client=client,
+            indicator_types=indicator_types,
+            limit=indicators_limit,
+            start_time=start_time,
+            feed_tags=feed_tags,
+            tlp_color=tlp_color,
+            next_page_token=indicators_token,
+        )
+        if next_page_token:
+            page_tokens["indicators"] = next_page_token
+        demisto.debug(f"UNIT42FEED: Fetched {indicators_fetched} indicators (limit {indicators_limit}).")
+
+    if page_tokens:
+        next_run = {"start_time": start_time, "cycle_start_time": cycle_start_time, "page_tokens": page_tokens}
+        demisto.debug(
+            f"UNIT42FEED: Fetch limit reached with more data available. "
+            f"Next run will resume feeds {list(page_tokens.keys())} from start_time {start_time}."
+        )
+    else:
+        # Store the cycle start time so the next full cycle starts from the original time,
+        # ensuring no indicators are missed across resumed runs.
+        next_run = {"last_successful_run": cycle_start_time}
+
+    next_threat_objects_fetch = threat_objects_completed_at or prev_threat_objects_fetch
+    if next_threat_objects_fetch:
+        next_run["last_threat_objects_fetch"] = next_threat_objects_fetch
+
+    total_fetched = threat_objects_fetched + indicators_fetched
+    demisto.info(
+        f"UNIT42FEED: Fetch complete. Fetched {total_fetched} items "
+        f"({threat_objects_fetched} threat objects, {indicators_fetched} indicators)."
+    )
+
+    return total_fetched, next_run
+
+
+def get_indicators_command(client: Client, args: dict, feed_tags: list = [], tlp_color: str | None = None) -> CommandResults:
+    """Wrapper for retrieving indicators from the feed to the war-room.
+
+    Args:
+        client: Client object with request
+        args: demisto.args()
+        feed_tags: feed tags.
+        tlp_color: Traffic Light Protocol color.
+    Returns:
+        Demisto Outputs.
+    """
+    limit = arg_to_number(args.get("limit", "10")) or 10  # Default to 10 if None
+    indicator_types = argToList(args.get("indicator_types"))
+    next_page_token = args.get("next_page_token")
+
+    # Get indicators from the API
+    response = client.get_indicators(indicator_types=indicator_types, limit=limit, next_page_token=next_page_token)
+
+    indicators = []
+    if response and isinstance(response, dict) and response.get("data"):
+        data = response.get("data", [])
+        if isinstance(data, list):
+            indicators = parse_indicators(data, feed_tags, tlp_color)
+
+    # Create human readable output
+    headers = ["value", "type", "score"]
+    human_readable = tableToMarkdown("Unit 42 Indicators:", indicators, headers=headers, removeNull=True)
+
+    return CommandResults(
+        readable_output=human_readable,
+        outputs_prefix="Unit42.Indicator",
+        outputs_key_field="value",
+        outputs=indicators,
+        raw_response=response,
+    )
+
+
+def get_threat_objects_command(client: Client, args: dict, feed_tags: list = [], tlp_color: str | None = None) -> CommandResults:
+    """Wrapper for retrieving threat objects from the feed to the war-room.
+
+    Args:
+        client: Client object with request
+        args: demisto.args()
+        feed_tags: feed tags.
+        tlp_color: Traffic Light Protocol color.
+    Returns:
+        Demisto Outputs.
+    """
+    limit = arg_to_number(args.get("limit", "10")) or 10  # Default to 10 if None
+    next_page_token = args.get("next_page_token")
+
+    # Get threat objects from the API
+    response = client.get_threat_objects(limit=limit, next_page_token=next_page_token)
+
+    threat_objects = []
+    if response and isinstance(response, dict) and response.get("data"):
+        data = response.get("data", [])
+        if isinstance(data, list):
+            threat_objects = parse_threat_objects(data, feed_tags, tlp_color)
+
+    # Create human readable output
+    headers = ["value", "type", "score"]
+    human_readable = tableToMarkdown("Unit 42 Threat Objects:", threat_objects, headers=headers, removeNull=True)
+
+    return CommandResults(
+        readable_output=human_readable,
+        outputs_prefix="Unit42.ThreatObject",
+        outputs_key_field="value",
+        outputs=threat_objects,
+        raw_response=response,
+    )
+
+
+def main():  # pragma: no cover
+    """
+    The main function parses the params and runs the command functions
+    """
+
+    global _UCP_AUTH_PARAMS_INJECTED
+    _UCP_AUTH_PARAMS_INJECTED = True  # type: ignore[name-defined]  # noqa: F821
+
+    params = demisto.params()
+
+    verify_certificate = not params.get("insecure", False)
+    proxy = params.get("proxy", False)
+
+    command = demisto.command()
+    demisto.debug(f"Command being called is {command}")
+
+    headers = {"Authorization": f"Bearer {demisto.getLicenseID()}"}
+
+    try:
+        client = Client(headers=headers, verify=verify_certificate, proxy=proxy)
+
+        if command == "test-module":
+            return_results(test_module(client))
+
+        elif command == "fetch-indicators":
+            demisto.debug("UNIT42FEED_DEBUG: Starting fetch-indicators command")
+            now = datetime.now()
+            demisto.debug(f"UNIT42FEED_DEBUG: Fetch start time: {now.strftime(DATE_FORMAT)}")
+
+            # Indicators/threat objects are pushed to the server incrementally, page by page,
+            # inside fetch_indicators (see fetch_indicator_type / fetch_threat_objects_with_limit)
+            # to avoid holding the entire fetched dataset in memory at once.
+            total_fetched, next_run = fetch_indicators(client, params, now)
+            demisto.debug(f"UNIT42FEED_DEBUG: fetch_indicators fetched and pushed {total_fetched} indicators")
+
+            demisto.setLastRun(next_run)
+            demisto.info(f"The fetch-indicators command completed successfully. Next run: {next_run}")
+
+        elif command == "unit42-get-indicators":
+            return_results(get_indicators_command(client, demisto.args()))
+
+        elif command == "unit42-get-threat-objects":
+            return_results(get_threat_objects_command(client, demisto.args()))
+
+    except Exception as e:
+        return_error(f"Failed to execute {command} command. Error: {str(e)}")
+
+
+if __name__ in ("__main__", "__builtin__", "builtins"):
+    main()

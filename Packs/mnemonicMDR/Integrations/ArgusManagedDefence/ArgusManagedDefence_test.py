@@ -1,3 +1,4 @@
+import html as html_module
 import json
 
 BASE_URL = "https://api.mnemonic.no"
@@ -63,8 +64,9 @@ def test_build_argus_priority_from_min_severity():
 
 
 def test_date_time_to_epoch_milliseconds_datetime():
-    from ArgusManagedDefence import date_time_to_epoch_milliseconds
     import datetime
+
+    from ArgusManagedDefence import date_time_to_epoch_milliseconds
 
     date = datetime.datetime(2000, 1, 1, 00, 00, 00)
     timestamp = date.timestamp() * 1000
@@ -72,8 +74,9 @@ def test_date_time_to_epoch_milliseconds_datetime():
 
 
 def test_date_time_to_epoch_milliseconds_str():
-    from ArgusManagedDefence import date_time_to_epoch_milliseconds
     import datetime
+
+    from ArgusManagedDefence import date_time_to_epoch_milliseconds
 
     timestamp = int(datetime.datetime(2000, 1, 1, 00, 00, 00).timestamp() * 1000)
     assert date_time_to_epoch_milliseconds("2000-01-01 00:00:00") == timestamp
@@ -92,8 +95,9 @@ def test_date_time_to_epoch_milliseconds_empty():
 
 
 def test_pretty_print_date_datetime():
-    from ArgusManagedDefence import pretty_print_date, PRETTY_DATE_FORMAT
     import datetime
+
+    from ArgusManagedDefence import PRETTY_DATE_FORMAT, pretty_print_date
 
     date = datetime.datetime(2000, 1, 1, 00, 00, 00)
     assert pretty_print_date(date) == date.strftime(PRETTY_DATE_FORMAT)
@@ -232,10 +236,8 @@ def test_get_remote_data_command(requests_mock):
     }
     result = get_remote_data_command(args)
     assert metadata.get("data").items() <= result.mirrored_object.items()
-    assert "xsoar_mirroring" in result.mirrored_object.keys()
-    assert (
-        xsoar_mirroring.items() == result.mirrored_object.get("xsoar_mirroring").items()
-    )
+    assert "xsoar_mirroring" in result.mirrored_object
+    assert xsoar_mirroring.items() == result.mirrored_object.get("xsoar_mirroring").items()
     assert {"severity": 1} in result.entries
     assert {"arguscasestatus": "pendingCustomer"} in result.entries
 
@@ -730,3 +732,156 @@ def test_download_case_attachments_command(requests_mock):
     for file in result:
         assert file.get("File") == "filename"
         assert file.get("Type") == 3  # File
+
+
+class TestPrettyPrintCommentHtml:
+    """Tests for output encoding in pretty_print_comment_html."""
+
+    @staticmethod
+    def _make_comment(comment_text: str = "hello", username: str = "user1", attachments: list | None = None) -> dict:
+        return {
+            "comment": comment_text,
+            "addedByUser": {"userName": username},
+            "addedTime": "2024-01-01T00:00:00Z",
+            "lastUpdatedTime": None,
+            "associatedAttachments": attachments or [],
+        }
+
+    def test_comment_text_output_encoding(self):
+        """Test that special characters in comment text are encoded in output."""
+        from ArgusManagedDefence import pretty_print_comment_html
+
+        comment = self._make_comment(comment_text="<script>alert(1)</script>")
+        result = pretty_print_comment_html(comment)
+        assert "<script>" not in result
+        assert html_module.escape("<script>alert(1)</script>") in result
+
+    def test_username_output_encoding(self):
+        """Test that special characters in username are encoded in output."""
+        from ArgusManagedDefence import pretty_print_comment_html
+
+        comment = self._make_comment(username="<script>alert(1)</script>")
+        result = pretty_print_comment_html(comment)
+        assert "<script>" not in result
+        assert html_module.escape("<script>alert(1)</script>") in result
+
+    def test_attachment_name_output_encoding(self):
+        """Test that special characters in attachment names are encoded in output."""
+        from ArgusManagedDefence import pretty_print_comment_html
+
+        comment = self._make_comment(attachments=[{"name": "<img src=x onerror=alert(1)>"}])
+        result = pretty_print_comment_html(comment)
+        assert "<img " not in result
+        assert html_module.escape("<img src=x onerror=alert(1)>") in result
+
+    def test_normal_text_passes_through(self):
+        """Test that normal text is preserved correctly after encoding."""
+        from ArgusManagedDefence import pretty_print_comment_html
+
+        comment = self._make_comment(
+            comment_text="Normal comment text",
+            username="john.doe",
+            attachments=[{"name": "report.pdf"}],
+        )
+        result = pretty_print_comment_html(comment)
+        assert "Normal comment text" in result
+        assert "john.doe" in result
+        assert "report.pdf" in result
+
+
+class TestPrettyPrintCaseMetadataHtml:
+    """Tests for output encoding in pretty_print_case_metadata_html."""
+
+    @staticmethod
+    def _make_case(
+        subject: str = "Test case",
+        priority: str = "medium",
+        status: str = "open",
+        publisher_name: str = "analyst1",
+        description: str = "Some description",
+    ) -> dict:
+        return {
+            "id": 1,
+            "subject": subject,
+            "priority": priority,
+            "status": status,
+            "lastUpdatedTime": "2024-01-01T00:00:00Z",
+            "publishedByUser": {"name": publisher_name},
+            "publishedTime": "2024-01-01T00:00:00Z",
+            "description": description,
+        }
+
+    def test_subject_output_encoding(self):
+        """Test that special characters in subject are encoded in output."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(subject="<script>alert(1)</script>")
+        result = pretty_print_case_metadata_html(case)
+        assert "<script>" not in result
+        assert html_module.escape("<script>alert(1)</script>") in result
+
+    def test_priority_output_encoding(self):
+        """Test that special characters in priority are encoded in output."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(priority="<img src=x onerror=alert(1)>")
+        result = pretty_print_case_metadata_html(case)
+        assert "<img " not in result
+        assert html_module.escape("<img src=x onerror=alert(1)>") in result
+
+    def test_status_output_encoding(self):
+        """Test that special characters in status are encoded in output."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(status="<script>alert(1)</script>")
+        result = pretty_print_case_metadata_html(case)
+        assert "<script>" not in result
+        assert html_module.escape("<script>alert(1)</script>") in result
+
+    def test_publisher_name_output_encoding(self):
+        """Test that special characters in publisher name are encoded in output."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(publisher_name="<script>alert(1)</script>")
+        result = pretty_print_case_metadata_html(case)
+        assert "<script>" not in result
+        assert html_module.escape("<script>alert(1)</script>") in result
+
+    def test_description_output_encoding(self):
+        """Test that special characters in description are encoded in output."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(description="<img src=x onerror=alert(1)>")
+        result = pretty_print_case_metadata_html(case)
+        assert "<img " not in result
+        assert html_module.escape("<img src=x onerror=alert(1)>") in result
+
+    def test_normal_text_passes_through(self):
+        """Test that normal text is preserved correctly after encoding."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(
+            subject="Incident report",
+            priority="high",
+            status="open",
+            publisher_name="john.doe",
+            description="Normal description text",
+        )
+        result = pretty_print_case_metadata_html(case)
+        assert "Incident report" in result
+        assert "high" in result
+        assert "open" in result
+        assert "john.doe" in result
+        assert "Normal description text" in result
+
+    def test_html_structure_preserved(self):
+        """Test that HTML structure tags remain intact after encoding."""
+        from ArgusManagedDefence import pretty_print_case_metadata_html
+
+        case = self._make_case(subject="<script>xss</script>")
+        result = pretty_print_case_metadata_html(case)
+        assert "<h2>" in result
+        assert "</h2>" in result
+        assert "<em>" in result
+        assert "</em>" in result
+        assert "<br>" in result

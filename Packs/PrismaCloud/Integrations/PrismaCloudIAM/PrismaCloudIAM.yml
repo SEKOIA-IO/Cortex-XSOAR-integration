@@ -1,5 +1,6 @@
 category: Identity and Access Management
-sectionOrder:
+provider: Palo Alto Networks
+sectionorder:
 - Connect
 - Collect
 commonfields:
@@ -79,9 +80,13 @@ configuration:
 - defaultvalue: User Profile - PrismaCloud (Outgoing)
   display: Outgoing Mapper
   name: mapper_out
-  required: true
+  required: false
   type: 0
   section: Connect
+  hidden:
+  - marketplacev2
+  - platform
+  additionalinfo: Cortex XSOAR only parameter.
 description: 'The Prisma Cloud IAM API consists of a set of API endpoints that allow customers to perform CRUD operation on their user profiles.'
 display: PrismaCloud IAM
 name: PrismaCloud IAM
@@ -177,6 +182,8 @@ script:
     - contextPath: IAM.Vendor.username
       description: The employee's username in the app.
       type: String
+    compliantpolicies:
+    - User Hard Remediation
   - arguments:
     - description: A User Profile indicator.
       name: user-profile
@@ -252,9 +259,11 @@ script:
     - contextPath: IAM.Vendor.username
       description: The employee's username in the app.
       type: String
+    compliantpolicies:
+    - User Hard Remediation
   - description: Retrieves a User Profile schema, which holds all of the user fields within the application. Used for outgoing-mapping through the Get Schema option.
     name: get-mapping-fields
-  dockerimage: demisto/python3:3.11.9.101916
+  dockerimage: demisto/python3:3.12.13.10116658
   runonce: false
   script: '-'
   subtype: python3

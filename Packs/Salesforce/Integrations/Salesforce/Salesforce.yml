@@ -1,59 +1,87 @@
+sectionorder:
+- Connect
+- Collect
 commonfields:
   id: Salesforce
   version: -1
 name: Salesforce
 display: Salesforce
 category: Case Management
-description: CRM Services
+provider: Salesforce
+description: CRM Services.
 configuration:
 - display: Instance URL
   name: InstanceURL
   defaultvalue: https://login.salesforce.com
   type: 0
   required: true
+  section: Connect
 - display: Credentials
   name: credentials
   defaultvalue: ""
   type: 9
-  required: true
+  required: false
+  section: Connect
 - display: Consumer Key
   name: clientID
   defaultvalue: ""
   type: 0
   hidden: true
   required: false
+  section: Connect
 - display: Consumer Secret
   name: clientSecret
   defaultvalue: ""
   type: 4
   hidden: true
   required: false
+  section: Connect
 - display: Consumer Key
   displaypassword: Consumer Secret
   name: credentials_client_secret
   type: 9
   required: false
+  section: Connect
 - display: Trust any certificate (not secure)
   name: insecure
   type: 8
   required: false
+  section: Connect
 - display: 'Fetch type: cases/comments (Only fetch comments when using the SalesforceAskUser automation)'
   name: fetchType
   defaultvalue: cases
   type: 0
   required: false
+  section: Connect
 - display: Use system proxy settings
   name: useproxy
   type: 8
   required: false
+  section: Connect
 - display: Fetch incidents
   name: isFetch
   type: 8
   required: false
+  section: Collect
+  supportedModules:
+  - agentix
+  - xsiam
+- display: Incidents Fetch Interval
+  name: incidentFetchInterval
+  type: 19
+  required: false
+  section: Collect
+  supportedModules:
+  - agentix
+  - xsiam
 - display: Incident type
   name: incidentType
   type: 13
   required: false
+  section: Collect
+  supportedModules:
+  - agentix
+  - xsiam
 script:
   script: ''
   type: javascript
@@ -179,22 +207,22 @@ script:
       description: The email of the user.
       type: string
     - contextPath: SalesForce.Case.IsEscalated
-      description: Is Escalated for Case
+      description: Is Escalated for Case.
       type: boolean
     - contextPath: SalesForce.Case.SuppliedPhone
-      description: Case Supplied Phone
+      description: Case Supplied Phone.
       type: string
     - contextPath: SalesForce.Case.SuppliedCompany
-      description: Case Supplied Company
+      description: Case Supplied Company.
       type: string
     - contextPath: SalesForce.Case.ContactEmail
-      description: Case contact Email
+      description: Case contact Email.
       type: string
     - contextPath: SalesForce.Case.ContactId
-      description: Case contact Id
+      description: Case contact Id.
       type: string
     - contextPath: SalesForce.Case.AccountId
-      description: Case account ID
+      description: Case account ID.
       type: string
     description: Search records that contain values with pattern
   - name: salesforce-query
@@ -582,7 +610,7 @@ script:
       description: The Object ID of subject.
     - name: text
       required: true
-      description: Chat text
+      description: Chat text.
     - name: link
       description: Adds a link to the message.
     outputs:
@@ -613,7 +641,7 @@ script:
     - name: oid
       description: The Object ID of the case.
     - name: caseNumber
-      description: Case number of case
+      description: Case number of case.
     outputs:
     - contextPath: SalesForce.Case.ID
       description: The Object ID of the case.
@@ -818,16 +846,16 @@ script:
       description: The subject of the case.
       type: string
     - contextPath: SalesForce.Case.Description
-      description: Case Description
+      description: Case Description.
       type: string
     - contextPath: SalesForce.Case.CreateDate
-      description: Creation Time of Case
+      description: Creation Time of Case.
       type: date
     - contextPath: SalesForce.Case.ClosedDate
-      description: Closure Time of Case
+      description: Closure Time of Case.
       type: date
     - contextPath: SalesForce.Case.Owner
-      description: Case Owner
+      description: Case Owner.
       type: string
     - contextPath: SalesForce.Case.Priority
       description: Priority of the Case. one of Low, Medium, High.
@@ -839,7 +867,7 @@ script:
       description: 'Case Status. one of the following: New, Escalated, On Hold or Closed.'
       type: string
     - contextPath: SalesForce.Case.Reason
-      description: Reason for case creation
+      description: Reason for case creation.
       type: string
     important:
     - contextPath: SalesForce.Case.Status
@@ -850,19 +878,19 @@ script:
     arguments:
     - name: id
       required: true
-      description: The Chatter comment Thread ID
+      description: The Chatter comment Thread ID.
     - name: text
       required: true
-      description: The comment text
+      description: The comment text.
     outputs:
     - contextPath: SalesForce.Comment.Reply.Body
-      description: Reply body
+      description: Reply body.
       type: string
     - contextPath: SalesForce.Comment.Reply.CreatedDate
-      description: Reply created date
+      description: Reply created date.
       type: date
     - contextPath: SalesForce.Comment.Reply.URL
-      description: Reply URL link
+      description: Reply URL link.
       type: string
     description: Add the comment to the chatter thread. Use this command only after salesforce-push-comment
   - name: salesforce-delete-case
@@ -872,6 +900,156 @@ script:
     - name: caseNumber
       description: The case number.
     description: Deletes a case.
+  - name: salesforce-file-delete
+    execution: true
+    arguments:
+    - name: type
+      description: The Salesforce sObject type.
+      defaultValue: ContentDocument
+    - name: id
+      description: The ContentDocument record ID to delete.
+      required: true
+    - name: ignore_not_found
+      description: Whether to treat a 404/NOT_FOUND response as success.
+      auto: PREDEFINED
+      predefined:
+      - "true"
+      - "false"
+      defaultValue: "true"
+    description: Soft-deletes a file (ContentDocument), moving it to the Recycle Bin and cascading to its versions. Recoverable for 15 days.
+    outputs:
+    - contextPath: SalesForce.Remediation.Action
+      description: The remediation action performed.
+      type: string
+    - contextPath: SalesForce.Remediation.ObjectType
+      description: The Salesforce sObject type acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Id
+      description: The record ID acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Status
+      description: The result status of the remediation action.
+      type: string
+  - name: salesforce-knowledge-article-archive
+    arguments:
+    - name: type
+      description: The Salesforce sObject type.
+      defaultValue: KnowledgeArticleVersion
+    - name: id
+      description: The Knowledge article version ID (the __kav record ID, starting with 'ka') to archive.
+      required: true
+    - name: ignore_not_found
+      description: Whether to treat a 404/NOT_FOUND response as success.
+      auto: PREDEFINED
+      predefined:
+      - "true"
+      - "false"
+      defaultValue: "true"
+    description: Archives a Knowledge article (non-destructive). Sets PublishStatus to Archived via the standard archiveKnowledgeArticles action. Reversible to Draft/Online.
+    outputs:
+    - contextPath: SalesForce.Remediation.Action
+      description: The remediation action performed.
+      type: string
+    - contextPath: SalesForce.Remediation.ObjectType
+      description: The Salesforce sObject type acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Id
+      description: The record ID acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Status
+      description: The result status of the remediation action.
+      type: string
+  - name: salesforce-file-public-link-list
+    arguments:
+    - name: id
+      description: The ContentDocument record ID whose public links (ContentDistribution rows) should be listed.
+      required: true
+    description: Lists all public links (ContentDistribution records) for a given ContentDocument ID. Use the returned ContentDistribution IDs with salesforce-file-public-link-remove to remove each link.
+    outputs:
+    - contextPath: SalesForce.ContentDistribution.Id
+      description: The ContentDistribution record ID (use with salesforce-file-public-link-remove).
+      type: string
+    - contextPath: SalesForce.ContentDistribution.ContentDocumentId
+      description: The parent ContentDocument ID.
+      type: string
+    - contextPath: SalesForce.ContentDistribution.Name
+      description: The name of the content distribution.
+      type: string
+    - contextPath: SalesForce.ContentDistribution.PublicUrl
+      description: The public distribution URL.
+      type: string
+  - name: salesforce-file-public-link-remove
+    execution: true
+    arguments:
+    - name: type
+      description: The Salesforce sObject type.
+      defaultValue: ContentDistribution
+    - name: id
+      description: The ContentDistribution record ID to delete (severs the public link). Use salesforce-file-public-link-list to obtain distribution IDs for a ContentDocument.
+      required: true
+    - name: ignore_not_found
+      description: Whether to treat a 404/NOT_FOUND response as success.
+      auto: PREDEFINED
+      predefined:
+      - "true"
+      - "false"
+      defaultValue: "true"
+    description: Removes a file public link by deleting a single ContentDistribution record. The external link is severed immediately and irreversibly.
+    outputs:
+    - contextPath: SalesForce.Remediation.Action
+      description: The remediation action performed.
+      type: string
+    - contextPath: SalesForce.Remediation.ObjectType
+      description: The Salesforce sObject type acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Id
+      description: The ContentDistribution record ID acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Status
+      description: The result status of the remediation action.
+      type: string
+  - name: salesforce-knowledge-article-draft-create
+    arguments:
+    - name: type
+      description: The Salesforce sObject type.
+      defaultValue: KnowledgeArticleVersion
+    - name: id
+      description: The Knowledge article ID (KnowledgeArticleId, starting with 'kA') or article version ID (starting with 'ka'). Used with the standard createDraftFromOnlineKnowledgeArticle action.
+      required: true
+    - name: unpublish
+      description: Whether to archive the current online version (removing it from public visibility) and create a new draft. If false, keeps the article online and creates an editable draft alongside it.
+      auto: PREDEFINED
+      predefined:
+      - "true"
+      - "false"
+      defaultValue: "true"
+    - name: ignore_not_found
+      description: Whether to treat a 404/NOT_FOUND response as success.
+      auto: PREDEFINED
+      predefined:
+      - "true"
+      - "false"
+      defaultValue: "true"
+    description: Moves a published Knowledge article to Draft using the standard createDraftFromOnlineKnowledgeArticle action. By default (unpublish=true) the online version is removed from public visibility and an editable draft is created.
+    outputs:
+    - contextPath: SalesForce.Remediation.Action
+      description: The remediation action performed.
+      type: string
+    - contextPath: SalesForce.Remediation.ObjectType
+      description: The Salesforce sObject type acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Id
+      description: The record ID acted on.
+      type: string
+    - contextPath: SalesForce.Remediation.Status
+      description: The result status of the remediation action.
+      type: string
+    - contextPath: SalesForce.Remediation.Unpublished
+      description: Whether the online version was unpublished (removed from public visibility).
+      type: boolean
+    - contextPath: SalesForce.Remediation.DraftVersionId
+      description: The ID of the newly created draft article version.
+      type: string
   - name: salesforce-get-casecomment
     arguments:
     - name: oid
@@ -916,7 +1094,7 @@ script:
     - name: caseNumber
       description: The case number of the case.
     - name: text
-      description: Added Text to context
+      description: Added Text to context.
     description: The post comment through the case number.
   - name: salesforce-get-user
     arguments:
@@ -973,3 +1151,5 @@ script:
     description: 'Returns organization details from the case number. '
   isfetch: true
 fromversion: 5.0.0
+tests:
+- SalesforceTestPlaybook

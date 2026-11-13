@@ -1,0 +1,14 @@
+## USTAv4 Threat Stream IOC Feed
+To obtain your USTAv4 API Token:
+1. Go to **USTAv4** > **Company Settings** > **My Company** > **Integrations** > **API Keys**.
+
+Please get in touch with USTAv4 operators if you don't have access to the API Keys section.
+
+### How to Configure The Instance
+- **Name** : Name of the instance. Feel free to choose any name you would.
+- **Your Server URL**: Use default URL unless you specifically tell otherwise.
+- **API Key**: Follow above instructions and get your API Key.
+- **IOC Feed Type**: Choosing ALL would be enough for many cases.
+- **Feed Fetch Interval**: Default value 30 minutes  is enough for many cases.
+
+Note: This integration will fetch IOC values for the last 7 days during the first run.

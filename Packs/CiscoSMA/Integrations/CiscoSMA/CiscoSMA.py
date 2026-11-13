@@ -1,11 +1,12 @@
-import demistomock as demisto  # noqa: F401
-from CommonServerPython import *  # noqa: F401
+import uuid
 from collections.abc import Callable
 
-import uuid
-
+import demistomock as demisto  # noqa: F401
+from CommonServerPython import *  # noqa: F401
 
 JWT_TOKEN_EXPIRATION_PERIOD = 30
+# Refresh the token slightly before its nominal expiration to avoid boundary 401s.
+JWT_TOKEN_REFRESH_MARGIN = 0.2
 DEFAULT_FETCH = 50
 TIMESTAMP_FORMAT = "%d %b %Y %H:%M:%S (%Z)"
 QUARANTINE_TIMESTAMP_FORMAT = "%d %b %Y %H:%M (%Z)"
@@ -31,29 +32,31 @@ EDIT_ACTION = "edit"
 class Client(BaseClient):
     """Client class to interact with Cisco SMA API."""
 
-    def __init__(
-        self, server_url: str, username: str, password: str, verify: bool, proxy: bool, timeout: None | int = 60
-    ):
+    def __init__(self, server_url: str, username: str, password: str, verify: bool, proxy: bool, timeout: None | int = 60):
         super().__init__(base_url=server_url, headers={}, verify=verify, proxy=proxy, timeout=timeout)
         self.username = username
         self.password = password
         self.handle_request_headers()
 
-    def handle_request_headers(self):
-        """Retrieve and save to integration context JWT token for authorized client class API requests."""
+    def handle_request_headers(self, force_retrieve_jwt: bool = False):
+        """
+        Retrieve and save to integration context JWT token for authorized client class API requests.
+
+        Args:
+            force_retrieve_jwt (bool): Whether to ignore the cached token and retrieve a new one.
+                Used when the API rejects the cached token with a 401.
+        """
         integration_context = get_integration_context()
         jwt_token = integration_context.get("jwt_token")
-        jwt_token_issued_time = integration_context.get("jwt_token_issued_time")
-        if jwt_token and jwt_token_issued_time >= datetime.timestamp(
-            datetime.now() - timedelta(minutes=JWT_TOKEN_EXPIRATION_PERIOD)
-        ):
-            self._headers["jwtToken"] = jwt_token
-        else:
+        jwt_token_issued_time = integration_context.get("jwt_token_issued_time") or 0.0
+        current_time = time.time()
+        next_refresh = jwt_token_issued_time + (JWT_TOKEN_EXPIRATION_PERIOD - JWT_TOKEN_REFRESH_MARGIN) * 60
+
+        if force_retrieve_jwt or not jwt_token or current_time > next_refresh:
             jwt_token = self.retrieve_jwt_token()
-            set_integration_context(
-                {"jwt_token": jwt_token, "jwt_token_issued_time": time.time()}
-            )
-            self._headers["jwtToken"] = jwt_token
+            set_integration_context({"jwt_token": jwt_token, "jwt_token_issued_time": current_time})
+
+        self._headers["jwtToken"] = jwt_token
 
     def retrieve_jwt_token(self) -> str:
         """
@@ -69,14 +72,32 @@ class Client(BaseClient):
             }
         }
         try:
-            response = self._http_request("POST", "login", json_data=data)
+            # Call the parent implementation directly, so that a 401 on the login call itself
+            # is not caught by the re-authentication wrapper (which would recurse endlessly).
+            response = super()._http_request("POST", "login", json_data=data)
             return dict_safe_get(response, ["data", "jwtToken"])
 
         except DemistoException as e:
-            if hasattr(e.res, 'status_code') and e.res.status_code == 401:
-                raise Exception(
-                    "Authorization Error: make sure username and password are set correctly."
-                )
+            if hasattr(e.res, "status_code") and e.res.status_code == 401:
+                raise Exception("Authorization Error: make sure username and password are set correctly.")
+            raise e
+
+    def _http_request(self, *args, **kwargs):
+        """
+        Perform an API request, re-authenticating once if the cached JWT token was rejected.
+
+        The Cisco SMA appliance may invalidate a session before the client-side expiration period
+        elapses (for example, due to an inactivity timeout or an appliance restart), in which case
+        the cached token yields a 401. Retrieve a fresh token and retry the request once.
+        """
+        try:
+            return super()._http_request(*args, **kwargs)
+        except DemistoException as e:
+            if hasattr(e.res, "status_code") and e.res.status_code == 401:
+                demisto.debug("Received 401 with the cached JWT token, retrieving a new token and retrying once.")
+                self._session.cookies.clear()
+                self.handle_request_headers(force_retrieve_jwt=True)
+                return super()._http_request(*args, **kwargs)
             raise e
 
     def spam_quarantine_message_search_request(
@@ -139,9 +160,7 @@ class Client(BaseClient):
 
         return self._http_request("GET", "quarantine/messages", params=params)
 
-    def spam_quarantine_message_get_request(
-        self, quarantine_type: str, message_id: str
-    ) -> Dict[str, Any]:
+    def spam_quarantine_message_get_request(self, quarantine_type: str, message_id: str) -> Dict[str, Any]:
         """
         Get spam quarantine message.
 
@@ -171,15 +190,11 @@ class Client(BaseClient):
         Returns:
             Dict[str, Any]: API response from Cisco SMA.
         """
-        data = assign_params(
-            action=action, mids=message_ids, quarantineType=quarantine_type
-        )
+        data = assign_params(action=action, mids=message_ids, quarantineType=quarantine_type)
 
         return self._http_request("POST", "quarantine/messages", json_data=data)
 
-    def spam_quarantine_message_delete_request(
-        self, quarantine_type: str, message_ids: List[int]
-    ) -> Dict[str, Any]:
+    def spam_quarantine_message_delete_request(self, quarantine_type: str, message_ids: List[int]) -> Dict[str, Any]:
         """
         Delete spam quarantine message.
 
@@ -490,9 +505,7 @@ class Client(BaseClient):
 
         return self._http_request("GET", "message-tracking/details", params=params)
 
-    def message_amp_details_get_request(
-        self, serial_number: str, message_ids: List[int]
-    ) -> Dict[str, Any]:
+    def message_amp_details_get_request(self, serial_number: str, message_ids: List[int]) -> Dict[str, Any]:
         """
         Get message AMP report details.
 
@@ -510,9 +523,7 @@ class Client(BaseClient):
 
         return self._http_request("GET", "message-tracking/amp-details", params=params)
 
-    def message_dlp_details_get_request(
-        self, serial_number: str, message_ids: List[int]
-    ) -> Dict[str, Any]:
+    def message_dlp_details_get_request(self, serial_number: str, message_ids: List[int]) -> Dict[str, Any]:
         """
         Get message DLP report details.
 
@@ -530,9 +541,7 @@ class Client(BaseClient):
 
         return self._http_request("GET", "message-tracking/dlp-details", params=params)
 
-    def message_url_details_get_request(
-        self, serial_number: str, message_ids: List[int]
-    ) -> Dict[str, Any]:
+    def message_url_details_get_request(self, serial_number: str, message_ids: List[int]) -> Dict[str, Any]:
         """
         Get message URL report details.
 
@@ -614,16 +623,11 @@ def format_custom_query_args(custom_query: str = None) -> Dict[str, Any]:
     """
     try:
         if custom_query:
-            return dict(
-                field.split("=") for field in custom_query.split(";")
-            )
+            return dict(field.split("=") for field in custom_query.split(";"))
         else:
             return {}
     except ValueError:
-        raise ValueError(
-            'Please validate the format of argument "custom_query". '
-            'For example: "key1=value1;key2=value2".'
-        )
+        raise ValueError('Please validate the format of argument "custom_query". For example: "key1=value1;key2=value2".')
 
 
 def format_datetime(time_expression: str) -> str:
@@ -667,7 +671,7 @@ def format_timestamp(timestamp: str, output_format: str = DATETIME_FORMAT) -> st
     try:
         datetime_res = arg_to_datetime(timestamp)
     except ValueError:
-        timestamp = timestamp.replace('GMT ', 'GMT')
+        timestamp = timestamp.replace("GMT ", "GMT")
         datetime_res = arg_to_datetime(timestamp)
     return datetime_res.strftime(output_format)  # type: ignore
 
@@ -685,11 +689,7 @@ def format_number_list_argument(number_list_string: str) -> List[int]:
     return [arg_to_number(number) for number in argToList(number_list_string)]  # type: ignore
 
 
-def validate_pagination_arguments(
-    page: Optional[int],
-    page_size: Optional[int],
-    limit: Optional[int]
-):
+def validate_pagination_arguments(page: Optional[int], page_size: Optional[int], limit: Optional[int]):
     """
     Validate pagination arguments, raise error if argument is not valid.
 
@@ -712,9 +712,7 @@ def validate_pagination_arguments(
             raise ValueError(f"limit argument must be equal or greater than {MIN_LIMIT}.")
 
 
-def validate_related_arguments(
-    args: Dict[str, Any], related_arguments_list: List[List[str]]
-):
+def validate_related_arguments(args: Dict[str, Any], related_arguments_list: List[List[str]]):
     """
     Validate correct usage of arguments that are related to each other.
 
@@ -726,9 +724,7 @@ def validate_related_arguments(
     for related_arguments in related_arguments_list:
         exist_list = [argument in args for argument in related_arguments]
         if not all(exist_list) and any(exist_list):
-            raise ValueError(
-                f"{', '.join(related_arguments)} arguments should be used together but one or more are empty."
-            )
+            raise ValueError(f"{', '.join(related_arguments)} arguments should be used together but one or more are empty.")
 
 
 def format_list_entry_arguments(view_by: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -747,21 +743,15 @@ def format_list_entry_arguments(view_by: str, args: Dict[str, Any]) -> Dict[str,
             args["sender_addresses"] = None
             args["recipient_list"] = None
         else:
-            raise DemistoException(
-                "Please specify recipient_addresses and sender_list arguments when using view_by recipient."
-            )
+            raise DemistoException("Please specify recipient_addresses and sender_list arguments when using view_by recipient.")
     elif view_by == "sender":
         if args.get("sender_addresses") and args.get("recipient_list"):
             args["recipient_addresses"] = None
             args["sender_list"] = None
         else:
-            raise DemistoException(
-                "Please specify sender_addresses and recipient_list arguments when using view_by sender."
-            )
+            raise DemistoException("Please specify sender_addresses and recipient_list arguments when using view_by sender.")
     else:
-        raise DemistoException(
-            f'Please check the value of argument "view_by". Valid values are recipient/sender, got {view_by}.'
-        )
+        raise DemistoException(f'Please check the value of argument "view_by". Valid values are recipient/sender, got {view_by}.')
 
     return args
 
@@ -792,20 +782,20 @@ def pagination(request_command: Callable, args: Dict[str, Any], **kwargs) -> tup
         output = []
         offset = 0
         while limit > 0:
-            page_size = limit if limit <= REQUEST_MAX_PULL else REQUEST_MAX_PULL
-            output.extend(
-                request_command(offset=offset, limit=page_size, **kwargs).get("data")
-            )
+            page_size = min(limit, REQUEST_MAX_PULL)
+            output.extend(request_command(offset=offset, limit=page_size, **kwargs).get("data"))
             limit -= REQUEST_MAX_PULL
             offset += REQUEST_MAX_PULL
         pagination_message = f"Showing {len(output)} rows." if len(output) > 0 else None  # type: ignore
+    else:
+        pagination_message = "No pagination."
+        output = []
+        demisto.debug(f"No pagination params -> {pagination_message}")
 
     return output, pagination_message
 
 
-def spam_quarantine_message_search_command(
-    client: Client, args: Dict[str, Any]
-) -> CommandResults:
+def spam_quarantine_message_search_command(client: Client, args: Dict[str, Any]) -> CommandResults:
     """
     Search spam quarantine messages.
 
@@ -851,10 +841,7 @@ def spam_quarantine_message_search_command(
         order_dir=order_dir,
     )
 
-    spam_quarantine_message_lists = [
-        dict(message.get("attributes", {}), **{"mid": message.get("mid")})
-        for message in output
-    ]
+    spam_quarantine_message_lists = [dict(message.get("attributes", {}), mid=message.get("mid")) for message in output]
 
     readable_output = tableToMarkdown(
         name="Spam Quarantine Messages List",
@@ -873,9 +860,7 @@ def spam_quarantine_message_search_command(
     )
 
 
-def spam_quarantine_message_get_command(
-    client: Client, args: Dict[str, Any]
-) -> CommandResults:
+def spam_quarantine_message_get_command(client: Client, args: Dict[str, Any]) -> CommandResults:
     """
     Get spam quarantine message details.
 
@@ -889,14 +874,10 @@ def spam_quarantine_message_get_command(
     quarantine_type = QUARANTINE_TYPE
     message_id = args["message_id"]
 
-    response: Dict[str, Any] = client.spam_quarantine_message_get_request(
-        quarantine_type, message_id
-    ).get("data", [])
+    response: Dict[str, Any] = client.spam_quarantine_message_get_request(quarantine_type, message_id).get("data", [])
 
-    new_message = dict(response.get("attributes", {}), **{"mid": response.get("mid")})
-    readable_message = (
-        f'Found spam quarantine message with ID: {new_message.get("mid")}'
-    )
+    new_message = dict(response.get("attributes", {}), mid=response.get("mid"))
+    readable_message = f'Found spam quarantine message with ID: {new_message.get("mid")}'
 
     readable_output = tableToMarkdown(
         name="Spam Quarantine Message",
@@ -916,9 +897,7 @@ def spam_quarantine_message_get_command(
     )
 
 
-def spam_quarantine_message_release_command(
-    client: Client, args: Dict[str, Any]
-) -> List[CommandResults]:
+def spam_quarantine_message_release_command(client: Client, args: Dict[str, Any]) -> List[CommandResults]:
     """
     Release spam quarantine message.
 
@@ -936,9 +915,7 @@ def spam_quarantine_message_release_command(
     command_results_list = []
 
     for message_id in message_ids:
-        response = client.spam_quarantine_message_release_request(
-            action, quarantine_type, [message_id]
-        )
+        response = client.spam_quarantine_message_release_request(action, quarantine_type, [message_id])
 
         if dict_safe_get(response, ["data", "totalCount"]) == 1:
             readable_output = f"Quarantined message {message_id} successfully released."
@@ -950,9 +927,7 @@ def spam_quarantine_message_release_command(
     return command_results_list
 
 
-def spam_quarantine_message_delete_command(
-    client: Client, args: Dict[str, Any]
-) -> List[CommandResults]:
+def spam_quarantine_message_delete_command(client: Client, args: Dict[str, Any]) -> List[CommandResults]:
     """
     Delete spam quarantine message details.
 
@@ -969,9 +944,7 @@ def spam_quarantine_message_delete_command(
     command_results_list = []
 
     for message_id in message_ids:
-        response = client.spam_quarantine_message_delete_request(
-            quarantine_type, [message_id]
-        )
+        response = client.spam_quarantine_message_delete_request(quarantine_type, [message_id])
 
         if dict_safe_get(response, ["data", "totalCount"]) == 1:
             readable_output = f"Quarantined message {message_id} successfully deleted."
@@ -1002,9 +975,7 @@ def list_entry_get_command(client: Client, args: Dict[str, Any]) -> CommandResul
     view_by = args.get("view_by")
     search = args.get("search")
 
-    validate_related_arguments(
-        args=args, related_arguments_list=[["order_by", "order_dir"]]
-    )
+    validate_related_arguments(args=args, related_arguments_list=[["order_by", "order_dir"]])
 
     output, pagination_message = pagination(
         client.list_entry_get_request,
@@ -1022,18 +993,14 @@ def list_entry_get_command(client: Client, args: Dict[str, Any]) -> CommandResul
         name=f"{entry_type.title()} Entries",
         metadata=pagination_message,
         t=output,
-        headers=["recipientAddress", "senderList"]
-        if view_by == "recipient"
-        else ["senderAddress", "recipientList"],
+        headers=["recipientAddress", "senderList"] if view_by == "recipient" else ["senderAddress", "recipientList"],
         headerTransform=pascalToSpace,
     )
 
     return CommandResults(
         readable_output=readable_output,
         outputs_prefix=f"CiscoSMA.ListEntry.{entry_type.title()}",
-        outputs_key_field="recipientAddress"
-        if view_by == "recipient"
-        else "senderAddress",
+        outputs_key_field="recipientAddress" if view_by == "recipient" else "senderAddress",
         outputs=output,
         raw_response=output,
     )
@@ -1204,16 +1171,12 @@ def list_entry_delete_command(client: Client, args: Dict[str, Any]) -> CommandRe
         if recipient_list:
             sender_list = None
         else:
-            raise DemistoException(
-                "Please specify recipient_list argument when using view_by recipient."
-            )
+            raise DemistoException("Please specify recipient_list argument when using view_by recipient.")
     else:
         if sender_list:
             recipient_list = None
         else:
-            raise DemistoException(
-                "Please specify sender_list argument when using view_by sender."
-            )
+            raise DemistoException("Please specify sender_list argument when using view_by sender.")
 
     response = client.list_entry_delete_request(
         entry_type=entry_type,
@@ -1223,9 +1186,7 @@ def list_entry_delete_command(client: Client, args: Dict[str, Any]) -> CommandRe
         sender_list=sender_list,
     )
 
-    deleted_entries = (
-        ", ".join(recipient_list if view_by == "recipient" else sender_list)
-    )
+    deleted_entries = ", ".join(recipient_list if view_by == "recipient" else sender_list)
 
     return CommandResults(
         readable_output=f"Successfully deleted {deleted_entries} {view_by}s from {entry_type}.",
@@ -1292,14 +1253,8 @@ def message_search_command(client: Client, args: Dict[str, Any]) -> CommandResul
     messages_lists = [
         dict(
             message.get("attributes", {}),
-            **{
-                "timestamp": format_timestamp(
-                    dict_safe_get(message, ["attributes", "timestamp"])
-                ),
-                "unique_message_id": "".join(
-                    map(str, dict_safe_get(message, ["attributes", "mid"]))
-                ),
-            },
+            timestamp=format_timestamp(dict_safe_get(message, ["attributes", "timestamp"])),
+            unique_message_id="".join(map(str, dict_safe_get(message, ["attributes", "mid"]))),
         )
         for message in output
     ]
@@ -1364,8 +1319,7 @@ def message_details_get_command(client: Client, args: Dict[str, Any]) -> Command
     mid = response.get("mid")
     if not mid or "N/A" in mid:
         raise DemistoException(
-            f'Message ID {", ".join(map(str, message_ids))} was not found.\n'
-            f"Please check message IDs or Serial Number."
+            f'Message ID {", ".join(map(str, message_ids))} was not found.\nPlease check message IDs or Serial Number.'
         )
 
     response["timestamp"] = format_timestamp(response.get("timestamp"))
@@ -1415,9 +1369,7 @@ def message_details_get_command(client: Client, args: Dict[str, Any]) -> Command
     )
 
 
-def message_amp_details_get_command(
-    client: Client, args: Dict[str, Any]
-) -> CommandResults:
+def message_amp_details_get_command(client: Client, args: Dict[str, Any]) -> CommandResults:
     """
     Get message AMP report details.
 
@@ -1432,9 +1384,7 @@ def message_amp_details_get_command(
     message_ids = format_number_list_argument(args["message_ids"])
 
     response = (
-        client.message_amp_details_get_request(
-            serial_number=serial_number, message_ids=message_ids
-        )
+        client.message_amp_details_get_request(serial_number=serial_number, message_ids=message_ids)
         .get("data", {})
         .get("messages", {})
     )
@@ -1442,8 +1392,7 @@ def message_amp_details_get_command(
     mid = response.get("mid")
     if not mid or "N/A" in mid:
         raise DemistoException(
-            f'Message ID {", ".join(map(str, message_ids))} was not found.\n'
-            f"Please check message IDs or Serial Number."
+            f'Message ID {", ".join(map(str, message_ids))} was not found.\nPlease check message IDs or Serial Number.'
         )
 
     response["timestamp"] = format_timestamp(response.get("timestamp"))
@@ -1492,9 +1441,7 @@ def message_amp_details_get_command(
     )
 
 
-def message_dlp_details_get_command(
-    client: Client, args: Dict[str, Any]
-) -> CommandResults:
+def message_dlp_details_get_command(client: Client, args: Dict[str, Any]) -> CommandResults:
     """
     Get message DLP report details.
 
@@ -1509,9 +1456,7 @@ def message_dlp_details_get_command(
     message_ids = format_number_list_argument(args["message_ids"])
 
     response = (
-        client.message_dlp_details_get_request(
-            serial_number=serial_number, message_ids=message_ids
-        )
+        client.message_dlp_details_get_request(serial_number=serial_number, message_ids=message_ids)
         .get("data", {})
         .get("messages", {})
     )
@@ -1519,8 +1464,7 @@ def message_dlp_details_get_command(
     mid = response.get("mid")
     if not mid or "N/A" in mid:
         raise DemistoException(
-            f'Message ID {", ".join(map(str, message_ids))} was not found.\n'
-            f"Please check message IDs or Serial Number."
+            f'Message ID {", ".join(map(str, message_ids))} was not found.\nPlease check message IDs or Serial Number.'
         )
 
     response["timestamp"] = format_timestamp(response.get("timestamp"))
@@ -1564,9 +1508,7 @@ def message_dlp_details_get_command(
     )
 
 
-def message_url_details_get_command(
-    client: Client, args: Dict[str, Any]
-) -> CommandResults:
+def message_url_details_get_command(client: Client, args: Dict[str, Any]) -> CommandResults:
     """
     Get message URL report details.
 
@@ -1581,9 +1523,7 @@ def message_url_details_get_command(
     message_ids = format_number_list_argument(args["message_ids"])
 
     response = (
-        client.message_url_details_get_request(
-            serial_number=serial_number, message_ids=message_ids
-        )
+        client.message_url_details_get_request(serial_number=serial_number, message_ids=message_ids)
         .get("data", {})
         .get("messages", {})
     )
@@ -1591,8 +1531,7 @@ def message_url_details_get_command(
     mid = response.get("mid")
     if not mid or "N/A" in mid:
         raise DemistoException(
-            f'Message ID {", ".join(map(str, message_ids))} was not found.\n'
-            f"Please check message IDs or Serial Number."
+            f'Message ID {", ".join(map(str, message_ids))} was not found.\nPlease check message IDs or Serial Number.'
         )
 
     response["timestamp"] = format_timestamp(response.get("timestamp"))
@@ -1683,9 +1622,7 @@ def report_get_command(client: Client, args: Dict[str, Any]) -> CommandResults:
     response["uuid"] = str(uuid.uuid4())
 
     try:
-        table = {
-            k: v for results in response.get("resultSet", [{}]) for k, v in results.items()
-        }
+        table = {k: v for results in response.get("resultSet", [{}]) for k, v in results.items()}
     except Exception:
         table = response.get("resultSet", response)
 
@@ -1735,18 +1672,14 @@ def fetch_incidents(
         tuple: Incidents and last run info.
     """
     start_time = last_run.get("start_time")
-    start_date = (
-        format_timestamp(start_time, output_format=CISCO_TIME_FORMAT) if start_time else format_datetime(first_fetch)
-    )
+    start_date = format_timestamp(start_time, output_format=CISCO_TIME_FORMAT) if start_time else format_datetime(first_fetch)
     end_date = format_datetime("now")
     quarantine_type = QUARANTINE_TYPE
     offset = 0
     order_by = "date"
     order_dir = "asc"
 
-    quarantine_messages: List[
-        Dict[str, Any]
-    ] = client.spam_quarantine_message_search_request(
+    quarantine_messages: List[Dict[str, Any]] = client.spam_quarantine_message_search_request(
         quarantine_type=quarantine_type,
         start_date=start_date,
         end_date=end_date,
@@ -1768,17 +1701,14 @@ def fetch_incidents(
             dict_safe_get(incident, ["attributes", "date"]),
         )
         message_id = incident.get("mid")
-        if (
-            message_id and message_id not in last_minute_incident_ids
-            and start_date < incident_datetime
-        ):
+        if message_id and message_id not in last_minute_incident_ids and start_date < incident_datetime:
             quarantine_message: Dict[str, Any] = client.spam_quarantine_message_get_request(
                 quarantine_type=quarantine_type, message_id=message_id
             ).get("data", {})
 
             incident_details = dict(
                 quarantine_message.get("attributes", {}),
-                **{"mid": quarantine_message.get("mid")},
+                mid=quarantine_message.get("mid"),
             )
             incidents.append(
                 {
@@ -1792,9 +1722,7 @@ def fetch_incidents(
         start_time = incidents[-1].get("occurred")
         last_run["start_time"] = start_time
         last_run["last_minute_incident_ids"] = [
-            json.loads(incident.get("rawJSON", {})).get("mid")
-            for incident in incidents
-            if incident.get("occurred") == start_time
+            json.loads(incident.get("rawJSON", {})).get("mid") for incident in incidents if incident.get("occurred") == start_time
         ]
 
     return incidents, last_run
@@ -1845,13 +1773,13 @@ def main() -> None:
     password = params.get("credentials", {}).get("password")
 
     max_fetch = arg_to_number(params.get("max_fetch", DEFAULT_FETCH))
-    first_fetch = params.get("first_fetch")
+    first_fetch = params.get("first_fetch") or "7 days"
     filter_by = params.get("filter_by")
     filter_operator = params.get("filter_operator")
     filter_value = params.get("filter_value")
     recipient_filter_operator = params.get("recipient_filter_operator")
     recipient_filter_value = params.get("recipient_filter_value")
-    timeout = arg_to_number(params.get("timeout"))
+    timeout = arg_to_number(params.get("timeout") or 60)
     verify_certificate: bool = not params.get("insecure", False)
     proxy = params.get("proxy", False)
 
@@ -1875,12 +1803,7 @@ def main() -> None:
     }
     try:
         client: Client = Client(
-            urljoin(base_url, "/sma/api/v2.0"),
-            username,
-            password,
-            verify_certificate,
-            proxy,
-            timeout=timeout
+            urljoin(base_url, "/sma/api/v2.0"), username, password, verify_certificate, proxy, timeout=timeout
         )
 
         if command == "test-module":

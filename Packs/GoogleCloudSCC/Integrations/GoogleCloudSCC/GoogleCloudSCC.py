@@ -1,21 +1,21 @@
-from CommonServerPython import *
+import demistomock as demisto  # noqa: F401
+from CommonServerPython import *  # noqa: F401
 
 """ IMPORTS """
 import json
-from typing import Any, Dict, List, Optional, Tuple, Callable, Union
-
+import traceback
 import urllib.parse
+from collections.abc import Callable
+from copy import deepcopy
+from typing import Any
+
 import dateparser
 import httplib2
-import traceback
-from copy import deepcopy
-from google.auth import exceptions
+from google.auth import aws, exceptions, identity_pool
 from google.oauth2 import service_account
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient import discovery
 from googleapiclient.errors import HttpError
-from google_auth_httplib2 import AuthorizedHttp
-from google.auth import aws
-from google.auth import identity_pool
 
 """ CONSTANTS """
 SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
@@ -23,8 +23,11 @@ SERVICE_NAME = "securitycenter"
 PUBSUB_SERVICE_NAME = "pubsub"
 CLOUD_ASSET_SERVICE_NAME = "cloudasset"
 SERVICE_VERSION = "v1"
+SERVICE_VERSION_V2 = "v2"
 PUBSUB_SERVICE_VERSION = "v1"
 CLOUD_ASSET_SERVICE_VERSION = "v1"
+DEFAULT_LOCATION_ID = "global"
+DEFAULT_SOURCE_ID = "-"
 DEFAULT_MAX_FETCH_VALUE = "50"
 MAX_FETCH_VALUE = "200"
 DEFAULT_PAGE_SIZE = 10
@@ -32,18 +35,39 @@ MAX_PAGE_SIZE = 1000
 INCIDENT_NAME_PREFIX = "GoogleCloudSCC"
 STATE_LIST = ["ACTIVE", "INACTIVE"]  # List of state mentioned in API doc
 SEVERITY_LIST = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]  # List of severity mentioned in API doc
+MUTE_CONFIG_TYPE_LIST = ["STATIC", "DYNAMIC"]  # List of mute config types mentioned in API doc
+# muteConfigId must be lowercase letters, numbers and hyphens, start with a letter, end with a letter or a number
+# and be at most 63 characters long.
+MUTE_CONFIG_ID_REGEX = r"^[a-z]([a-z0-9-]{0,61}[a-z0-9])?\Z"  # \Z, since $ also matches before a trailing newline
 ALLOWED_DATE_UNIT = ["minute", "minutes", "hour", "hours", "day", "days", "month", "months", "year", "years"]
 DATE_FORMAT = "%B %d, %Y at %I:%M:%S %p"
 ISO_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MARKDOWN_LINK = "[{}]({})"
 TIMEOUT_TIME = 60  # in second
+# Matches the optional locations/{location} segment of a v2 resource name.
+LOCATIONS_SEGMENT_REGEX = r"/locations/[^/]+/"
+# Captures the location id of the optional locations/{location} segment of a v2 resource name.
+LOCATION_ID_CAPTURE_REGEX = r"/locations/([^/]+)"
+# Location identifiers supported by the v2 API.
+# (ref: https://cloud.google.com/security-command-center/docs/data-residency-support)
+SUPPORTED_LOCATION_IDS = ["global", "us", "eu", "sa"]
+# Region names accepted as an alias of their location identifier, for backward compatibility.
+LOCATION_ID_ALIASES = {"me-central2": "sa"}
+# Requests for a location other than global must be sent to the regional endpoint of that location; the
+# global endpoint rejects them with a 400 Bad Request.
+# (ref: https://cloud.google.com/security-command-center/docs/regional-endpoints)
+REGIONAL_ENDPOINTS = {
+    "us": "https://securitycenter.us.rep.googleapis.com/",
+    "eu": "https://securitycenter.eu.rep.googleapis.com/",
+    "sa": "https://securitycenter.me-central2.rep.googleapis.com/",
+}
 
 # The maximum number of results to return in a single response.
 # (ref: https://cloud.google.com/security-command-center/docs/reference/rest/v1/organizations.sources.findings/list)
 MAX_ITERATION = 10
 DEFAULT_MAX_ITERATION = 2
 
-ERROR_MESSAGES: Dict[str, str] = {
+ERROR_MESSAGES: dict[str, str] = {
     "JSON_PARSE_ERROR": "Unable to parse json. Please check the {} parameter.",
     "INVALID_ORGANIZATION_ID": "Invalid Organization ID.",
     "INVALID_ORGANIZATION_OR_PERMISSION_DENIED_ERROR": "Organization Id is not valid or permission denied.",
@@ -56,55 +80,70 @@ ERROR_MESSAGES: Dict[str, str] = {
     "INTERNAL_SERVER_ERROR": "The server encountered an internal error. Reason: {}",
     "CONFLICT_ERROR": "Conflict. Reason: {}",
     "TIMEOUT_ERROR": "Connection Timeout Error - potential reasons might be that the Server is not accessible "
-                     "from your host. Reason: {}",
+    "from your host. Reason: {}",
     "PROXY_ERROR": "Proxy Error - if the 'Use system proxy' checkbox in the integration configuration is"
-                   " selected, try clearing the checkbox.",
+    " selected, try clearing the checkbox.",
     "UNKNOWN_ERROR": "An error occurred. Status: {}. Reason: {}",
     "NO_RECORDS_FOUND": "No {} record(s) found for the given argument(s).",
     "MAX_INCIDENT_ERROR": "The parameter Max Incidents must be a positive integer."
-                          " Accepted values can be in the range of 1-{}.".format(MAX_FETCH_VALUE),
-    "INVALID_STATE_ERROR": "The state value must be ACTIVE or INACTIVE.",
+    f" Accepted values can be in the range of 1-{MAX_FETCH_VALUE}.",
+    "INVALID_STATE_ERROR": "The state value '{}' is invalid. It must be ACTIVE or INACTIVE.",
     "INVALID_SEVERITY_ERROR": "The severity value must be LOW, MEDIUM, HIGH or CRITICAL.",
     "INVALID_PAGE_SIZE_ERROR": "Page size should be an integer between 1 to 1000.",
     "INVALID_SOURCE_PROPERTIES": "Invalid format provided in sourceProperties. Supported format: key1=value1,key2="
-                                 "value2. if the value contains ',' or '=' character then escape with extra '\\'.",
+    "value2. if the value contains ',' or '=' character then escape with extra '\\'.",
+    "REQUIRED_ARG": "The '{}' argument is required.",
     "REQUIRED_PROJECT_ID": "Project ID is required for fetch incidents.",
     "REQUIRED_SUBSCRIPTION_ID": "Subscription ID is required for fetch incidents.",
     "INVALID_INCIDENT": "Error while parsing pub/sub message. Reason: {}",
-    "INVALID_DATE_TIME": "{} should be in following format: (<number> <time unit>, e.g., \"12 hours ago\","
-                         " \"7 days ago\", \"1 week\", \"1 month\") or (<date> <time>, e.g. "
-                         "\"yyyy-mm-ddTHH-MM-SS\") or ( \"YYYY-MM-ddTHH:mm:ss.sssZ\", "
-                         "e.g. 2020-07-22T07:10:02.782Z) or (<date>, e.g. \"2020-07-22\").",
+    "INVALID_DATE_TIME": '{} should be in following format: (<number> <time unit>, e.g., "12 hours ago",'
+    ' "7 days ago", "1 week", "1 month") or (<date> <time>, e.g. '
+    '"yyyy-mm-ddTHH-MM-SS") or ( "YYYY-MM-ddTHH:mm:ss.sssZ", '
+    'e.g. 2020-07-22T07:10:02.782Z) or (<date>, e.g. "2020-07-22").',
     "INVALID_PROJECT_NAME_ERROR": "projectName should be in following format: "
-                                  "\"projects/[project-number]\" or \"projects/[first-project-number], "
-                                  "projects/[second-project-number]\".",
-    "INVALID_MAX_ITERATION_ERROR": "maxIteration should be an integer between 1 to {}.".format(MAX_ITERATION)
+    '"projects/[project-number]" or "projects/[first-project-number], '
+    'projects/[second-project-number]".',
+    "INVALID_MAX_ITERATION_ERROR": f"maxIteration should be an integer between 1 to {MAX_ITERATION}.",
+    "INVALID_MUTE_CONFIG_TYPE_ERROR": "The type value '{}' is invalid. It must be STATIC or DYNAMIC.",
+    "EXPIRY_TIME_NOT_ALLOWED_ERROR": "The expiryTime argument is only applicable for DYNAMIC mute rules.",
+    "INVALID_MUTE_CONFIG_ID_ERROR": "muteConfigId must consist of only lowercase letters, numbers, and hyphens, must"
+    " start with a letter, must end with either a letter or a number, and must be 63 characters or less.",
+    "INVALID_LOCATION_ERROR": "Invalid location '{}'. Supported values are: {}.",
 }
 
-OUTPUT_PREFIX: Dict[str, Any] = {
+OUTPUT_PREFIX: dict[str, Any] = {
     "LIST_ASSET": "GoogleCloudSCC.Asset(val.name && val.name == obj.name)",
     "LIST_FINDING": "GoogleCloudSCC.Finding(val.name && val.name == obj.name)",
+    "LIST_FINDING_V2": "GoogleCloudSCC.FindingV2(val.name && val.name == obj.name)",
     "TOKEN": "GoogleCloudSCC.Token(val.name && val.name == obj.name)",
     "FINDING": "GoogleCloudSCC.Finding",
+    "FINDING_V2": "GoogleCloudSCC.FindingV2",
     "LIST_RESOURCE": "GoogleCloudSCC.CloudAsset.Resource(val.name && val.name == obj.name)",
-    "GET_OWNER": "GoogleCloudSCC.CloudAsset.IamPolicy"
+    "GET_OWNER": "GoogleCloudSCC.CloudAsset.IamPolicy",
+    "MUTE_RULE": "GoogleCloudSCC.MuteRule",
 }
 
-GET_OUTPUT_MESSAGE: Dict[str, Any] = {
-    "HEADER_MESSAGE": "Total retrieved {0}: {1}"
-}
+GET_OUTPUT_MESSAGE: dict[str, Any] = {"HEADER_MESSAGE": "Total retrieved {0}: {1}"}
 
-COMMON_STRING: Dict[str, str] = {
+COMMON_STRING: dict[str, str] = {
     "RESOURCE_NAME": "Resource Name",
     "SECURITY_MARKS": "Security Marks",
+    "SOURCE_PROPERTIES": "Source Properties",
+    "MUTE_CONFIG": "Mute Config",
     "SET_STATE_HR_STR": "The state of the finding has been updated successfully.",
+    "SET_MUTE_HR_STR": "The finding has been muted successfully.",
+    "SET_UNMUTE_HR_STR": "The finding has been unmuted successfully.",
+    "GET_MUTE_RULE_HR_STR": "Mute rule details.",
+    "CREATE_MUTE_RULE_HR_STR": "The mute rule has been created successfully.",
     "EVENT_TIME": "Event Time (In UTC)",
-    "CREATE_TIME": "Create Time (In UTC)"
+    "CREATE_TIME": "Create Time (In UTC)",
+    "UPDATE_TIME": "Update Time (In UTC)",
+    "EXPIRY_TIME": "Expiry Time (In UTC)",
 }
 
 AWS_SUBJECT_TOKEN_TYPE = "urn:ietf:params:aws:token-type:aws4_request"
 AZURE_SUBJECT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"
-NEXT_PAGE_TOKEN_MESSAGE = 'To fetch the next batch of results, execute the command with the page token as {}'
+NEXT_PAGE_TOKEN_MESSAGE = "To fetch the next batch of results, execute the command with the page token as {}"
 """ HELPER CLASSES """
 
 
@@ -112,9 +151,11 @@ class GoogleNameParser:
     """
     Used to easily transform Google Cloud SCC names
     """
+
     # Google SCC helpers
     ORGANIZATION_PATH = "organizations/{}"
     SOURCE_PATH = "/sources/{}"
+    LOCATION_PATH = "/locations/{}"
     FINDING_PATH = "/findings/{}"
     SCC_URL = "https://console.cloud.google.com/security/command-center/{}?organizationId={}&resourceId={}"
 
@@ -141,6 +182,16 @@ class GoogleNameParser:
         return GoogleNameParser.ORGANIZATION_PATH.format(GoogleNameParser.get_organization_id())
 
     @staticmethod
+    def get_location_organization_path(location: str) -> str:
+        """
+        Return a fully-qualified organizations string with the location segment (v2 API).
+
+        :param location: location id param.
+        :return: fully-qualified organizations string with the location segment.
+        """
+        return GoogleNameParser.get_organization_path() + GoogleNameParser.LOCATION_PATH.format(location)
+
+    @staticmethod
     def get_source_path(source: str) -> str:
         """
         Return a fully-qualified source string.
@@ -149,6 +200,17 @@ class GoogleNameParser:
         :return: fully-qualified source string.
         """
         return GoogleNameParser.get_organization_path() + GoogleNameParser.SOURCE_PATH.format(source)
+
+    @staticmethod
+    def get_location_source_path(source: str, location: str) -> str:
+        """
+        Return a fully-qualified source string.
+
+        :param source: source id param.
+        :param location: location id param. The location segment is appended (v2 API).
+        :return: fully-qualified source string.
+        """
+        return GoogleNameParser.get_source_path(source) + GoogleNameParser.LOCATION_PATH.format(location)
 
     @staticmethod
     def get_finding_path(source, finding):
@@ -200,8 +262,7 @@ class GoogleNameParser:
         :param subscription_id: subscription id of the topic
         :return:
         """
-        return GoogleNameParser.get_project_path(project_id) + GoogleNameParser.SUBSCRIPTION_PATH.format(
-            subscription_id)
+        return GoogleNameParser.get_project_path(project_id) + GoogleNameParser.SUBSCRIPTION_PATH.format(subscription_id)
 
 
 class BaseGoogleClient:
@@ -209,8 +270,17 @@ class BaseGoogleClient:
     A Client class to wrap the google cloud api library as a service.
     """
 
-    def __init__(self, service_name: str, service_version: str, service_account_json: str, scopes: list, proxy: bool,
-                 insecure: bool, **kwargs):
+    def __init__(
+        self,
+        service_name: str,
+        service_version: str,
+        service_account_json: str,
+        scopes: list,
+        proxy: bool,
+        insecure: bool,
+        api_endpoint: str | None = None,
+        **kwargs,
+    ):
         """
         :param service_name: The name of the service. You can find this and the service  here
          https://github.com/googleapis/google-api-python-client/blob/master/docs/dyn/index.md
@@ -218,30 +288,43 @@ class BaseGoogleClient:
         :param service_account_json: A string of the generated credentials.json
         :param scopes: The scope needed for the project. (i.e. ['https://www.googleapis.com/auth/cloud-platform'])
         :param proxy: Proxy flag
+        :param api_endpoint: Base URL the API requests are sent to. Defaults to the global endpoint of the service.
         :param kwargs: Potential arguments dict
         """
         service_account_json = safe_load_non_strict_json(service_account_json)  # type: ignore
         try:
-            if service_account_json.get('subject_token_type') == AWS_SUBJECT_TOKEN_TYPE:
+            if service_account_json.get("subject_token_type") == AWS_SUBJECT_TOKEN_TYPE:
                 credentials = aws.Credentials.from_info(info=service_account_json, scopes=scopes)
-            elif service_account_json.get('subject_token_type') == AZURE_SUBJECT_TOKEN_TYPE:
+            elif service_account_json.get("subject_token_type") == AZURE_SUBJECT_TOKEN_TYPE:
                 credentials = identity_pool.Credentials.from_info(service_account_json, scopes=scopes)
             else:
-                credentials = service_account.Credentials.from_service_account_info(info=service_account_json,
-                                                                                    scopes=scopes)
+                credentials = service_account.Credentials.from_service_account_info(info=service_account_json, scopes=scopes)
             http_client = AuthorizedHttp(credentials=credentials, http=self.get_http_client_with_proxy(proxy, insecure))
-            self.service = discovery.build(service_name, service_version, http=http_client, cache_discovery=False)
+            # securitycenter v2 discovery doc is not bundled as a static artifact in google-api-python-client,
+            # so fetch it over the network. v1 keeps the bundled static doc (offline, faster).
+            if service_version == "v2":
+                # The discovery document is always read from the global endpoint (it carries no finding data);
+                # api_endpoint only redirects the API requests built from it to the regional endpoint.
+                self.service = discovery.build(
+                    service_name,
+                    service_version,
+                    http=http_client,
+                    cache_discovery=False,
+                    static_discovery=False,
+                    client_options={"api_endpoint": api_endpoint} if api_endpoint else None,
+                )
+            else:
+                self.service = discovery.build(service_name, service_version, http=http_client, cache_discovery=False)
         except httplib2.ServerNotFoundError as e:
             raise ValueError(ERROR_MESSAGES["TIMEOUT_ERROR"].format(str(e)))
         except (httplib2.socks.HTTPError, IndexError) as e:
             # library not able to handle Proxy error and throws Index Error
-            demisto.debug(f"Failed to execute {demisto.command()} command. Error: {str(e)} , "
-                          f"traceback: {traceback.format_exc()}")
+            demisto.debug(f"Failed to execute {demisto.command()} command. Error: {e!s} , traceback: {traceback.format_exc()}")
             raise ValueError(ERROR_MESSAGES["PROXY_ERROR"])
         except exceptions.RefreshError as error:
             error_message = ERROR_MESSAGES["INVALID_SERVICE_ACCOUNT"]
             if error.args:
-                error_message += " Reason: {}".format(error.args[0])
+                error_message += f" Reason: {error.args[0]}"
             raise ValueError(error_message)
 
     @staticmethod
@@ -271,11 +354,15 @@ class BaseGoogleClient:
                     proxy_user=parsed_proxy.username,
                     proxy_pass=parsed_proxy.password,
                 )
-        return httplib2.Http(proxy_info=proxy_info, timeout=TIMEOUT_TIME, disable_ssl_certificate_validation=insecure,
-                             ca_certs=os.getenv('REQUESTS_CA_BUNDLE') or os.getenv('SSL_CERT_FILE'))
+        return httplib2.Http(
+            proxy_info=proxy_info,
+            timeout=TIMEOUT_TIME,
+            disable_ssl_certificate_validation=insecure,
+            ca_certs=os.getenv("REQUESTS_CA_BUNDLE") or os.getenv("SSL_CERT_FILE"),
+        )
 
     @staticmethod
-    def execute_request(request) -> Dict[str, Any]:
+    def execute_request(request) -> dict[str, Any]:
         """
         Execute the request and handle error scenario.
 
@@ -303,8 +390,7 @@ class BaseGoogleClient:
             else:
                 raise ValueError(ERROR_MESSAGES["UNKNOWN_ERROR"].format(status, reason))
         except httplib2.socks.HTTPError as e:
-            demisto.debug(f"Failed to execute {demisto.command()} command. Error: {str(e)} , "
-                          f"traceback: {traceback.format_exc()}")
+            demisto.debug(f"Failed to execute {demisto.command()} command. Error: {e!s} , traceback: {traceback.format_exc()}")
             raise ValueError(ERROR_MESSAGES["PROXY_ERROR"])
         except httplib2.ServerNotFoundError as e:
             raise ValueError(ERROR_MESSAGES["TIMEOUT_ERROR"].format(str(e)))
@@ -320,10 +406,17 @@ class GoogleSccClient(BaseGoogleClient):
         super().__init__(**kwargs)
         self.organization_id = organization_id
 
-    def get_findings(self, parent: str, compare_duration: Optional[str] = None, field_mask: Optional[str] = None,
-                     filter_string: Optional[str] = None, order_by: Optional[str] = None,
-                     page_size: Optional[Union[str, int]] = DEFAULT_PAGE_SIZE, page_token: Optional[str] = None,
-                     read_time: Optional[str] = None) -> Dict[str, Any]:
+    def get_findings(
+        self,
+        parent: str,
+        compare_duration: str | None = None,
+        field_mask: str | None = None,
+        filter_string: str | None = None,
+        order_by: str | None = None,
+        page_size: str | int | None = DEFAULT_PAGE_SIZE,
+        page_token: str | None = None,
+        read_time: str | None = None,
+    ) -> dict[str, Any]:
         """
         Get an organization or source's findings.
 
@@ -338,14 +431,76 @@ class GoogleSccClient(BaseGoogleClient):
 
         :return: list of findings
         """
-        request = self.service.organizations().sources().findings().list(  # pylint: disable=E1101
-            parent=parent, compareDuration=compare_duration, fieldMask=field_mask, filter=filter_string,
-            orderBy=order_by, pageSize=page_size, pageToken=page_token, readTime=read_time)
+        request = (
+            self.service.organizations()  # pylint: disable=E1101
+            .sources()
+            .findings()
+            .list(  # pylint: disable=E1101
+                parent=parent,
+                compareDuration=compare_duration,
+                fieldMask=field_mask,
+                filter=filter_string,
+                orderBy=order_by,
+                pageSize=page_size,
+                pageToken=page_token,
+                readTime=read_time,
+            )
+        )
         result = self.execute_request(request)
         return result
 
-    def get_assets(self, parent: str, compare_duration: str, field_mask: str, filter_string: str, order_by: str,
-                   page_size: Union[str, int], page_token: str, read_time: str) -> Dict[str, Any]:
+    def get_findings_v2(
+        self,
+        parent: str,
+        filter_string: str | None = None,
+        order_by: str | None = None,
+        page_size: str | int | None = DEFAULT_PAGE_SIZE,
+        page_token: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get an organization or source's findings using the v2 API.
+
+        Uses the organizations.sources.findings.list method (parent e.g. organizations/{org}/sources/{source}).
+        The v2 list endpoint supports only filter, orderBy, pageSize and pageToken; it does not support
+        the compareDuration, fieldMask and readTime parameters available in v1.
+        (ref: https://docs.cloud.google.com/security-command-center/docs/reference/rest/v2/organizations.sources.findings/list)
+
+        :param parent: Name of the source the findings belong to. May include an optional location segment
+            (e.g. organizations/{org}/sources/{source}/locations/{location}); if omitted, location defaults to global.
+        :param filter_string: Expression that defines the filter to apply across findings.
+        :param order_by: Expression that defines what fields and order to use for sorting.
+        :param page_size: The maximum number of results to return in a single response.
+        :param page_token: The value returned by the last call; indicates that this is a continuation of a prior call.
+
+        :return: list of findings
+        """
+        request = (
+            self.service.organizations()  # pylint: disable=E1101
+            .sources()
+            .locations()
+            .findings()
+            .list(  # pylint: disable=E1101
+                parent=parent,
+                filter=filter_string,
+                orderBy=order_by,
+                pageSize=page_size,
+                pageToken=page_token,
+            )
+        )
+        result = self.execute_request(request)
+        return result
+
+    def get_assets(
+        self,
+        parent: str,
+        compare_duration: str,
+        field_mask: str,
+        filter_string: str,
+        order_by: str,
+        page_size: str | int,
+        page_token: str,
+        read_time: str,
+    ) -> dict[str, Any]:
         """
         Get an organization's assets.
 
@@ -359,14 +514,25 @@ class GoogleSccClient(BaseGoogleClient):
         :param read_time: The Time used as a reference point when filtering findings.
         :return: list of assets
         """
-        request = self.service.organizations().assets().list(  # pylint: disable=E1101
-            parent=parent, compareDuration=compare_duration, fieldMask=field_mask, filter=filter_string,
-            orderBy=order_by, pageSize=page_size, pageToken=page_token, readTime=read_time)
+        request = (
+            self.service.organizations()  # pylint: disable=E1101
+            .assets()
+            .list(  # pylint: disable=E1101
+                parent=parent,
+                compareDuration=compare_duration,
+                fieldMask=field_mask,
+                filter=filter_string,
+                orderBy=order_by,
+                pageSize=page_size,
+                pageToken=page_token,
+                readTime=read_time,
+            )
+        )
 
         result = self.execute_request(request)
         return result
 
-    def get_source(self, name: str) -> Dict[str, Any]:
+    def get_source(self, name: str) -> dict[str, Any]:
         """
         Gets a source.
 
@@ -377,9 +543,15 @@ class GoogleSccClient(BaseGoogleClient):
         result = self.execute_request(request)
         return result
 
-    def update_finding(self, name: str, event_time: Optional[str], severity: Optional[str],
-                       external_uri: Optional[str], source_properties: Optional[str],
-                       update_mask: List) -> Dict[str, Any]:
+    def update_finding(
+        self,
+        name: str,
+        event_time: str | None,
+        severity: str | None,
+        external_uri: str | None,
+        source_properties: str | None,
+        update_mask: list,
+    ) -> dict[str, Any]:
         """
         Updates a finding. The corresponding source must exist for a finding update to succeed.
 
@@ -392,15 +564,94 @@ class GoogleSccClient(BaseGoogleClient):
 
         :return: updated finding response
         """
-        body = assign_params(eventTime=event_time, severity=severity, externalUri=external_uri,
-                             sourceProperties=source_properties)
+        body = assign_params(
+            eventTime=event_time, severity=severity, externalUri=external_uri, sourceProperties=source_properties
+        )
         update_mask = get_update_mask_for_update_finding(body, update_mask)  # type: ignore
-        request = self.service.organizations().sources().findings().patch(  # pylint: disable=E1101
-            name=name, updateMask=update_mask, body=body)
+        request = (
+            self.service.organizations()  # pylint: disable=E1101
+            .sources()
+            .findings()
+            .patch(  # pylint: disable=E1101
+                name=name, updateMask=update_mask, body=body
+            )
+        )
         result = self.execute_request(request)
         return result
 
-    def update_state(self, name: str, event_time: Optional[str], state: str, ) -> Dict[str, Any]:
+    def get_findings_resource_v2(self, name: str):
+        """
+        Resolve the v2 findings resource to use for a finding resource name.
+
+        A v2 finding resource name may carry an optional locations/{location} segment
+        (e.g. organizations/{org}/sources/{source}/locations/{location}/findings/{finding}). When present the request
+        must go through the organizations.sources.locations.findings resource instead of organizations.sources.findings.
+
+        :param name: The resource name of this finding.
+
+        :return: findings resource matching the given name
+        """
+        sources = self.service.organizations().sources()  # pylint: disable=E1101
+        return sources.locations().findings() if re.search(LOCATIONS_SEGMENT_REGEX, name) else sources.findings()
+
+    def get_mute_configs_resource_v2(self, name: str):
+        """
+        Resolve the v2 muteConfigs resource to use for a mute rule resource name.
+
+        A v2 mute rule resource name may carry an optional locations/{location} segment
+        (e.g. organizations/{org}/locations/{location}/muteConfigs/{config}). When present the request must go
+        through the organizations.locations.muteConfigs resource instead of organizations.muteConfigs.
+
+        :param name: The resource name of the mute rule.
+
+        :return: muteConfigs resource matching the given name
+        """
+        organizations = self.service.organizations()  # pylint: disable=E1101
+        if re.search(LOCATIONS_SEGMENT_REGEX, name):
+            return organizations.locations().muteConfigs()
+        return organizations.muteConfigs()
+
+    def update_finding_v2(
+        self,
+        name: str,
+        event_time: str | None,
+        severity: str | None,
+        external_uri: str | None,
+        source_properties: str | None,
+        update_mask: list,
+    ) -> dict[str, Any]:
+        """
+        Updates a finding using the v2 API. The corresponding source must exist for a finding update to succeed.
+
+        Uses the organizations.sources.findings.patch method. Unlike v1, the v2 resource name may include an
+        optional locations/{location} segment (e.g. organizations/{org}/sources/{source}/locations/{location}/
+        findings/{finding}). The request body, updateMask query parameter and response are otherwise identical to v1.
+        (ref: https://docs.cloud.google.com/security-command-center/docs/reference/rest/v2/organizations.sources.findings/patch)
+
+        :param name: The resource name of this finding.
+        :param event_time: event time of finding
+        :param severity: severity of finding
+        :param external_uri: external_uri of finding
+        :param source_properties: source_properties of finding
+        :param update_mask: which field you want to update
+
+        :return: updated finding response
+        """
+        body = assign_params(
+            eventTime=event_time, severity=severity, externalUri=external_uri, sourceProperties=source_properties
+        )
+        update_mask = get_update_mask_for_update_finding(body, update_mask)  # type: ignore
+        findings = self.get_findings_resource_v2(name)
+        request = findings.patch(name=name, updateMask=update_mask, body=body)  # pylint: disable=E1101
+        result = self.execute_request(request)
+        return result
+
+    def update_state(
+        self,
+        name: str,
+        event_time: str | None,
+        state: str,
+    ) -> dict[str, Any]:
         """
         Updates a state.
 
@@ -413,15 +664,132 @@ class GoogleSccClient(BaseGoogleClient):
         """
         body = assign_params(startTime=event_time, state=state)
 
-        request = self.service.organizations().sources().findings().setState(  # pylint: disable=E1101
-            name=name, body=body)
+        request = (
+            self.service.organizations()  # pylint: disable=E1101
+            .sources()
+            .findings()
+            .setState(  # pylint: disable=E1101
+                name=name, body=body
+            )
+        )
+        result = self.execute_request(request)
+        return result
+
+    def update_state_v2(
+        self,
+        name: str,
+        state: str,
+    ) -> dict[str, Any]:
+        """
+        Updates the state of a finding using the v2 API.
+
+        Uses the organizations.sources.findings.setState method. Unlike v1, the v2 resource name may include an
+        optional locations/{location} segment (e.g. organizations/{org}/sources/{source}/locations/{location}/
+        findings/{finding}) and the request body only carries the state field (v1's deprecated startTime is dropped).
+        (ref:
+        https://docs.cloud.google.com/security-command-center/docs/reference/rest/v2/organizations.sources.findings/setState)
+
+        :param name: The resource name of this finding.
+        :param state: state of finding
+
+        :return: updated response
+        """
+        body = assign_params(state=state)
+        findings = self.get_findings_resource_v2(name)
+        request = findings.setState(name=name, body=body)  # pylint: disable=E1101
+        result = self.execute_request(request)
+        return result
+
+    def set_mute_v2(
+        self,
+        name: str,
+        mute: str,
+    ) -> dict[str, Any]:
+        """
+        Sets the mute state of a finding using the v2 API.
+
+        Uses the organizations.sources.findings.setMute method. Shared by the mute and unmute flows via the mute
+        argument. The v2 resource name may include an optional locations/{location} segment (e.g. organizations/
+        {org}/sources/{source}/locations/{location}/findings/{finding}); when present the request is routed through
+        the organizations.sources.locations.findings resource.
+        (ref:
+        https://docs.cloud.google.com/security-command-center/docs/reference/rest/v2/organizations.sources.findings/setMute)
+
+        :param name: The resource name of this finding.
+        :param mute: desired mute state of the finding (MUTED or UNMUTED)
+
+        :return: updated finding response
+        """
+        body = assign_params(mute=mute)
+        findings = self.get_findings_resource_v2(name)
+        request = findings.setMute(name=name, body=body)  # pylint: disable=E1101
+        result = self.execute_request(request)
+        return result
+
+    def get_mute_rule_v2(self, name: str) -> dict[str, Any]:
+        """
+        Get a mute rule (mute config) using the v2 API.
+
+        Uses the organizations.muteConfigs.get method. The v2 resource name may include an optional
+        locations/{location} segment (e.g. organizations/{org}/locations/{location}/muteConfigs/{config});
+        when present the request is routed through the organizations.locations.muteConfigs resource. If no
+        location is specified, the mute rule is assumed to be in global.
+        (ref:
+        https://docs.cloud.google.com/security-command-center/docs/reference/rest/v2/organizations.muteConfigs/get)
+
+        :param name: The resource name of the mute rule to retrieve.
+
+        :return: mute rule response
+        """
+        mute_configs = self.get_mute_configs_resource_v2(name)
+        request = mute_configs.get(name=name)  # pylint: disable=E1101
+        result = self.execute_request(request)
+        return result
+
+    def create_mute_rule_v2(
+        self,
+        parent: str,
+        mute_config_id: str,
+        mute_config_type: str,
+        mute_filter: str,
+        description: str | None = None,
+        expiry_time: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a mute rule (mute config) using the v2 API.
+
+        Uses the organizations.muteConfigs.create method. The v2 parent may include an optional
+        locations/{location} segment (e.g. organizations/{org}/locations/{location}); when present the request
+        is routed through the organizations.locations.muteConfigs resource. If no location is specified, the mute
+        rule is created in global.
+        (ref:
+        https://docs.cloud.google.com/security-command-center/docs/reference/rest/v2/organizations.muteConfigs/create)
+
+        :param parent: Resource name of the new mute rule's parent.
+        :param mute_config_id: Unique identifier provided by the client within the parent scope.
+        :param mute_config_type: The type of the mute rule (STATIC or DYNAMIC).
+        :param mute_filter: An expression that defines the filter to apply across create/update events of findings.
+        :param description: A description of the mute rule.
+        :param expiry_time: The expiry of the mute rule. Only applicable for dynamic mute rules.
+
+        :return: mute rule response
+        """
+        body = assign_params(type=mute_config_type, filter=mute_filter, description=description, expiryTime=expiry_time)
+        # v2 parent may carry an optional locations/{location} segment. When present the request must go
+        # through the organizations.locations.muteConfigs resource instead of organizations.muteConfigs.
+        organizations = self.service.organizations()  # pylint: disable=E1101
+        if re.search(r"/locations/[^/]+", parent):
+            mute_configs = organizations.locations().muteConfigs()
+        else:
+            mute_configs = organizations.muteConfigs()
+        request = mute_configs.create(parent=parent, muteConfigId=mute_config_id, body=body)  # pylint: disable=E1101
         result = self.execute_request(request)
         return result
 
 
 class GooglePubSubClient(BaseGoogleClient):
     """
-        A Client class to wrap the google cloud pub/sub api library as a service.
+    A Client class to wrap the google cloud pub/sub api library as a service.
     """
 
     def __init__(self, project_id, subscription_id, service_account_json, **kwargs):
@@ -430,7 +798,7 @@ class GooglePubSubClient(BaseGoogleClient):
         self.project_id = project_id or extract_project_id_from_service_account(service_account_json)
         self.subscription_id = subscription_id
 
-    def pull_messages(self, max_messages, ret_immediately=True) -> Dict[str, Any]:
+    def pull_messages(self, max_messages, ret_immediately=True) -> dict[str, Any]:
         """
         Pull messages for the subscription
 
@@ -440,12 +808,17 @@ class GooglePubSubClient(BaseGoogleClient):
         """
         subscription = GoogleNameParser.get_subscription_path(self.project_id, self.subscription_id)
         body = assign_params(returnImmediately=ret_immediately, maxMessages=max_messages)
-        request = self.service.projects().subscriptions().pull(  # pylint: disable=E1101
-            subscription=subscription, body=body)
+        request = (
+            self.service.projects()  # pylint: disable=E1101
+            .subscriptions()
+            .pull(  # pylint: disable=E1101
+                subscription=subscription, body=body
+            )
+        )
         result = self.execute_request(request)
         return result
 
-    def acknowledge_messages(self, acks_list: List) -> Dict[str, Any]:
+    def acknowledge_messages(self, acks_list: list) -> dict[str, Any]:
         """
         Pull messages for the subscription
 
@@ -454,15 +827,20 @@ class GooglePubSubClient(BaseGoogleClient):
         """
         subscription = GoogleNameParser.get_subscription_path(self.project_id, self.subscription_id)
         body = assign_params(ackIds=acks_list)
-        request = self.service.projects().subscriptions().acknowledge(  # pylint: disable=E1101
-            subscription=subscription, body=body)
+        request = (
+            self.service.projects()  # pylint: disable=E1101
+            .subscriptions()
+            .acknowledge(  # pylint: disable=E1101
+                subscription=subscription, body=body
+            )
+        )
         result = self.execute_request(request)
         return result
 
 
 class GoogleCloudAssetClient(BaseGoogleClient):
     """
-        A Client class to wrap the google cloud assets api library as a service.
+    A Client class to wrap the google cloud assets api library as a service.
     """
 
     def __init__(self, organization_id: str, **kwargs):
@@ -470,8 +848,9 @@ class GoogleCloudAssetClient(BaseGoogleClient):
         super().__init__(**kwargs)
         self.organization_id = organization_id
 
-    def get_assets(self, parent: str, asset_types: list, content_type: str, page_size: Union[str, int],
-                   page_token: str, read_time: Optional[str]) -> Dict[str, Any]:
+    def get_assets(
+        self, parent: str, asset_types: list, content_type: str, page_size: str | int, page_token: str, read_time: str | None
+    ) -> dict[str, Any]:
         """
         Get a assets based on asset type and content type.
 
@@ -484,8 +863,13 @@ class GoogleCloudAssetClient(BaseGoogleClient):
         :return: list of assets
         """
         request = self.service.assets().list(  # pylint: disable=E1101
-            parent=parent, assetTypes=asset_types, contentType=content_type,
-            pageSize=int(page_size), pageToken=page_token, readTime=read_time)
+            parent=parent,
+            assetTypes=asset_types,
+            contentType=content_type,
+            pageSize=int(page_size),
+            pageToken=page_token,
+            readTime=read_time,
+        )
 
         result = self.execute_request(request)
         return result
@@ -504,14 +888,68 @@ def init_google_scc_client(**kwargs) -> GoogleSccClient:
     return client
 
 
+def normalize_location_id(location: str | None) -> str:
+    """
+    Normalize a location to the identifier expected in a v2 resource name.
+
+    Region names that have a distinct location identifier (e.g. "me-central2" for the Kingdom of Saudi Arabia,
+    whose identifier is "sa") are translated, and the result is validated against the supported identifiers.
+
+    :param location: location as provided by the user. An empty value defaults to "global".
+    :return: supported location identifier.
+    """
+    location = (location or DEFAULT_LOCATION_ID).strip().lower()
+    location = LOCATION_ID_ALIASES.get(location, location)
+    if location not in SUPPORTED_LOCATION_IDS:
+        raise ValueError(ERROR_MESSAGES["INVALID_LOCATION_ERROR"].format(location, ", ".join(SUPPORTED_LOCATION_IDS)))
+    return location
+
+
+def get_location_from_args(args: dict) -> str:
+    """
+    Resolve the location a v2 command targets.
+
+    The location is either given explicitly through the "location" argument, or carried by the locations/{location}
+    segment of the "name" argument of a v2 resource name (e.g. organizations/{organization}/sources/{source}/
+    locations/{location}/findings/{finding}). When neither is present, the location is "global".
+
+    :param args: command argument(s).
+    :return: supported location identifier.
+    """
+    location = args.get("location")
+    if not location:
+        match = re.search(LOCATION_ID_CAPTURE_REGEX, args.get("name") or "")
+        location = match.group(1) if match else DEFAULT_LOCATION_ID
+    return normalize_location_id(location)
+
+
+def get_regional_endpoint(location: str) -> str | None:
+    """
+    Get the endpoint the requests of a location must be sent to.
+
+    :param location: supported location identifier.
+    :return: the regional endpoint of the location, or None for "global" (which uses the default global endpoint).
+    """
+    return REGIONAL_ENDPOINTS.get(location)
+
+
+def init_google_scc_v2_client(**kwargs) -> GoogleSccClient:
+    """
+    Initializes google scc client
+    :param kwargs: keyword arguments
+    :return: SCC Client object
+    """
+    client = GoogleSccClient(service_name=SERVICE_NAME, service_version=SERVICE_VERSION_V2, scopes=SCOPES, **kwargs)
+    return client
+
+
 def init_google_pubsub_client(**kwargs) -> GooglePubSubClient:
     """
     Initializes google pubsub client
     :param kwargs: keyword arguments
     :return: Pubsub Client object
     """
-    client = GooglePubSubClient(service_name=PUBSUB_SERVICE_NAME, service_version=PUBSUB_SERVICE_VERSION,
-                                scopes=SCOPES, **kwargs)
+    client = GooglePubSubClient(service_name=PUBSUB_SERVICE_NAME, service_version=PUBSUB_SERVICE_VERSION, scopes=SCOPES, **kwargs)
     return client
 
 
@@ -521,12 +959,13 @@ def init_google_cloud_assets_client(**kwargs) -> GoogleCloudAssetClient:
     :param kwargs: keyword arguments
     :return: Google cloud assets client object
     """
-    client = GoogleCloudAssetClient(service_name=CLOUD_ASSET_SERVICE_NAME, service_version=CLOUD_ASSET_SERVICE_VERSION,
-                                    scopes=SCOPES, **kwargs)
+    client = GoogleCloudAssetClient(
+        service_name=CLOUD_ASSET_SERVICE_NAME, service_version=CLOUD_ASSET_SERVICE_VERSION, scopes=SCOPES, **kwargs
+    )
     return client
 
 
-def safe_load_non_strict_json(json_string: str) -> Dict[str, Any]:
+def safe_load_non_strict_json(json_string: str) -> dict[str, Any]:
     """
     Loads the JSON with non-strict mode.
 
@@ -543,7 +982,7 @@ def safe_load_non_strict_json(json_string: str) -> Dict[str, Any]:
         raise ValueError(ERROR_MESSAGES["JSON_PARSE_ERROR"].format("Service Account JSON"))
 
 
-def validate_get_int(max_results: Optional[str], message: str, limit: Union[int, str] = 0) -> Optional[int]:
+def validate_get_int(max_results: str | None, message: str, limit: int | str = 0) -> int | None:
     """
     Validate and convert string max_results to integer.
 
@@ -567,7 +1006,7 @@ def validate_get_int(max_results: Optional[str], message: str, limit: Union[int,
     return None
 
 
-def validate_project_and_subscription_id(params: Dict[str, Any]) -> None:
+def validate_project_and_subscription_id(params: dict[str, Any]) -> None:
     """
     Validates parameters for fetch-incidents command.
 
@@ -579,7 +1018,7 @@ def validate_project_and_subscription_id(params: Dict[str, Any]) -> None:
     pubsub_client.pull_messages(1)
 
 
-def validate_service_account_and_organization_name(params: Dict[str, str]) -> None:
+def validate_service_account_and_organization_name(params: dict[str, str]) -> None:
     """
     Validate Service Account JSON and Organization ID
 
@@ -596,7 +1035,7 @@ def validate_service_account_and_organization_name(params: Dict[str, str]) -> No
     client.get_findings(parent, page_size=1)
 
 
-def validate_state_and_severity_list(state_list: List, severity_list: List) -> None:
+def validate_state_and_severity_list(state_list: list, severity_list: list) -> None:
     """
     Validate severity and state list values
 
@@ -607,7 +1046,7 @@ def validate_state_and_severity_list(state_list: List, severity_list: List) -> N
     """
     for state in state_list:
         if state and state.strip().upper() not in STATE_LIST:
-            raise ValueError(ERROR_MESSAGES["INVALID_STATE_ERROR"])
+            raise ValueError(ERROR_MESSAGES["INVALID_STATE_ERROR"].format(state))
 
     # Validate Severity param
     for severity in severity_list:
@@ -615,7 +1054,7 @@ def validate_state_and_severity_list(state_list: List, severity_list: List) -> N
             raise ValueError(ERROR_MESSAGES["INVALID_SEVERITY_ERROR"])
 
 
-def validate_configuration_param(params: Dict[str, Any]) -> None:
+def validate_configuration_param(params: dict[str, Any]) -> None:
     """
     validate configuration parameter through API call.
 
@@ -673,11 +1112,11 @@ def add_filter(label, filter_string, values) -> str:
     if filter_string:
         filter_string = filter_string + " AND "
 
-    filter_string += "({})".format(" OR ".join(['{}="{}"'.format(label, value.strip()) for value in values]))
+    filter_string += "({})".format(" OR ".join([f'{label}="{value.strip()}"' for value in values]))
     return filter_string
 
 
-def prepare_markdown_fields_for_fetch_incidents(fields: Dict[str, Any]) -> Dict[str, str]:
+def prepare_markdown_fields_for_fetch_incidents(fields: dict[str, Any]) -> dict[str, str]:
     """
     Prepares markdown fields for incident.
 
@@ -691,7 +1130,7 @@ def prepare_markdown_fields_for_fetch_incidents(fields: Dict[str, Any]) -> Dict[
     return {"securityMarks": security_marks_hr, "MfaDetails": mfa_details_hr}
 
 
-def strip_dict(args: Dict[str, str]) -> Dict[str, str]:
+def strip_dict(args: dict[str, str]) -> dict[str, str]:
     """
     Remove leading and trailing white spaces from dictionary values and remove empty entries.
     :param args: Arguments dict.
@@ -718,11 +1157,11 @@ def create_filter_list_assets(asset_type: str, project: str, filter_string: str,
         type_list: list = asset_type.split(",")
         filter_string = add_filter("securityCenterProperties.resourceType", filter_string, type_list)
     if active_assets_only.lower() == "true":
-        filter_string = add_filter('resourceProperties.lifecycleState', filter_string, ['ACTIVE'])
+        filter_string = add_filter("resourceProperties.lifecycleState", filter_string, ["ACTIVE"])
     return filter_string
 
 
-def prepare_human_readable_dict_for_list_asset(asset: Dict[str, Any]) -> Dict[str, Any]:
+def prepare_human_readable_dict_for_list_asset(asset: dict[str, Any]) -> dict[str, Any]:
     """
     Prepare human-readable dictionary for list asset command.
     :param asset: asset information
@@ -737,11 +1176,11 @@ def prepare_human_readable_dict_for_list_asset(asset: Dict[str, Any]) -> Dict[st
         "Resource Owners": asset.get("securityCenterProperties", {}).get("resourceOwners", {}),
         "Project": asset.get("resourceProperties", {}).get("name", ""),
         "Name": get_markdown_link(asset.get("name", ""), asset_url),
-        COMMON_STRING["SECURITY_MARKS"]: asset.get("securityMarks", {}).get("marks", {})
+        COMMON_STRING["SECURITY_MARKS"]: asset.get("securityMarks", {}).get("marks", {}),
     }
 
 
-def prepare_outputs_for_list_assets(result) -> Tuple[Dict[str, Any], str]:
+def prepare_outputs_for_list_assets(result) -> tuple[dict[str, Any], str]:
     """
     Preparing context output and human-readable for list-assets command.
 
@@ -765,15 +1204,21 @@ def prepare_outputs_for_list_assets(result) -> Tuple[Dict[str, Any], str]:
         hr_asset_list.append(hr_asset_dict)
 
     # Preparing headers
-    headers = ["Organization ID", "Name", "Project", COMMON_STRING["RESOURCE_NAME"], "Resource Type", "Resource Owners",
-               COMMON_STRING["SECURITY_MARKS"]]
-    readable_output = tableToMarkdown(GET_OUTPUT_MESSAGE["HEADER_MESSAGE"].format("asset(s)", total_size),
-                                      t=hr_asset_list, headers=headers, removeNull=True)
+    headers = [
+        "Organization ID",
+        "Name",
+        "Project",
+        COMMON_STRING["RESOURCE_NAME"],
+        "Resource Type",
+        "Resource Owners",
+        COMMON_STRING["SECURITY_MARKS"],
+    ]
+    readable_output = tableToMarkdown(
+        GET_OUTPUT_MESSAGE["HEADER_MESSAGE"].format("asset(s)", total_size), t=hr_asset_list, headers=headers, removeNull=True
+    )
 
     # preparing context
-    ec_asset_dict: Dict[str, Any] = {
-        OUTPUT_PREFIX["LIST_ASSET"]: ec_asset_list
-    }
+    ec_asset_dict: dict[str, Any] = {OUTPUT_PREFIX["LIST_ASSET"]: ec_asset_list}
 
     next_page_token = result.get("nextPageToken", "")
     if next_page_token:
@@ -784,7 +1229,7 @@ def prepare_outputs_for_list_assets(result) -> Tuple[Dict[str, Any], str]:
     return remove_empty_elements(ec_asset_dict), readable_output
 
 
-def flatten_keys_to_root(data_dict: Dict[str, Any], keys: List, update_dict: Dict[str, Any]):
+def flatten_keys_to_root(data_dict: dict[str, Any], keys: list, update_dict: dict[str, Any]):
     """
     Add list of keys to root level in dict
 
@@ -802,7 +1247,7 @@ def flatten_keys_to_root(data_dict: Dict[str, Any], keys: List, update_dict: Dic
     data_dict.update(update_dict)
 
 
-def convert_string_to_date_format(date: str, date_format: str = DATE_FORMAT) -> Optional[str]:
+def convert_string_to_date_format(date: str, date_format: str = DATE_FORMAT) -> str | None:
     """
     Convert date into given format
 
@@ -817,7 +1262,7 @@ def convert_string_to_date_format(date: str, date_format: str = DATE_FORMAT) -> 
     return None
 
 
-def prepare_hr_and_ec_for_list_findings(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+def prepare_hr_and_ec_for_list_findings(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """
     Prepare human readable output
 
@@ -836,31 +1281,38 @@ def prepare_hr_and_ec_for_list_findings(result: Dict[str, Any]) -> Tuple[str, Di
     total_size = result.get("totalSize")
 
     for finding in findings:
-        flatten_keys_to_root(finding, ["finding"],
-                             {"readTime": read_time, "stateChange": finding.get("stateChange", None)})
+        flatten_keys_to_root(finding, ["finding"], {"readTime": read_time, "stateChange": finding.get("stateChange", None)})
         ec_finding_list.append(finding)
         finding_url = GoogleNameParser.get_finding_url(finding.get("name", ""))
-        hr_finding_list.append({
-            "Organization ID": GoogleNameParser.get_organization_id(),
-            "Name": get_markdown_link(finding.get("name", ""), finding_url),
-            "Category": finding.get("category", ""),
-            COMMON_STRING["RESOURCE_NAME"]: finding.get("resourceName", ""),
-            "Finding Class": finding.get("findingClass", ""),
-            COMMON_STRING["EVENT_TIME"]: convert_string_to_date_format(finding.get("eventTime", "")),
-            COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(finding.get("createTime", "")),
-            COMMON_STRING["SECURITY_MARKS"]: finding.get("securityMarks", {}).get("marks", {})
-        })
+        hr_finding_list.append(
+            {
+                "Organization ID": GoogleNameParser.get_organization_id(),
+                "Name": get_markdown_link(finding.get("name", ""), finding_url),
+                "Category": finding.get("category", ""),
+                COMMON_STRING["RESOURCE_NAME"]: finding.get("resourceName", ""),
+                "Finding Class": finding.get("findingClass", ""),
+                COMMON_STRING["EVENT_TIME"]: convert_string_to_date_format(finding.get("eventTime", "")),
+                COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(finding.get("createTime", "")),
+                COMMON_STRING["SECURITY_MARKS"]: finding.get("securityMarks", {}).get("marks", {}),
+            }
+        )
 
-    headers = ["Organization ID", "Name", "Category", COMMON_STRING["RESOURCE_NAME"], "Finding Class",
-               COMMON_STRING["EVENT_TIME"],
-               COMMON_STRING["CREATE_TIME"], COMMON_STRING["SECURITY_MARKS"]]
-    readable_output = tableToMarkdown(GET_OUTPUT_MESSAGE["HEADER_MESSAGE"].format("finding(s)", total_size),
-                                      t=hr_finding_list, headers=headers, removeNull=True)
+    headers = [
+        "Organization ID",
+        "Name",
+        "Category",
+        COMMON_STRING["RESOURCE_NAME"],
+        "Finding Class",
+        COMMON_STRING["EVENT_TIME"],
+        COMMON_STRING["CREATE_TIME"],
+        COMMON_STRING["SECURITY_MARKS"],
+    ]
+    readable_output = tableToMarkdown(
+        GET_OUTPUT_MESSAGE["HEADER_MESSAGE"].format("finding(s)", total_size), t=hr_finding_list, headers=headers, removeNull=True
+    )
 
     # preparing context
-    ec_dict: Dict[str, Any] = {
-        OUTPUT_PREFIX["LIST_FINDING"]: ec_finding_list
-    }
+    ec_dict: dict[str, Any] = {OUTPUT_PREFIX["LIST_FINDING"]: ec_finding_list}
     next_page_token = result.get("nextPageToken", "")
     if next_page_token:
         token_ec = {"name": "google-cloud-scc-finding-list", "nextPageToken": next_page_token}
@@ -870,7 +1322,74 @@ def prepare_hr_and_ec_for_list_findings(result: Dict[str, Any]) -> Tuple[str, Di
     return readable_output, remove_empty_elements(ec_dict)
 
 
-def get_and_validate_args_finding_update(args: Dict[str, Any]) -> Tuple:
+def prepare_hr_and_ec_for_list_findings_v2(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """
+    Prepare human readable and entry context output for the v2 list findings command.
+
+    The v2 API response does not contain the readTime and totalSize fields.
+
+    :param result: List findings v2 API response
+    :return: markdown string and context data of list findings
+    """
+    # Preparing list of entry context and human readable
+    hr_finding_list = []
+    ec_finding_list = []
+
+    findings = result.get("listFindingsResults", [])
+    if not len(findings):
+        return ERROR_MESSAGES["NO_RECORDS_FOUND"].format("finding"), {}
+
+    for finding in findings:
+        flatten_keys_to_root(finding, ["finding"], {"stateChange": finding.get("stateChange", None)})
+        ec_finding_list.append(finding)
+        finding_url = GoogleNameParser.get_finding_url(finding.get("name", ""))
+        # A finding can be matched by more than one dynamic mute rule, so collect every matching mute config name.
+        dynamic_mute_records = demisto.get(finding, "muteInfo.dynamicMuteRecords") or []
+        mute_configs = ", ".join(record.get("muteConfig", "") for record in dynamic_mute_records if record.get("muteConfig"))
+        hr_finding_list.append(
+            {
+                "Organization ID": GoogleNameParser.get_organization_id(),
+                "Name": get_markdown_link(finding.get("name", ""), finding_url),
+                "Category": finding.get("category", ""),
+                COMMON_STRING["RESOURCE_NAME"]: finding.get("resourceName", ""),
+                "Finding Class": finding.get("findingClass", ""),
+                COMMON_STRING["EVENT_TIME"]: convert_string_to_date_format(finding.get("eventTime", "")),
+                COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(finding.get("createTime", "")),
+                COMMON_STRING["MUTE_CONFIG"]: mute_configs,
+                COMMON_STRING["SECURITY_MARKS"]: finding.get("securityMarks", {}).get("marks", {}),
+            }
+        )
+
+    headers = [
+        "Organization ID",
+        "Name",
+        "Category",
+        COMMON_STRING["RESOURCE_NAME"],
+        "Finding Class",
+        COMMON_STRING["EVENT_TIME"],
+        COMMON_STRING["CREATE_TIME"],
+        COMMON_STRING["MUTE_CONFIG"],
+        COMMON_STRING["SECURITY_MARKS"],
+    ]
+    readable_output = tableToMarkdown(
+        name=GET_OUTPUT_MESSAGE["HEADER_MESSAGE"].format("finding(s)", len(ec_finding_list)),
+        t=hr_finding_list,
+        headers=headers,
+        removeNull=True,
+    )
+
+    # preparing context
+    ec_dict: dict[str, Any] = {OUTPUT_PREFIX["LIST_FINDING_V2"]: ec_finding_list}
+    next_page_token = result.get("nextPageToken", "")
+    if next_page_token:
+        token_ec = {"name": "google-cloud-scc-v2-finding-list", "nextPageToken": next_page_token}
+        ec_dict[OUTPUT_PREFIX["TOKEN"]] = token_ec
+        readable_output += f"\n\n{NEXT_PAGE_TOKEN_MESSAGE.format(next_page_token)}"
+
+    return readable_output, remove_empty_elements(ec_dict)
+
+
+def get_and_validate_args_finding_update(args: dict[str, Any]) -> tuple:
     """
     Get and validate arguments of finding update command.
 
@@ -879,6 +1398,8 @@ def get_and_validate_args_finding_update(args: Dict[str, Any]) -> Tuple:
     """
     # Get command args
     name = args.get("name", None)
+    if not name:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("name"))
     event_time = args.get("eventTime") or datetime.now().strftime(ISO_DATE_FORMAT)
     severity = args.get("severity", "").upper()
     external_uri = args.get("externalUri", None)
@@ -890,15 +1411,17 @@ def get_and_validate_args_finding_update(args: Dict[str, Any]) -> Tuple:
 
     try:
         if source_properties:
-            source_properties = dict(split_and_escape(line, "=")  # type: ignore
-                                     for line in split_and_escape(source_properties, ","))
+            source_properties = dict(
+                split_and_escape(line, "=")  # type: ignore
+                for line in split_and_escape(source_properties, ",")
+            )
     except ValueError:
         raise ValueError(ERROR_MESSAGES["INVALID_SOURCE_PROPERTIES"])
 
     return name, event_time, severity, external_uri, source_properties, update_mask
 
 
-def get_and_validate_args_finding_state_update(args: Dict[str, Any]) -> Tuple:
+def get_and_validate_args_finding_state_update(args: dict[str, Any]) -> tuple:
     """
     Get and validate arguments of finding state update command.
 
@@ -911,12 +1434,78 @@ def get_and_validate_args_finding_state_update(args: Dict[str, Any]) -> Tuple:
     state = args.get("state", "").upper()
 
     if state and state.strip().upper() not in STATE_LIST:
-        raise ValueError(ERROR_MESSAGES["INVALID_STATE_ERROR"])
+        raise ValueError(ERROR_MESSAGES["INVALID_STATE_ERROR"].format(state))
 
     return name, event_time, state
 
 
-def prepare_hr_and_ec_for_update_finding(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+def get_and_validate_args_finding_state_update_v2(args: dict[str, Any]) -> tuple:
+    """
+    Get and validate arguments of the v2 finding state update command.
+
+    The v2 setState body only carries the state field; v1's deprecated startTime/eventTime is not sent.
+
+    :param args: arguments of the v2 finding state update command.
+    :return: name, state
+    """
+    # Get command args
+    name = args.get("name", None)
+    if not name:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("name"))
+    state = args.get("state", "").strip().upper()
+    if not state:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("state"))
+
+    if state not in STATE_LIST:
+        raise ValueError(ERROR_MESSAGES["INVALID_STATE_ERROR"].format(state))
+
+    return name, state
+
+
+def get_and_validate_args_mute_rule_create(args: dict[str, Any]) -> tuple:
+    """
+    Get and validate arguments of the mute rule create command.
+
+    :param args: arguments of the mute rule create command.
+    :return: parent, mute_config_id, mute_config_type, mute_filter, description, expiry_time
+    """
+    # Get command args
+    mute_config_id = args.get("muteConfigId")
+    if not mute_config_id:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("muteConfigId"))
+    mute_filter = args.get("filter")
+    if not mute_filter:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("filter"))
+    mute_config_type = (args.get("type") or "").upper()
+    if not mute_config_type:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("type"))
+
+    # Validate command args
+    validate_with_regex(ERROR_MESSAGES["INVALID_MUTE_CONFIG_ID_ERROR"], MUTE_CONFIG_ID_REGEX, mute_config_id)
+    if mute_config_type not in MUTE_CONFIG_TYPE_LIST:
+        raise ValueError(ERROR_MESSAGES["INVALID_MUTE_CONFIG_TYPE_ERROR"].format(mute_config_type))
+
+    expiry_time = args.get("expiryTime")
+    if expiry_time:
+        if mute_config_type != "DYNAMIC":
+            raise ValueError(ERROR_MESSAGES["EXPIRY_TIME_NOT_ALLOWED_ERROR"])
+        expiry_datetime = arg_to_datetime(expiry_time, arg_name="expiryTime")
+        if not expiry_datetime:
+            raise ValueError(ERROR_MESSAGES["INVALID_DATE_TIME"].format("expiryTime"))
+        expiry_time = expiry_datetime.strftime(ISO_DATE_FORMAT)
+
+    # An empty location keeps the parent at organizations/{organization_id}, which the API treats as global.
+    location = args.get("location")
+    parent = (
+        GoogleNameParser.get_location_organization_path(normalize_location_id(location))
+        if location
+        else GoogleNameParser.get_organization_path()
+    )
+
+    return parent, mute_config_id, mute_config_type, mute_filter, args.get("description"), expiry_time
+
+
+def prepare_hr_and_ec_for_update_finding(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """
     Prepare human readable output
 
@@ -935,14 +1524,144 @@ def prepare_hr_and_ec_for_update_finding(result: Dict[str, Any]) -> Tuple[str, D
         COMMON_STRING["EVENT_TIME"]: convert_string_to_date_format(result.get("eventTime", "")),
         COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(result.get("createTime", "")),
         "External Uri": get_markdown_link(result.get("externalUri", ""), result.get("externalUri", "")),
-        COMMON_STRING["RESOURCE_NAME"]: result.get("resourceName", "")
+        COMMON_STRING["RESOURCE_NAME"]: result.get("resourceName", ""),
     }
 
-    headers = ["Organization ID", "Name", "State", "Severity", "Category", COMMON_STRING["EVENT_TIME"],
-               COMMON_STRING["CREATE_TIME"],
-               "External Uri", COMMON_STRING["RESOURCE_NAME"]]
-    readable_output = tableToMarkdown("The finding has been updated successfully.", t=hr_data, headers=headers,
-                                      removeNull=True)
+    headers = [
+        "Organization ID",
+        "Name",
+        "State",
+        "Severity",
+        "Category",
+        COMMON_STRING["EVENT_TIME"],
+        COMMON_STRING["CREATE_TIME"],
+        "External Uri",
+        COMMON_STRING["RESOURCE_NAME"],
+    ]
+    readable_output = tableToMarkdown("The finding has been updated successfully.", t=hr_data, headers=headers, removeNull=True)
+
+    return readable_output, remove_empty_elements(result)
+
+
+def prepare_hr_and_ec_for_update_finding_v2(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """
+    Prepare human readable output and entry context for the v2 update finding command.
+
+    Unlike v1, the source properties of the finding are displayed as well, so that the properties updated by the
+    command are visible in the war room.
+
+    :param result: Update finding v2 API response
+    :return: markdown string and context data of the updated finding
+    """
+    # Preparing entry context and human readable
+    finding_url = GoogleNameParser.get_finding_url(result.get("name", ""))
+
+    hr_data = {
+        "Organization ID": GoogleNameParser.get_organization_id(),
+        "Name": get_markdown_link(result.get("name", ""), finding_url),
+        "State": result.get("state", ""),
+        "Severity": result.get("severity", ""),
+        "Category": result.get("category", ""),
+        COMMON_STRING["EVENT_TIME"]: convert_string_to_date_format(result.get("eventTime", "")),
+        COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(result.get("createTime", "")),
+        "External Uri": get_markdown_link(result.get("externalUri", ""), result.get("externalUri", "")),
+        COMMON_STRING["RESOURCE_NAME"]: result.get("resourceName", ""),
+        COMMON_STRING["SOURCE_PROPERTIES"]: result.get("sourceProperties", {}),
+    }
+
+    headers = [
+        "Organization ID",
+        "Name",
+        "State",
+        "Severity",
+        "Category",
+        COMMON_STRING["EVENT_TIME"],
+        COMMON_STRING["CREATE_TIME"],
+        "External Uri",
+        COMMON_STRING["RESOURCE_NAME"],
+        COMMON_STRING["SOURCE_PROPERTIES"],
+    ]
+    readable_output = tableToMarkdown("The finding has been updated successfully.", t=hr_data, headers=headers, removeNull=True)
+
+    return readable_output, remove_empty_elements(result)
+
+
+def prepare_hr_and_ec_for_finding_mute_state(result: dict[str, Any], hr_title: str) -> tuple[str, dict[str, Any]]:
+    """
+    Prepare human readable output and entry context for the finding mute/unmute commands.
+
+    :param result: setMute API response
+    :param hr_title: title for the human readable table
+    :return: markdown string and context data of the muted/unmuted finding
+    """
+    # Preparing entry context and human readable
+    finding_url = GoogleNameParser.get_finding_url(result.get("name", ""))
+
+    hr_data = {
+        "Organization ID": GoogleNameParser.get_organization_id(),
+        "Name": get_markdown_link(result.get("name", ""), finding_url),
+        "Mute": result.get("mute", ""),
+        "State": result.get("state", ""),
+        "Severity": result.get("severity", ""),
+        "Category": result.get("category", ""),
+        COMMON_STRING["EVENT_TIME"]: convert_string_to_date_format(result.get("eventTime", "")),
+        COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(result.get("createTime", "")),
+        "External Uri": get_markdown_link(result.get("externalUri", ""), result.get("externalUri", "")),
+        COMMON_STRING["RESOURCE_NAME"]: result.get("resourceName", ""),
+    }
+
+    headers = [
+        "Organization ID",
+        "Name",
+        "Mute",
+        "State",
+        "Severity",
+        "Category",
+        COMMON_STRING["EVENT_TIME"],
+        COMMON_STRING["CREATE_TIME"],
+        "External Uri",
+        COMMON_STRING["RESOURCE_NAME"],
+    ]
+    readable_output = tableToMarkdown(hr_title, t=hr_data, headers=headers, removeNull=True)
+
+    return readable_output, remove_empty_elements(result)
+
+
+def prepare_hr_and_ec_for_mute_rule(
+    result: dict[str, Any], hr_title: str = COMMON_STRING["GET_MUTE_RULE_HR_STR"]
+) -> tuple[str, dict[str, Any]]:
+    """
+    Prepare human readable output and entry context for the mute rule commands.
+
+    :param result: muteConfigs API response
+    :param hr_title: title of the human readable table
+    :return: markdown string and context data of the mute rule
+    """
+    # Preparing entry context and human readable
+    hr_data = {
+        "Organization ID": GoogleNameParser.get_organization_id(),
+        "Name": result.get("name", ""),
+        "Description": result.get("description", ""),
+        "Filter": result.get("filter", ""),
+        "Type": result.get("type", ""),
+        "Most Recent Editor": result.get("mostRecentEditor", ""),
+        COMMON_STRING["CREATE_TIME"]: convert_string_to_date_format(result.get("createTime", "")),
+        COMMON_STRING["UPDATE_TIME"]: convert_string_to_date_format(result.get("updateTime", "")),
+        COMMON_STRING["EXPIRY_TIME"]: convert_string_to_date_format(result.get("expiryTime", "")),
+    }
+
+    headers = [
+        "Organization ID",
+        "Name",
+        "Description",
+        "Filter",
+        "Type",
+        "Most Recent Editor",
+        COMMON_STRING["CREATE_TIME"],
+        COMMON_STRING["UPDATE_TIME"],
+        COMMON_STRING["EXPIRY_TIME"],
+    ]
+    readable_output = tableToMarkdown(hr_title, t=hr_data, headers=headers, removeNull=True)
 
     return readable_output, remove_empty_elements(result)
 
@@ -960,7 +1679,7 @@ def validate_with_regex(validation_message: str, pattern: str, string: str, flag
         raise ValueError(validation_message)
 
 
-def prepare_hr_and_ec_for_cloud_asset_list(result: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+def prepare_hr_and_ec_for_cloud_asset_list(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """
     Prepare human readable output
 
@@ -988,16 +1707,15 @@ def prepare_hr_and_ec_for_cloud_asset_list(result: Dict[str, Any]) -> Tuple[str,
             "Parent": resource.get("parent", ""),
             "Discovery Name": resource.get("discoveryName", ""),
             "Ancestors": asset.get("ancestors", ""),
-            "Update Time (In UTC)": convert_string_to_date_format(asset.get("updateTime", ""))
+            "Update Time (In UTC)": convert_string_to_date_format(asset.get("updateTime", "")),
         }
         hr_asset_list.append(hr_asset_dict)
 
-    headers = ["Organization ID", "Asset Name", "Asset Type", "Parent", "Discovery Name", "Ancestors",
-               "Update Time (In UTC)"]
+    headers = ["Organization ID", "Asset Name", "Asset Type", "Parent", "Discovery Name", "Ancestors", "Update Time (In UTC)"]
     readable_output = tableToMarkdown("", t=hr_asset_list, headers=headers, removeNull=True)
 
     # preparing context
-    ec_dict: Dict[str, Any] = {OUTPUT_PREFIX["LIST_RESOURCE"]: ec_asset_list}
+    ec_dict: dict[str, Any] = {OUTPUT_PREFIX["LIST_RESOURCE"]: ec_asset_list}
     next_page_token = result.get("nextPageToken", "")
     if next_page_token:
         token_ec = {"name": "google-cloud-scc-asset-resource-list", "nextPageToken": next_page_token}
@@ -1007,13 +1725,13 @@ def prepare_hr_and_ec_for_cloud_asset_list(result: Dict[str, Any]) -> Tuple[str,
     return readable_output, remove_empty_elements(ec_dict)
 
 
-def prepare_hr_and_ec_for_cloud_asset_owners_get(assets: list, read_time: str) -> Tuple[str, list]:
+def prepare_hr_and_ec_for_cloud_asset_owners_get(assets: list, read_time: str) -> tuple[str, list]:
     """
-        Prepare human readable output
+    Prepare human readable output
 
-        :param assets: Cloud Assets
-        :param read_time: readTime returned in API response
-        :return: markdown string and context data of cloud assets
+    :param assets: Cloud Assets
+    :param read_time: readTime returned in API response
+    :return: markdown string and context data of cloud assets
     """
 
     if len(assets) == 0:
@@ -1022,15 +1740,15 @@ def prepare_hr_and_ec_for_cloud_asset_owners_get(assets: list, read_time: str) -
     hr_asset_list = []
 
     for asset in assets:
-        asset['owners'] = find_asset_owners(asset)
-        asset['readTime'] = read_time
+        asset["owners"] = find_asset_owners(asset)
+        asset["readTime"] = read_time
 
         hr_asset_dict = {
             "Organization ID": GoogleNameParser.get_organization_id(),
             "Project Name": asset.get("name", ""),
-            "Project Owner": asset['owners'],
+            "Project Owner": asset["owners"],
             "Ancestors": asset.get("ancestors", ""),
-            "Update Time (In UTC)": convert_string_to_date_format(asset.get("updateTime", ""))
+            "Update Time (In UTC)": convert_string_to_date_format(asset.get("updateTime", "")),
         }
         hr_asset_list.append(hr_asset_dict)
 
@@ -1048,13 +1766,13 @@ def find_asset_owners(asset: dict) -> list:
     """
     iam_policies = asset.get("iamPolicy", {})
 
-    for binding in iam_policies.get('bindings', []):
-        if binding['role'] == "roles/owner":
-            return binding['members']
+    for binding in iam_policies.get("bindings", []):
+        if binding["role"] == "roles/owner":
+            return binding["members"]
     return []
 
 
-def get_update_mask_for_update_finding(body: Dict[str, Any], update_mask: List) -> str:
+def get_update_mask_for_update_finding(body: dict[str, Any], update_mask: list) -> str:
     """
     Get updateMask for finding update API call.
 
@@ -1064,14 +1782,14 @@ def get_update_mask_for_update_finding(body: Dict[str, Any], update_mask: List) 
     """
     for key, value in body.items():
         if key == "sourceProperties" and key not in update_mask:
-            update_mask.extend(["sourceProperties." + inner_key for inner_key in value.keys()])
+            update_mask.extend(["sourceProperties." + inner_key for inner_key in value])
             continue
         if key not in update_mask:
             update_mask.append(key)
     return ",".join(update_mask)
 
 
-def split_and_escape(key: str, delimiter) -> List[str]:
+def split_and_escape(key: str, delimiter) -> list[str]:
     """
     Split key by delimiter with escape support.
 
@@ -1080,12 +1798,12 @@ def split_and_escape(key: str, delimiter) -> List[str]:
     :return: a list of the extract keys
     """
     regex = r"(?<!\\)" + re.escape(delimiter)
-    split_keys = map(lambda x: x.replace(r"\{}".format(delimiter), delimiter), re.split(regex, key))
+    split_keys = (x.replace(rf"\{delimiter}", delimiter) for x in re.split(regex, key))
     keys = [split_key.strip() for split_key in list(split_keys)]
     return keys
 
 
-def get_markdown_link(name: str, link: str) -> Optional[str]:
+def get_markdown_link(name: str, link: str) -> str | None:
     """
     Prepare markdown supported link.
 
@@ -1127,7 +1845,7 @@ def get_finding_id_from_path(finding_path: str) -> str:
     return ""
 
 
-def convert_messages_to_incidents(messages: Dict[str, Any]) -> Tuple[List, List]:
+def convert_messages_to_incidents(messages: dict[str, Any]) -> tuple[list, list]:
     """
     convert pub/sub messages to incidents
 
@@ -1157,12 +1875,14 @@ def convert_messages_to_incidents(messages: Dict[str, Any]) -> Tuple[List, List]
             json_data["custom"] = prepare_markdown_fields_for_fetch_incidents(json_data)
             json_data["finding_url"] = GoogleNameParser.get_finding_url(finding_name)
 
-            incidents.append({
-                "name": "{} - {}".format(INCIDENT_NAME_PREFIX, incident_name),
-                "occurred": create_time,
-                "rawJSON": json.dumps(json_data),
-                "details": json.dumps(json_data)
-            })
+            incidents.append(
+                {
+                    "name": f"{INCIDENT_NAME_PREFIX} - {incident_name}",
+                    "occurred": create_time,
+                    "rawJSON": json.dumps(json_data),
+                    "details": json.dumps(json_data),
+                }
+            )
         except Exception as e:
             demisto.error(ERROR_MESSAGES["INVALID_INCIDENT"].format(str(e)))
 
@@ -1173,7 +1893,7 @@ def convert_messages_to_incidents(messages: Dict[str, Any]) -> Tuple[List, List]
 """ COMMANDS """
 
 
-def test_module(params: Dict[str, Any]) -> None:
+def test_module(params: dict[str, Any]) -> None:
     """
     Test authentication using service json
     """
@@ -1182,13 +1902,13 @@ def test_module(params: Dict[str, Any]) -> None:
 
     # Validate Service Account JSON and Organization ID
     validate_service_account_and_organization_name(params)
-    if params.get('isFetch', False):
+    if params.get("isFetch", False):
         # Validate Project ID and Subscription ID.
         validate_project_and_subscription_id(params)
     demisto.results("ok")
 
 
-def fetch_incidents(client: GooglePubSubClient, params: Dict[str, Any]) -> Optional[list]:
+def fetch_incidents(client: GooglePubSubClient, params: dict[str, Any]) -> list | None:
     """
     Prepares incidents from past activity in Google Drive.
 
@@ -1208,7 +1928,7 @@ def fetch_incidents(client: GooglePubSubClient, params: Dict[str, Any]) -> Optio
 
 
 @logger
-def asset_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
+def asset_list_command(client: GoogleSccClient, args: dict) -> CommandResults:
     """
     Lists an organization's assets.
     :param client: SccClient Object.
@@ -1216,8 +1936,9 @@ def asset_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
     :return: CommandResults object with context and human-readable.
     """
     # To validate arguments.
-    page_size = validate_get_int(args.get("pageSize"), ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"],
-                                 MAX_PAGE_SIZE) or DEFAULT_PAGE_SIZE
+    page_size = (
+        validate_get_int(args.get("pageSize"), ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"], MAX_PAGE_SIZE) or DEFAULT_PAGE_SIZE
+    )
 
     resource_type = args.get("resourceType", "")
     project = args.get("project", "")
@@ -1235,8 +1956,9 @@ def asset_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
 
     # Build a request
     parent = GoogleNameParser.get_organization_path()
-    raw_response = client.get_assets(parent, compare_duration, field_mask, filter_string, order_by, page_size,
-                                     page_token, read_time)
+    raw_response = client.get_assets(
+        parent, compare_duration, field_mask, filter_string, order_by, page_size, page_token, read_time
+    )
     result = deepcopy(raw_response)  # To preserve original API response
 
     # Preparing list of entry context and human readable
@@ -1246,9 +1968,12 @@ def asset_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
 
 
 @logger
-def finding_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
+def finding_list_command(client: GoogleSccClient, args: dict) -> CommandResults:
     """
     Lists an organization or source's findings.
+
+    Deprecated: this command uses the SCC v1 API. Use the "google-cloud-scc-v2-finding-list" command
+    (finding_list_v2_command) instead. Kept for backward compatibility only; no new functionality is added here.
 
     :param client: SccClient Object.
     :param args: Command argument(s).
@@ -1270,16 +1995,16 @@ def finding_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
 
     # Validates command args
     validate_state_and_severity_list(state, severity)
-    page_size = validate_get_int(page_size, ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"],
-                                 MAX_PAGE_SIZE) or DEFAULT_PAGE_SIZE
+    page_size = validate_get_int(page_size, ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"], MAX_PAGE_SIZE) or DEFAULT_PAGE_SIZE
 
     # Creating filter
     filter_string = create_filter_list_findings(category, filter_string, severity, state)
     demisto.debug(f"running command using the following filter: {filter_string}")
 
     parent = GoogleNameParser.get_source_path(source_type)
-    raw_response = client.get_findings(parent, compare_duration, field_mask, filter_string, order_by, page_size,
-                                       page_token, read_time)
+    raw_response = client.get_findings(
+        parent, compare_duration, field_mask, filter_string, order_by, page_size, page_token, read_time
+    )
     result = deepcopy(raw_response)  # To preserve original API response
     readable_output, context = prepare_hr_and_ec_for_list_findings(result)
 
@@ -1287,9 +2012,12 @@ def finding_list_command(client: GoogleSccClient, args: Dict) -> CommandResults:
 
 
 @logger
-def finding_update_command(client: GoogleSccClient, args: Dict) -> CommandResults:
+def finding_update_command(client: GoogleSccClient, args: dict) -> CommandResults:
     """
-    Lists an organization or source's findings.
+    Update an organization's or source's finding.
+
+    Deprecated: this command uses the SCC v1 API. Use the "google-cloud-scc-v2-finding-update" command
+    (finding_update_v2_command) instead. Kept for backward compatibility only; no new functionality is added here.
 
     :param client: SccClient Object.
     :param args: Command argument(s).
@@ -1304,14 +2032,22 @@ def finding_update_command(client: GoogleSccClient, args: Dict) -> CommandResult
 
     readable_output, context = prepare_hr_and_ec_for_update_finding(result)
 
-    return CommandResults(readable_output=readable_output, outputs_key_field="name",
-                          outputs_prefix=OUTPUT_PREFIX['FINDING'], outputs=context, raw_response=result)
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["FINDING"],
+        outputs=context,
+        raw_response=result,
+    )
 
 
 @logger
-def finding_state_update_command(client: GoogleSccClient, args: Dict) -> CommandResults:
+def finding_state_update_command(client: GoogleSccClient, args: dict) -> CommandResults:
     """
     Update the state of organization's or source's finding.
+
+    Deprecated: this command uses the SCC v1 API. Use the "google-cloud-scc-v2-finding-state-update" command
+    (finding_state_update_v2_command) instead. Kept for backward compatibility only; no new functionality is added here.
 
     :param client: SccClient Object.
     :param args: Command argument(s).
@@ -1326,12 +2062,17 @@ def finding_state_update_command(client: GoogleSccClient, args: Dict) -> Command
 
     readable_output, context = prepare_hr_and_ec_for_update_finding(result)
 
-    return CommandResults(readable_output=readable_output, outputs_key_field="name",
-                          outputs_prefix=OUTPUT_PREFIX['FINDING'], outputs=context, raw_response=result)
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["FINDING"],
+        outputs=context,
+        raw_response=result,
+    )
 
 
 @logger
-def cloud_asset_list_command(client: GoogleCloudAssetClient, args: Dict) -> CommandResults:
+def cloud_asset_list_command(client: GoogleCloudAssetClient, args: dict) -> CommandResults:
     """
     Lists assets with time and resource types.
 
@@ -1347,16 +2088,21 @@ def cloud_asset_list_command(client: GoogleCloudAssetClient, args: Dict) -> Comm
     read_time = args.get("readTime")  # type: ignore
 
     # Validates command args
-    page_size = validate_get_int(page_size, ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"],
-                                 MAX_PAGE_SIZE) or DEFAULT_PAGE_SIZE
+    page_size = validate_get_int(page_size, ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"], MAX_PAGE_SIZE) or DEFAULT_PAGE_SIZE
     if read_time:
         read_time = convert_string_to_date_format(read_time, ISO_DATE_FORMAT)  # type: ignore
 
     if args.get("readTime") and not read_time:
         raise ValueError(ERROR_MESSAGES["INVALID_DATE_TIME"].format("readTime"))
 
-    raw_response = client.get_assets(parent, asset_types, content_type, int(page_size), page_token,  # type:ignore
-                                     read_time)  # type:ignore
+    raw_response = client.get_assets(
+        parent,
+        asset_types,
+        content_type,
+        int(page_size),
+        page_token,  # type:ignore
+        read_time,
+    )  # type:ignore
     result = deepcopy(raw_response)  # To preserve original API response
     readable_output, context = prepare_hr_and_ec_for_cloud_asset_list(result)
 
@@ -1364,7 +2110,7 @@ def cloud_asset_list_command(client: GoogleCloudAssetClient, args: Dict) -> Comm
 
 
 @logger
-def cloud_asset_owner_get_command(client: GoogleCloudAssetClient, args: Dict) -> CommandResults:
+def cloud_asset_owner_get_command(client: GoogleCloudAssetClient, args: dict) -> CommandResults:
     """
     Gets the owner information for the provided projects
     Lists assets with time and resource types.
@@ -1382,12 +2128,13 @@ def cloud_asset_owner_get_command(client: GoogleCloudAssetClient, args: Dict) ->
 
     # Validate command args.
     for project_name in project_names:
-        validate_with_regex(ERROR_MESSAGES['INVALID_PROJECT_NAME_ERROR'], r"^projects\/\d{1,}$", project_name)
-    max_iterations = validate_get_int(max_iterations, ERROR_MESSAGES["INVALID_MAX_ITERATION_ERROR"],
-                                      MAX_ITERATION) or DEFAULT_MAX_ITERATION
+        validate_with_regex(ERROR_MESSAGES["INVALID_PROJECT_NAME_ERROR"], r"^projects\/\d{1,}$", project_name)
+    max_iterations = (
+        validate_get_int(max_iterations, ERROR_MESSAGES["INVALID_MAX_ITERATION_ERROR"], MAX_ITERATION) or DEFAULT_MAX_ITERATION
+    )
 
     # Remove duplicate project names and extract id's.
-    project_ids = list(map(lambda name: name.split('/')[-1], set(project_names)))
+    project_ids = list(map(lambda name: name.split("/")[-1], set(project_names)))  # noqa: C417
     page_token = ""
     matching_assets = []
     iteration = 0
@@ -1398,42 +2145,266 @@ def cloud_asset_owner_get_command(client: GoogleCloudAssetClient, args: Dict) ->
         response = client.get_assets(parent, asset_types, content_type, MAX_PAGE_SIZE, page_token, None)
 
         # search assets on project ids and append them to matching assets
-        for asset in response['assets']:
-            asset_id = asset['name'].split('/')[-1]
+        for asset in response["assets"]:
+            asset_id = asset["name"].split("/")[-1]
             if asset_id in project_ids:
                 matching_assets.append(asset)
                 project_ids.remove(asset_id)
 
         iteration += 1
-        if iteration >= max_iterations or not response.get('nextPageToken'):
+        if iteration >= max_iterations or not response.get("nextPageToken"):
             break
 
-        page_token = response['nextPageToken']
+        page_token = response["nextPageToken"]
 
-    readable_output, context = prepare_hr_and_ec_for_cloud_asset_owners_get(matching_assets,
-                                                                            response.get('readTime', ""))
-    return CommandResults(readable_output=readable_output, outputs=context, raw_response=context,
-                          outputs_key_field="name", outputs_prefix=OUTPUT_PREFIX['GET_OWNER'])
+    readable_output, context = prepare_hr_and_ec_for_cloud_asset_owners_get(matching_assets, response.get("readTime", ""))
+    return CommandResults(
+        readable_output=readable_output,
+        outputs=context,
+        raw_response=context,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["GET_OWNER"],
+    )
+
+
+@logger
+def finding_list_v2_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Lists an organization or source's findings using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+
+    # Get command args
+    severity = argToList(args.get("severity", ""), transform=lambda s: s.strip())
+    category = argToList(args.get("category", ""), transform=lambda s: s.strip())
+    category = ",".join(category)
+    source_type = args.get("sourceTypeId") or DEFAULT_SOURCE_ID
+    page_size = args.get("pageSize") or DEFAULT_PAGE_SIZE
+    state = argToList(args.get("state", ""), transform=lambda s: s.strip())
+    filter_string = args.get("filter", "")
+    order_by = argToList(args.get("orderBy", ""), transform=lambda s: s.strip())
+    order_by = ",".join(order_by)
+    page_token = args.get("pageToken", None)
+    location = normalize_location_id(args.get("location"))
+
+    # Validates command args
+    validate_state_and_severity_list(state, severity)
+    page_size = (
+        validate_get_int(
+            page_size,  # type: ignore
+            ERROR_MESSAGES["INVALID_PAGE_SIZE_ERROR"],
+            MAX_PAGE_SIZE,
+        )
+        or DEFAULT_PAGE_SIZE
+    )
+
+    # Creating filter
+    filter_string = create_filter_list_findings(category, filter_string, severity, state)
+    demisto.debug(f"running command using the following filter: {filter_string}")
+
+    parent = GoogleNameParser.get_location_source_path(source_type, location)
+    raw_response = client.get_findings_v2(parent, filter_string, order_by, page_size, page_token)
+    result = deepcopy(raw_response)  # To preserve original API response
+    readable_output, context = prepare_hr_and_ec_for_list_findings_v2(result)
+
+    return CommandResults(readable_output=readable_output, outputs=context, raw_response=raw_response)
+
+
+@logger
+def finding_update_v2_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Update an organization's or source's finding using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+
+    # Get validated command args
+    arguments = get_and_validate_args_finding_update(args)
+
+    # Get response
+    result = client.update_finding_v2(*arguments)
+
+    readable_output, context = prepare_hr_and_ec_for_update_finding_v2(result)
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["FINDING_V2"],
+        outputs=context,
+        raw_response=result,
+    )
+
+
+@logger
+def finding_state_update_v2_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Update the state of an organization's or source's finding using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+
+    # Get validated command args
+    arguments = get_and_validate_args_finding_state_update_v2(args)
+
+    # Get response
+    result = client.update_state_v2(*arguments)
+
+    readable_output, context = prepare_hr_and_ec_for_update_finding(result)
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["FINDING_V2"],
+        outputs=context,
+        raw_response=result,
+    )
+
+
+def set_finding_mute_state(client: GoogleSccClient, args: dict, mute_state: str, hr_title: str) -> CommandResults:
+    """
+    Set the mute state of an organization's or source's finding using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :param mute_state: Mute state to set on the finding ("MUTED" or "UNMUTED").
+    :param hr_title: Title for the human readable table.
+    :return: CommandResults object with context and human-readable.
+    """
+    # Validate command args
+    name = args.get("name")
+    if not name:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("name"))
+
+    # Get response
+    result = client.set_mute_v2(name, mute_state)
+
+    readable_output, context = prepare_hr_and_ec_for_finding_mute_state(result, hr_title)
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["FINDING_V2"],
+        outputs=context,
+        raw_response=result,
+    )
+
+
+@logger
+def finding_mute_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Mute an organization's or source's finding using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+    return set_finding_mute_state(client, args, "MUTED", COMMON_STRING["SET_MUTE_HR_STR"])
+
+
+@logger
+def finding_unmute_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Unmute an organization's or source's finding using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+    return set_finding_mute_state(client, args, "UNMUTED", COMMON_STRING["SET_UNMUTE_HR_STR"])
+
+
+@logger
+def mute_rule_get_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Get a mute rule (mute config) of an organization using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+    # Validate command args
+    name = args.get("name")
+    if not name:
+        raise ValueError(ERROR_MESSAGES["REQUIRED_ARG"].format("name"))
+
+    # Get response
+    result = client.get_mute_rule_v2(name)
+
+    readable_output, context = prepare_hr_and_ec_for_mute_rule(result)
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["MUTE_RULE"],
+        outputs=context,
+        raw_response=result,
+    )
+
+
+@logger
+def mute_rule_create_command(client: GoogleSccClient, args: dict) -> CommandResults:
+    """
+    Create a mute rule (mute config) for an organization using the v2 API.
+
+    :param client: SccClient Object (initialized with the v2 API version).
+    :param args: Command argument(s).
+    :return: CommandResults object with context and human-readable.
+    """
+    # Get validated command args
+    arguments = get_and_validate_args_mute_rule_create(args)
+
+    # Get response
+    result = client.create_mute_rule_v2(*arguments)
+
+    readable_output, context = prepare_hr_and_ec_for_mute_rule(result, COMMON_STRING["CREATE_MUTE_RULE_HR_STR"])
+
+    return CommandResults(
+        readable_output=readable_output,
+        outputs_key_field="name",
+        outputs_prefix=OUTPUT_PREFIX["MUTE_RULE"],
+        outputs=context,
+        raw_response=result,
+    )
 
 
 def main() -> None:
     """
-        PARSE AND VALIDATE INTEGRATION PARAMS
+    PARSE AND VALIDATE INTEGRATION PARAMS
     """
     # Commands dictionary
-    commands: Dict[str, Callable] = {
+    # The finding commands below are backed by the SCC v1 API and are deprecated in favour of their
+    # "google-cloud-scc-v2-*" counterparts in commands_v2. They keep working for backward compatibility only.
+    commands: dict[str, Callable] = {
         "google-cloud-scc-asset-list": asset_list_command,
         "google-cloud-scc-finding-list": finding_list_command,
         "google-cloud-scc-finding-update": finding_update_command,
-        "google-cloud-scc-finding-state-update": finding_state_update_command
+        "google-cloud-scc-finding-state-update": finding_state_update_command,
     }
+
+    commands_v2: dict[str, Callable] = {
+        "google-cloud-scc-v2-finding-list": finding_list_v2_command,
+        "google-cloud-scc-v2-finding-update": finding_update_v2_command,
+        "google-cloud-scc-v2-finding-state-update": finding_state_update_v2_command,
+        "google-cloud-scc-finding-mute": finding_mute_command,
+        "google-cloud-scc-finding-unmute": finding_unmute_command,
+        "google-cloud-scc-mute-rule-get": mute_rule_get_command,
+        "google-cloud-scc-mute-rule-create": mute_rule_create_command,
+    }
+
     params = demisto.params()
     command = demisto.command()
     demisto.info(f"Command being called is {command}")
     try:
         # Trim the arguments
         args = strip_dict(demisto.args())
-        client: Optional[Union[GoogleSccClient, GooglePubSubClient, GoogleCloudAssetClient]] = None
+        client: GoogleSccClient | GooglePubSubClient | GoogleCloudAssetClient | None = None
         if command == "test-module":
             # This is the call made when pressing the integration test button.
             test_module(params)
@@ -1450,9 +2421,14 @@ def main() -> None:
         elif command in commands:
             client = init_google_scc_client(**params)
             return_results(commands[command](client, args))
+        elif command in commands_v2:
+            # A location other than global is only reachable through its regional endpoint.
+            api_endpoint = get_regional_endpoint(get_location_from_args(args))
+            client = init_google_scc_v2_client(api_endpoint=api_endpoint, **params)
+            return_results(commands_v2[command](client, args))
     # Log exceptions
     except Exception as e:
-        return_error("Failed to execute {} command. Error: {}".format(demisto.command(), str(e)))
+        return_error(f"Failed to execute {demisto.command()} command. Error: {e!s}")
 
 
 if __name__ in ("__main__", "__builtin__", "builtins"):

@@ -8,12 +8,15 @@
     "filter": {
       "OR": [
         {
-            "SEARCH_FIELD": "mitre_technique_id_and_name",
-            "SEARCH_TYPE": "CONTAINS",
-            "SEARCH_VALUE": "T1486 - Data Encrypted for Impact"
+          "SEARCH_FIELD": "mitre_technique_id_and_name",
+          "SEARCH_TYPE": "CONTAINS",
+          "SEARCH_VALUE": "T1486 - Data Encrypted for Impact"
         }
       ]
     }
-  }
+  },
+  "supportedModules": [
+    "xsiam",
+    "agentix"
+  ]
 }
-

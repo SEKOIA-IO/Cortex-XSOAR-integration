@@ -1,9 +1,9 @@
-import pytest
-
-
+import base64
 import json
-from freezegun import freeze_time
+
 import demistomock as demisto
+import pytest
+from freezegun import freeze_time
 
 
 def util_load_json(path):
@@ -41,19 +41,34 @@ def test_get_content_files_from_repo(mocker):
     When:
      - Calling get_content_files_from_repo to fetch the content of the relevant files.
     Then:
-     - Returns the content of the relevant files matching the expected results.
+     - Assert one HTTP request is made to get the contents of the file with the relevant extension.
+     - Assert the returned content of the relevant files matches the expected results.
     """
     from FeedGitHub import get_content_files_from_repo
 
     client = mock_client()
     params = {"feedType": "IOCs", "extensions_to_fetch": ["txt"]}
     relevant_files = util_load_json("test_data/relevant-files.json")
-    return_data = util_load_json("test_data/content_files_from_repo.json")
-    mocker.patch.object(client, "_http_request", return_value=return_data)
+    return_data = {
+        "content": base64.b64encode(
+            b"2023-02-08 (WEDNESDAY) - COBALT STRIKE FROM ICEDID (BOKBOT) INFECTION\n\n"
+            b"REFERENCE:\n\n"
+            b"- https://twitter.com/Unit42_Intel/status/1623707361184477185\n\n"
+            b"NOTES:\n\n"
+            b"- IcedID infection generated using a OneNote file reported earlier today\n\n"
+            b"ICEDID TRAFFIC:\n\n"
+            b"- 80.66.88[.]143 port 80 - ehonlionetodo[.]com\n"
+            b"- GET /\n"
+            b"COBALT STRIKE TRAFFIC:\n\n"
+            b"- 167.172.154[.]189 port 80 - GET /36.ps1\n"
+        ).decode("utf-8")
+    }
+    mock_http_request = mocker.patch.object(client, "_http_request", return_value=return_data)
     content_files = get_content_files_from_repo(client, relevant_files, params)
-    assert content_files == util_load_json(
-        "test_data/get_content-files-from-repo-result.json"
-    )
+
+    assert mock_http_request.call_count == 1  # One .txt file in all relevant committed files
+    assert mock_http_request.call_args.kwargs == {"method": "GET", "full_url": relevant_files[1]["contents_url"]}
+    assert content_files == util_load_json("test_data/get_content-files-from-repo-result.json")
 
 
 def test_get_commit_files(mocker):
@@ -79,16 +94,14 @@ def test_get_commit_files(mocker):
         "get_files_between_commits",
         return_value=(all_commits_files, current_repo_head_sha),
     )
-    relevant_files, current_repo_head_sha = get_commits_files(
-        client, base, head, is_first_fetch
-    )
+    relevant_files, current_repo_head_sha = get_commits_files(client, base, head, is_first_fetch)
     assert relevant_files == util_load_json("test_data/relevant-files.json")
 
 
 def test_filter_out_files_by_status():
     """
     Given:
-     - A list of dictionaries representing commit files, each containing a status and a raw_url.
+     - A list of dictionaries representing commit files, each containing a status and a filename.
     When:
      - Filtering out files by their status using the filter_out_files_by_status function.
     Then:
@@ -97,22 +110,20 @@ def test_filter_out_files_by_status():
     from FeedGitHub import filter_out_files_by_status
 
     commits_files = [
-        {"status": "added", "raw_url": "http://example.com/file1"},
-        {"status": "modified", "raw_url": "http://example.com/file2"},
-        {"status": "removed", "raw_url": "http://example.com/file3"},
-        {"status": "renamed", "raw_url": "http://example.com/file4"},
-        {"status": "added", "raw_url": "http://example.com/file5"},
+        {"status": "added", "filename": "http://example.com/file1"},
+        {"status": "modified", "filename": "http://example.com/file2"},
+        {"status": "removed", "filename": "http://example.com/file3"},
+        {"status": "renamed", "filename": "http://example.com/file4"},
+        {"status": "added", "filename": "http://example.com/file5"},
     ]
 
     expected_output = [
-        "http://example.com/file1",
-        "http://example.com/file2",
-        "http://example.com/file5",
+        {"status": "added", "filename": "http://example.com/file1"},
+        {"status": "modified", "filename": "http://example.com/file2"},
+        {"status": "added", "filename": "http://example.com/file5"},
     ]
     actual_output = filter_out_files_by_status(commits_files)
-    assert (
-        actual_output == expected_output
-    ), f"Expected {expected_output}, but got {actual_output}"
+    assert actual_output == expected_output, f"Expected {expected_output}, but got {actual_output}"
 
 
 @freeze_time("2024-05-12T15:30:49.330015")
@@ -148,6 +159,29 @@ def test_parse_and_map_yara_content(mocker):
     assert list_parsed_rules == util_load_json("test_data/list-parsed-rules-res.json")
 
 
+def test_parse_and_map_yara_content_invalid_rule(mocker):
+    """
+    Given:
+     - An invalid YARA rule file as input.
+    When:
+     - Parsing and mapping the YARA content using the parse_and_map_yara_content function.
+    Then:
+     - Ensure that an empty list is returned and an error is logged.
+    """
+    from FeedGitHub import parse_and_map_yara_content
+
+    demisto_error_mock = mocker.patch.object(demisto, "error")
+
+    yara_rule_file = {"invalid-yara-rule.yar": "invalid yara rule"}
+
+    parsed_rules = parse_and_map_yara_content(yara_rule_file)
+
+    assert parsed_rules == []
+    assert demisto_error_mock.call_args[0][0] == (
+        "File: 'invalid-yara-rule.yar' cannot be processed. Error Message: Unknown text invalid for token of type ID on line 1"
+    )
+
+
 @freeze_time("2024-05-12T15:30:49.330015")
 def test_extract_text_indicators():
     """
@@ -161,12 +195,116 @@ def test_extract_text_indicators():
     """
     from FeedGitHub import extract_text_indicators
 
-    ioc_indicators_input = {
-        "example.com": util_load_txt("test_data/test-ioc-indicators.txt")
-    }
+    ioc_indicators_input = {"example.com": util_load_txt("test_data/test-ioc-indicators.txt")}
     params = {"owner": "example.owner", "repo": "example.repo"}
     res_indicators = extract_text_indicators(ioc_indicators_input, params)
     assert res_indicators == util_load_json("test_data/iocs-res.json")
+
+
+@pytest.mark.parametrize(
+    "cidr, expected_value",
+    [
+        # Two-digit prefix lengths must not be truncated to one digit
+        ("1.1.1.1/12", "1.1.1.1/12"),
+        ("192.168.0.0/16", "192.168.0.0/16"),
+        ("10.0.0.0/24", "10.0.0.0/24"),
+        ("172.16.0.0/32", "172.16.0.0/32"),
+        # Single-digit prefix lengths must still match
+        ("10.0.0.0/8", "10.0.0.0/8"),
+        ("1.1.1.1/1", "1.1.1.1/1"),
+        ("1.1.1.1/2", "1.1.1.1/2"),
+    ],
+)
+def test_ipv4_cidr_regex_full_prefix_length(cidr: str, expected_value: str):
+    """
+    Given:
+     - An IPv4 CIDR string with a multi-digit prefix length (e.g. /12, /16, /24, /32).
+    When:
+     - The ipv4cidrRegex is applied via re.search.
+    Then:
+     - The full CIDR value including the complete prefix length is matched,
+       not a truncated single-digit prefix.
+    """
+    import re
+
+    from FeedGitHub import ipv4cidrRegex
+
+    match = re.search(ipv4cidrRegex, cidr)
+    assert match is not None, f"Expected a match for {cidr!r}"
+    assert match.group(0) == expected_value, f"For input {cidr!r}: expected {expected_value!r} but got {match.group(0)!r}"
+
+
+@pytest.mark.parametrize(
+    "cidr, expected_value",
+    [
+        # Three-digit prefix lengths must not be truncated
+        ("2001:db8::/128", "2001:db8::/128"),
+        ("2001:db8::/112", "2001:db8::/112"),
+        ("::ffff:192.168.1.0/120", "::ffff:192.168.1.0/120"),
+        # Two-digit prefix lengths must not be truncated to one digit
+        ("2001:db8::/64", "2001:db8::/64"),
+        ("2001:db8::/48", "2001:db8::/48"),
+        ("2001:db8::/32", "2001:db8::/32"),
+        ("fe80::/10", "fe80::/10"),
+        # Single-digit prefix lengths must still match
+        ("2001:db8::/8", "2001:db8::/8"),
+        ("2001:db8::/1", "2001:db8::/1"),
+        ("::/0", "::/0"),
+        # Loopback
+        ("::1/128", "::1/128"),
+        # Full address
+        ("2001:0db8:85a3::8a2e:0370:7334/64", "2001:0db8:85a3::8a2e:0370:7334/64"),
+        # Invalid: literal 'd' instead of digit -- must NOT match
+        ("::ffff:1dd.1dd.1dd.1dd/128", None),
+        # Invalid: non-dot separator -- must NOT match
+        ("::ffff:1.1.1_1/128", None),
+    ],
+)
+def test_ipv6_cidr_regex_full_prefix_length(cidr: str, expected_value: str):
+    """
+    Given:
+     - An IPv6 CIDR string with various prefix lengths and formats.
+    When:
+     - The ipv6cidrRegex is applied via re.search.
+    Then:
+     - Valid CIDRs are matched with the complete prefix length.
+     - Malformed strings with literal 'd' digits or non-dot separators are not matched.
+    """
+    import re
+
+    from FeedGitHub import ipv6cidrRegex
+
+    match = re.search(ipv6cidrRegex, cidr)
+    got = match.group(0) if match else None
+    assert got == expected_value, f"For input {cidr!r}: expected {expected_value!r} but got {got!r}"
+
+
+def test_cidr_not_duplicated_as_url():
+    """
+    Given:
+     - Text content containing IPv4 CIDR indicators (e.g. 1.1.1.1/24).
+    When:
+     - Calling extract_text_indicators.
+    Then:
+     - Each CIDR value appears exactly once, typed as CIDR, not duplicated as URL.
+    """
+    from FeedGitHub import extract_text_indicators
+
+    content = {"feed.txt": "Malicious ranges: 1.1.1.1/24 and 192.168.0.0/16"}
+    params = {"owner": "owner", "repo": "repo"}
+    indicators = extract_text_indicators(content, params)
+
+    cidr_values = [i["value"] for i in indicators if i["type"] == "CIDR"]
+    url_values = [i["value"] for i in indicators if i["type"] == "URL"]
+
+    assert "1.1.1.1/24" in cidr_values
+    assert "192.168.0.0/16" in cidr_values
+    # CIDRs must not also appear as URLs
+    assert "1.1.1.1/24" not in url_values
+    assert "192.168.0.0/16" not in url_values
+    # Each CIDR must appear exactly once
+    assert cidr_values.count("1.1.1.1/24") == 1
+    assert cidr_values.count("192.168.0.0/16") == 1
 
 
 def test_get_stix_indicators():
@@ -180,8 +318,9 @@ def test_get_stix_indicators():
     """
     from FeedGitHub import get_stix_indicators
 
-    stix_indicators_input = util_load_json("test_data/taxii_test.json")
-    res_indicators = get_stix_indicators(stix_indicators_input)
+    with open("test_data/taxii_test.json", encoding="utf-8") as f:
+        file_name_contents = [{"taxii_test.json": f.read()}]
+        res_indicators = get_stix_indicators(file_name_contents)
     assert res_indicators == util_load_json("test_data/taxii_test_res.json")
 
 
@@ -202,10 +341,7 @@ def test_negative_limit(mocker):
 
     with pytest.raises(ValueError) as ve:
         get_indicators_command(client, {}, args)
-    assert (
-        ve.value.args[0]
-        == "get_indicators_command return with error. \n\nError massage: Limit must be a positive number."
-    )
+    assert ve.value.args[0] == "get_indicators_command return with error. \n\nError massage: Limit must be a positive number."
 
 
 def test_fetch_indicators(mocker):
@@ -239,6 +375,45 @@ def test_fetch_indicators(mocker):
     )
     results = FeedGitHub.fetch_indicators(client, None, params)
     assert results == util_load_json("test_data/fetch-indicators-res.json")
+
+
+def test_fetch_indicators_enrichment_excluded(mocker):
+    """
+    Given:
+     - A mock client and parameters specifying the fetch time frame.
+     - Mocked responses for base and head commit SHAs, and indicators.
+     - Enrichment excluded marked as true
+    When:
+     - Calling fetch_indicators to retrieve indicators from the GitHub feed.
+    Then:
+     - Returns the list of indicators matching the expected results.
+     - All returned indicators have 'enrichmentExcluded' set to True
+    """
+    import FeedGitHub
+
+    client = mock_client()
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "setLastRun")
+    params = {"fetch_since": "15 days ago", "enrichmentExcluded": True}
+    mocker.patch.object(
+        client,
+        "get_commits_between_dates",
+        return_value="046a799ebe004e1bff686d6b774387b3bdb3d1ce",
+    )
+    mocker.patch.object(
+        FeedGitHub,
+        "get_indicators",
+        return_value=(
+            util_load_json("test_data/iterator-test.json"),
+            "9a611449423b9992c126c20e47c5de4f58fc1c0e",
+        ),
+    )
+    results = FeedGitHub.fetch_indicators_command(client, params, {})
+    expected: list = util_load_json("test_data/fetch-indicators-res.json")
+    for ind in expected:
+        ind["enrichmentExcluded"] = True
+
+    assert results == expected
 
 
 @freeze_time("2024-05-20T11:05:36.984413")
@@ -379,6 +554,7 @@ def test_identify_json_structure():
      - Returns the identified structure based on the provided JSON data.
     """
     from FeedGitHub import identify_json_structure
+
     json_data_bundle = {"bundle": {"type": "bundle", "id": "bundle--12345678-1234-5678-1234-567812345678"}}
     assert identify_json_structure(json_data_bundle) == "Bundle"
 
@@ -405,14 +581,199 @@ def test_filtering_stix_files():
      - Returns a list containing only the STIX files from the input list.
     """
     from FeedGitHub import filtering_stix_files
-    content_files = [
-        [{"type": "indicator", "id": "indicator--12345678-1234-5678-1234-567812345678"}],  # STIX format
-        [{"bundle": {"type": "bundle", "id": "bundle--12345678-1234-5678-1234-567812345678"}}],  # STIX format
-        [{"type": "non-stix", "id": "non-stix--12345678-1234-5678-1234-567812345678"}],  # Non-STIX format
+
+    file_names = ["fileA.json", "fileB.json", "fileC.json"]
+    file_contents = [
+        '{"type": "indicator", "id": "indicator--12345678-1234-5678-1234-567812345678"}',  # STIX format
+        '{"bundle": {"type": "bundle", "id": "bundle--12345678-1234-5678-1234-567812345678"}}',  # STIX format
+        '{"type": "non-stix", "id": "non-stix--12345678-1234-5678-1234-567812345678"}',  # Non-STIX format
     ]
     expected_result = [
         {"type": "indicator", "id": "indicator--12345678-1234-5678-1234-567812345678"},
         {"bundle": {"type": "bundle", "id": "bundle--12345678-1234-5678-1234-567812345678"}},
-        {'type': 'non-stix', 'id': 'non-stix--12345678-1234-5678-1234-567812345678'}
+        {"type": "non-stix", "id": "non-stix--12345678-1234-5678-1234-567812345678"},
     ]
-    assert filtering_stix_files(content_files) == expected_result
+    assert filtering_stix_files(file_names=file_names, file_contents=file_contents) == expected_result
+
+
+def test_fetch_indicators_command_with_tlp_color_red(mocker):
+    """
+    Given: params with tlp_color set to RED and enrichmentExcluded set to False.
+    When: Calling fetch_indicators_command with the provided parameters.
+    Then: Verify that the fetch_indicators function is called with the expected parameters.
+    """
+    from FeedGitHub import fetch_indicators_command
+
+    client_mock = mock_client()
+    params = {"feedTags": "tag1,tag2", "tlp_color": "RED", "enrichmentExcluded": False, "limit": "50"}
+    args = {}
+    mocker.patch("FeedGitHub.is_xsiam_or_xsoar_saas", return_value=True)
+    mocker.patch.object(demisto, "params", return_value=params)
+    fetch_indicators_mock = mocker.patch("FeedGitHub.fetch_indicators")
+
+    # Call the function under test
+    fetch_indicators_command(client_mock, params, args)
+
+    # Assertion - verify the output
+    assert fetch_indicators_mock.call_args.kwargs.get("enrichment_excluded") is True
+
+
+def test_get_indicators_command_with_tlp_color_red(mocker):
+    from FeedGitHub import get_indicators_command
+
+    client_mock = mock_client()
+    params = {"feedTags": "tag1,tag2", "tlp_color": "RED", "enrichmentExcluded": False, "limit": "50"}
+    args = {}
+    mocker.patch("FeedGitHub.Client.get_commits_between_dates", return_value=["test_hash"])
+    mocker.patch("FeedGitHub.is_xsiam_or_xsoar_saas", return_value=True)
+    mocker.patch.object(demisto, "params", return_value=params)
+    mocker.patch("FeedGitHub.get_indicators", return_value=([{"name": "test_ind"}], None))
+
+    command_res = get_indicators_command(client_mock, params, args)
+    assert command_res.outputs[0].get("enrichmentExcluded") is True
+
+
+def test_fetch_indicators_non_incremental_uses_first_fetch_each_cycle(mocker):
+    """
+    Given:
+     - feedIncremental disabled.
+     - A previously stored last_commit (simulating not the first cycle).
+    When:
+     - Calling fetch_indicators.
+    Then:
+     - The base commit SHA is derived from `fetch_since`, NOT from the stored last_commit.
+     - get_commits_between_dates is called with the configured fetch_since window.
+    """
+    import FeedGitHub
+
+    client = mock_client()
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "setLastRun")
+    params = {"fetch_since": "15 days ago", "feedIncremental": "false"}
+
+    commits_mock = mocker.patch.object(
+        client,
+        "get_commits_between_dates",
+        return_value=[
+            "head_sha",
+            "mid_sha",
+            "fresh_base_sha_from_fetch_since",
+        ],
+    )
+    get_indicators_mock = mocker.patch.object(
+        FeedGitHub,
+        "get_indicators",
+        return_value=(util_load_json("test_data/iterator-test.json"), "new_head_sha"),
+    )
+
+    FeedGitHub.fetch_indicators(client, "stored_last_commit_must_be_ignored", params)
+
+    commits_mock.assert_called_once_with("15 days ago", "now")
+    base_sha_arg = get_indicators_mock.call_args.args[2]
+    is_first_fetch_arg = get_indicators_mock.call_args.args[4]
+    assert base_sha_arg == "fresh_base_sha_from_fetch_since"
+    assert is_first_fetch_arg is True
+
+
+def test_fetch_indicators_incremental_uses_last_commit(mocker):
+    """
+    Given:
+     - feedIncremental enabled.
+     - A previously stored last_commit.
+    When:
+     - Calling fetch_indicators.
+    Then:
+     - The base commit SHA is the stored last_commit.
+     - get_commits_between_dates is NOT called.
+    """
+    import FeedGitHub
+
+    client = mock_client()
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "setLastRun")
+    params = {"fetch_since": "15 days ago", "feedIncremental": "true"}
+
+    commits_mock = mocker.patch.object(client, "get_commits_between_dates")
+    get_indicators_mock = mocker.patch.object(
+        FeedGitHub,
+        "get_indicators",
+        return_value=(util_load_json("test_data/iterator-test.json"), "new_head_sha"),
+    )
+
+    FeedGitHub.fetch_indicators(client, "stored_last_commit", params)
+
+    commits_mock.assert_not_called()
+    base_sha_arg = get_indicators_mock.call_args.args[2]
+    is_first_fetch_arg = get_indicators_mock.call_args.args[4]
+    assert base_sha_arg == "stored_last_commit"
+    assert is_first_fetch_arg is False
+
+
+def test_fetch_indicators_incremental_first_run_falls_back_to_fetch_since(mocker):
+    """
+    Given:
+     - feedIncremental enabled.
+     - No stored last_commit (first cycle).
+    When:
+     - Calling fetch_indicators.
+    Then:
+     - Base SHA is derived from fetch_since, is_first_fetch=True.
+    """
+    import FeedGitHub
+
+    client = mock_client()
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "setLastRun")
+    params = {"fetch_since": "15 days ago", "feedIncremental": "true"}
+
+    commits_mock = mocker.patch.object(
+        client,
+        "get_commits_between_dates",
+        return_value=["head_sha", "base_sha"],
+    )
+    get_indicators_mock = mocker.patch.object(
+        FeedGitHub,
+        "get_indicators",
+        return_value=(util_load_json("test_data/iterator-test.json"), "new_head_sha"),
+    )
+
+    FeedGitHub.fetch_indicators(client, None, params)
+
+    commits_mock.assert_called_once_with("15 days ago", "now")
+    base_sha_arg = get_indicators_mock.call_args.args[2]
+    is_first_fetch_arg = get_indicators_mock.call_args.args[4]
+    assert base_sha_arg == "base_sha"
+    assert is_first_fetch_arg is True
+
+
+def test_fetch_indicators_setlastrun_called_in_both_modes(mocker):
+    """
+    Given:
+     - Either incremental or non-incremental mode.
+    When:
+     - fetch_indicators completes with a valid head commit.
+    Then:
+     - setLastRun is called with the new head commit.
+    """
+    import FeedGitHub
+
+    client = mock_client()
+    mocker.patch.object(demisto, "debug")
+    set_last_run_mock = mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(
+        client,
+        "get_commits_between_dates",
+        return_value=["head", "base"],
+    )
+    mocker.patch.object(
+        FeedGitHub,
+        "get_indicators",
+        return_value=(util_load_json("test_data/iterator-test.json"), "new_head_sha"),
+    )
+
+    FeedGitHub.fetch_indicators(client, "ignored", {"fetch_since": "15 days ago", "feedIncremental": "false"})
+    FeedGitHub.fetch_indicators(client, None, {"fetch_since": "15 days ago", "feedIncremental": "true"})
+
+    assert set_last_run_mock.call_count == 2
+    for call in set_last_run_mock.call_args_list:
+        assert call.args[0] == {"last_commit": "new_head_sha"}

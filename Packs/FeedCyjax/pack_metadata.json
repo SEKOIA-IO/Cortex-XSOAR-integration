@@ -1,9 +1,9 @@
 {
     "name": "Cyjax Feed",
-    "description": "This pack is used to pull indicators of compromise from the Cyjax Threat Intelligence Platform.",
+    "description": "This pack enables the retrieval of indicators of compromise from the CYJAX Threat Intelligence Platform.",
     "support": "partner",
-    "currentVersion": "1.0.28",
-    "author": "Cyjax",
+    "currentVersion": "1.1.2",
+    "author": "CYJAX",
     "url": "https://cyjax.com",
     "email": "devs@cyjax.com",
     "created": "2021-01-06T15:46:16Z",
@@ -24,6 +24,11 @@
     "githubUser": [],
     "marketplaces": [
         "xsoar",
-        "marketplacev2"
+        "marketplacev2",
+        "platform"
+    ],
+    "supportedModules": [
+        "agentix",
+        "xsiam"
     ]
 }

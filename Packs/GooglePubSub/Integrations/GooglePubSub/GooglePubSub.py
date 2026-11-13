@@ -1,18 +1,21 @@
-import demistomock as demisto
-from CommonServerPython import *  # noqa: E402 lgtm [py/polluting-import]
-from CommonServerUserPython import *  # noqa: E402 lgtm [py/polluting-import]
+import json
+import traceback
+import urllib.parse
 
 # IMPORTS
-from typing import Tuple, Optional
-import traceback
 import dateparser
+import demistomock as demisto
 import httplib2
-import urllib.parse
-from oauth2client import service_account
+import urllib3
+from CommonServerPython import *  # noqa: E402 lgtm [py/polluting-import]
+from google.auth import aws, identity_pool, impersonated_credentials
+from google.auth.credentials import Credentials
+from google.auth.exceptions import RefreshError
+from google.oauth2 import service_account
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient import discovery
 
-import json
-import urllib3
+from CommonServerUserPython import *  # noqa: E402 lgtm [py/polluting-import]
 
 # Disable insecure warnings
 urllib3.disable_warnings()
@@ -24,6 +27,41 @@ SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
 ISO_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 LAST_RUN_TIME_KEY = "fetch_time"
 LAST_RUN_FETCHED_KEY = "fetched_ids"
+EXTERNAL_ACCOUNT_TYPE = "external_account"
+AWS_SUBJECT_TOKEN_TYPE = "urn:ietf:params:aws:token-type:aws4_request"
+SERVICE_ACCOUNT_IMPERSONATION_URL_KEY = "service_account_impersonation_url"
+SERVICE_ACCOUNT_EMAIL_SUFFIX = ".gserviceaccount.com"
+SA_KEY_PARSE_ERROR = "Failed to parse Service Account Private Key in json format, please make sure you entered it correctly"
+WIF_CONFIG_PARSE_ERROR = (
+    "Failed to parse the Workload Identity Federation configuration in json format, please make sure you entered it correctly"
+)
+BOTH_BASE_CREDENTIALS_ERROR = (
+    "Both 'Service account private key (JSON)' and 'Workload Identity Federation configuration (JSON)' "
+    "are configured. Provide exactly one of them."
+)
+NO_BASE_CREDENTIALS_ERROR = (
+    "No base credential is configured. Provide exactly one of 'Service account private key (JSON)' or "
+    "'Workload Identity Federation configuration (JSON)'. 'Service Account to impersonate' cannot be used on its own."
+)
+WIF_IN_SA_FIELD_ERROR = (
+    "The 'Service account private key (JSON)' parameter contains a Workload Identity Federation "
+    "configuration (type: external_account). Move it to the 'Workload Identity Federation configuration (JSON)' parameter."
+)
+INVALID_IMPERSONATION_EMAIL_ERROR = (
+    "The 'Service Account to impersonate' parameter must be a service account email "
+    "(e.g., target-sa@my-project.iam.gserviceaccount.com), not a key file."
+)
+CREDENTIALS_REFRESH_ERROR = (
+    "Failed to obtain an access token using the configured credentials. " "Make sure the base credential is valid and active."
+)
+IMPERSONATION_REFRESH_ERROR_HINT = (
+    " When 'Service Account to impersonate' is configured, make sure the base identity has the "
+    "'Service Account Token Creator' role (roles/iam.serviceAccountTokenCreator) on the target service account."
+)
+INVALID_WIF_CONFIG_TYPE_ERROR = (
+    "The 'Workload Identity Federation configuration (JSON)' parameter must contain a credential configuration "
+    "of type 'external_account'."
+)
 
 """ HELPER CLASSES """
 
@@ -44,27 +82,21 @@ class GoogleNameParser:
 
     @staticmethod
     def get_topic_name(project_id, topic_id):
-        return GoogleNameParser.get_project_name(
-            project_id
-        ) + GoogleNameParser.FULL_TOPIC_PREFIX.format(topic_id)
+        return GoogleNameParser.get_project_name(project_id) + GoogleNameParser.FULL_TOPIC_PREFIX.format(topic_id)
 
     @staticmethod
     def get_subscription_project_name(project_id, subscription_id):
-        return GoogleNameParser.get_project_name(
-            project_id
-        ) + GoogleNameParser.FULL_SUBSCRIPTION_PREFIX.format(subscription_id)
+        return GoogleNameParser.get_project_name(project_id) + GoogleNameParser.FULL_SUBSCRIPTION_PREFIX.format(subscription_id)
 
     @staticmethod
     def get_subscription_topic_name(project_id, topic_id, subscription_id):
-        return GoogleNameParser.get_topic_name(
-            project_id, topic_id
-        ) + GoogleNameParser.FULL_SUBSCRIPTION_PREFIX.format(subscription_id)
+        return GoogleNameParser.get_topic_name(project_id, topic_id) + GoogleNameParser.FULL_SUBSCRIPTION_PREFIX.format(
+            subscription_id
+        )
 
     @staticmethod
     def get_snapshot_project_name(project_id, snapshot_id):
-        return GoogleNameParser.get_project_name(
-            project_id
-        ) + GoogleNameParser.FULL_SNAPSHOT_PREFIX.format(snapshot_id)
+        return GoogleNameParser.get_project_name(project_id) + GoogleNameParser.FULL_SNAPSHOT_PREFIX.format(snapshot_id)
 
 
 # disable-secrets-detection-start
@@ -81,32 +113,61 @@ class BaseGoogleClient:
         scopes: list,
         proxy: bool,
         insecure: bool,
+        impersonate_service_account: str | None = None,
         **kwargs,
     ):
         """
         :param service_name: The name of the service. You can find this and the service  here
          https://github.com/googleapis/google-api-python-client/blob/master/docs/dyn/index.md
         :param service_version: The version of the API.
-        :param client_secret: A string of the generated credentials.json
+        :param client_secret: The base credential dict (Service Account key or Workload Identity Federation configuration)
         :param scopes: The scope needed for the project. (i.e. ['https://www.googleapis.com/auth/cloud-platform'])
         :param proxy: Proxy flag
         :param insecure: Insecure flag
+        :param impersonate_service_account: Optional email of a target service account to impersonate
         :param kwargs: Potential arguments dict
         """
-        credentials = service_account.ServiceAccountCredentials.from_json_keyfile_dict(
-            client_secret, scopes=scopes
-        )
+        credentials = self.build_credentials(client_secret, scopes, impersonate_service_account)
         if proxy or insecure:
-            http_client = credentials.authorize(
-                self.get_http_client_with_proxy(proxy, insecure)
-            )
-            self.service = discovery.build(
-                service_name, service_version, http=http_client
-            )
+            http_client = AuthorizedHttp(credentials=credentials, http=self.get_http_client_with_proxy(proxy, insecure))
+            self.service = discovery.build(service_name, service_version, http=http_client, cache_discovery=False)
         else:
-            self.service = discovery.build(
-                service_name, service_version, credentials=credentials
+            self.service = discovery.build(service_name, service_version, credentials=credentials, cache_discovery=False)
+
+    @staticmethod
+    def build_credentials(client_secret: dict, scopes: list, impersonate_service_account: str | None = None) -> Credentials:
+        """
+        Build google-auth credentials from the base credential, optionally wrapped with service account impersonation.
+        :param client_secret: Service Account key dict or Workload Identity Federation (external_account) configuration dict
+        :param scopes: The OAuth scopes to request
+        :param impersonate_service_account: Optional target service account email. When set, it overrides any
+         service_account_impersonation_url embedded in a Workload Identity Federation configuration.
+        :return: google-auth credentials
+        """
+        credentials: Credentials
+        if client_secret.get("type") == EXTERNAL_ACCOUNT_TYPE:
+            wif_config = client_secret
+            if impersonate_service_account:
+                # The explicit impersonation parameter takes precedence over the embedded impersonation URL.
+                wif_config = {key: value for key, value in client_secret.items() if key != SERVICE_ACCOUNT_IMPERSONATION_URL_KEY}
+            if wif_config.get("subject_token_type") == AWS_SUBJECT_TOKEN_TYPE:
+                demisto.debug("Loading AWS Workload Identity Federation credentials.")
+                credentials = aws.Credentials.from_info(wif_config, scopes=scopes)
+            else:
+                demisto.debug("Loading identity pool Workload Identity Federation credentials.")
+                credentials = identity_pool.Credentials.from_info(wif_config, scopes=scopes)
+        else:
+            demisto.debug("Loading Service Account key credentials.")
+            credentials = service_account.Credentials.from_service_account_info(client_secret, scopes=scopes)
+
+        if impersonate_service_account:
+            demisto.debug("Wrapping the base credentials with service account impersonation.")
+            credentials = impersonated_credentials.Credentials(
+                source_credentials=credentials,
+                target_principal=impersonate_service_account,
+                target_scopes=scopes,
             )
+        return credentials
 
     @staticmethod
     def get_http_client_with_proxy(proxy, insecure):
@@ -123,9 +184,7 @@ class BaseGoogleClient:
             proxy_conf = https_proxy if https_proxy else http_proxy
             # if no proxy_conf - ignore proxy
             if proxy_conf:
-                if not proxy_conf.startswith("https") and not proxy_conf.startswith(
-                    "http"
-                ):
+                if not proxy_conf.startswith("https") and not proxy_conf.startswith("http"):
                     proxy_conf = "https://" + proxy_conf
                 parsed_proxy = urllib.parse.urlparse(proxy_conf)
                 proxy_info = httplib2.ProxyInfo(
@@ -135,9 +194,7 @@ class BaseGoogleClient:
                     proxy_user=parsed_proxy.username,
                     proxy_pass=parsed_proxy.password,
                 )
-                return httplib2.Http(
-                    proxy_info=proxy_info, disable_ssl_certificate_validation=insecure
-                )
+                return httplib2.Http(proxy_info=proxy_info, disable_ssl_certificate_validation=insecure)
         return httplib2.Http(disable_ssl_certificate_validation=insecure)
 
 
@@ -156,9 +213,7 @@ class PubSubClient(BaseGoogleClient):
         super().__init__(client_secret=client_secret, **kwargs)
         self.default_project = default_project
         if not default_project:
-            self.default_project = self._extract_project_from_client_secret(
-                client_secret
-            )
+            self.default_project = self._extract_project_from_client_secret(client_secret)
         self.default_subscription = default_subscription
         self.default_max_msgs = default_max_msgs
 
@@ -183,7 +238,8 @@ class PubSubClient(BaseGoogleClient):
         """Create a subscription body"""
         if push_endpoint or push_attributes:
             push_config = assign_params(
-                pushEndpoint=push_endpoint, attributes=push_attributes,
+                pushEndpoint=push_endpoint,
+                attributes=push_attributes,
             )
         else:
             push_config = None
@@ -200,9 +256,7 @@ class PubSubClient(BaseGoogleClient):
 
     def _create_topic_body(self, allowed_persistence_regions, kms_key_name, labels):
         """Create a topic body"""
-        message_storage_policy = assign_params(
-            allowedPersistenceRegions=allowed_persistence_regions
-        )
+        message_storage_policy = assign_params(allowedPersistenceRegions=allowed_persistence_regions)
         body = assign_params(
             labels=labels,
             messageStoragePolicy=message_storage_policy,
@@ -212,12 +266,7 @@ class PubSubClient(BaseGoogleClient):
 
     def list_topic(self, project_id, page_size, page_token=None):
         """Get topic list from GoogleClient"""
-        return (
-            self.service.projects()
-            .topics()
-            .list(project=project_id, pageSize=page_size, pageToken=page_token)
-            .execute()
-        )
+        return self.service.projects().topics().list(project=project_id, pageSize=page_size, pageToken=page_token).execute()
 
     def list_topic_subs(self, topic_id, page_size, page_token=None):
         """Get topic subscriptions from GoogleClient"""
@@ -232,17 +281,12 @@ class PubSubClient(BaseGoogleClient):
     def list_project_subs(self, project_id, page_size, page_token=None):
         """Get project subscriptions list from GoogleClient"""
         return (
-            self.service.projects()
-            .subscriptions()
-            .list(project=project_id, pageSize=page_size, pageToken=page_token)
-            .execute()
+            self.service.projects().subscriptions().list(project=project_id, pageSize=page_size, pageToken=page_token).execute()
         )
 
     def get_sub(self, sub_name):
         """Get subscription by name from GoogleClient"""
-        return (
-            self.service.projects().subscriptions().get(subscription=sub_name).execute()
-        )
+        return self.service.projects().subscriptions().get(subscription=sub_name).execute()
 
     def publish_message(self, project_id, topic_id, req_body):
         """Publish a topic message via GoogleClient"""
@@ -265,12 +309,7 @@ class PubSubClient(BaseGoogleClient):
         :return: Messages
         """
         req_body = {"returnImmediately": ret_immediately, "maxMessages": max_messages}
-        return (
-            self.service.projects()
-            .subscriptions()
-            .pull(subscription=sub_name, body=req_body)
-            .execute()
-        )
+        return self.service.projects().subscriptions().pull(subscription=sub_name, body=req_body).execute()
 
     def ack_messages(self, sub_name, acks):
         """
@@ -280,12 +319,7 @@ class PubSubClient(BaseGoogleClient):
         :return:
         """
         body = {"ackIds": acks}
-        return (
-            self.service.projects()
-            .subscriptions()
-            .acknowledge(subscription=sub_name, body=body)
-            .execute()
-        )
+        return self.service.projects().subscriptions().acknowledge(subscription=sub_name, body=body).execute()
 
     def create_subscription(
         self,
@@ -323,12 +357,7 @@ class PubSubClient(BaseGoogleClient):
             retain_acked_messages,
             topic_name,
         )
-        return (
-            self.service.projects()
-            .subscriptions()
-            .create(name=sub_name, body=body)
-            .execute()
-        )
+        return self.service.projects().subscriptions().create(name=sub_name, body=body).execute()
 
     def update_subscription(
         self,
@@ -369,16 +398,9 @@ class PubSubClient(BaseGoogleClient):
             topic_name,
         )
         body = assign_params(subscription=sub_body, updateMask=update_mask)
-        return (
-            self.service.projects()
-            .subscriptions()
-            .patch(name=sub_name, body=body)
-            .execute()
-        )
+        return self.service.projects().subscriptions().patch(name=sub_name, body=body).execute()
 
-    def create_topic(
-        self, topic_name, labels, allowed_persistence_regions, kms_key_name
-    ):
+    def create_topic(self, topic_name, labels, allowed_persistence_regions, kms_key_name):
         """
         Create a topic in the project
         :param topic_name: name of the topic to be created
@@ -387,15 +409,8 @@ class PubSubClient(BaseGoogleClient):
         :param kms_key_name: The full name of the Cloud KMS CryptoKey to be used to restrict access on this topic.
         :return: Topic
         """
-        body = self._create_topic_body(
-            allowed_persistence_regions, kms_key_name, labels
-        )
-        return (
-            self.service.projects()
-            .topics()
-            .create(name=topic_name, body=body)
-            .execute()
-        )
+        body = self._create_topic_body(allowed_persistence_regions, kms_key_name, labels)
+        return self.service.projects().topics().create(name=topic_name, body=body).execute()
 
     def delete_topic(self, topic_name):
         """
@@ -405,9 +420,7 @@ class PubSubClient(BaseGoogleClient):
         """
         return self.service.projects().topics().delete(topic=topic_name).execute()
 
-    def update_topic(
-        self, topic_name, labels, allowed_persistence_regions, kms_key_name, update_mask
-    ):
+    def update_topic(self, topic_name, labels, allowed_persistence_regions, kms_key_name, update_mask):
         """
         Updates a topic in the project
         :param topic_name: name of the topic to be updated
@@ -417,13 +430,9 @@ class PubSubClient(BaseGoogleClient):
         :param update_mask: Indicates which fields in the provided topic to update.
         :return: Topic
         """
-        topic = self._create_topic_body(
-            allowed_persistence_regions, kms_key_name, labels
-        )
+        topic = self._create_topic_body(allowed_persistence_regions, kms_key_name, labels)
         body = assign_params(topic=topic, updateMask=update_mask)
-        return (
-            self.service.projects().topics().patch(name=topic_name, body=body).execute()
-        )
+        return self.service.projects().topics().patch(name=topic_name, body=body).execute()
 
     def subscription_seek_message(self, subscription_name, time_string, snapshot=None):
         """
@@ -434,12 +443,7 @@ class PubSubClient(BaseGoogleClient):
         :return: Empty string if successful
         """
         body = assign_params(time=time_string, snapshot=snapshot)
-        return (
-            self.service.projects()
-            .subscriptions()
-            .seek(subscription=subscription_name, body=body)
-            .execute()
-        )
+        return self.service.projects().subscriptions().seek(subscription=subscription_name, body=body).execute()
 
     def get_topic_snapshots_list(self, topic_name, page_size, page_token=None):
         """
@@ -464,13 +468,8 @@ class PubSubClient(BaseGoogleClient):
         :param page_size: Max number of results
         :param page_token: Next page token as returned from the API.
         :return: Snapshot list
-            """
-        return (
-            self.service.projects()
-            .snapshots()
-            .list(project=project_name, pageSize=page_size, pageToken=page_token)
-            .execute()
-        )
+        """
+        return self.service.projects().snapshots().list(project=project_name, pageSize=page_size, pageToken=page_token).execute()
 
     def create_snapshot(self, subscription_name, snapshot_name, labels):
         """
@@ -481,16 +480,9 @@ class PubSubClient(BaseGoogleClient):
         :return: Snapshot
         """
         body = assign_params(subscription=subscription_name, labels=labels)
-        return (
-            self.service.projects()
-            .snapshots()
-            .create(name=snapshot_name, body=body)
-            .execute()
-        )
+        return self.service.projects().snapshots().create(name=snapshot_name, body=body).execute()
 
-    def update_snapshot(
-        self, snapshot_name, topic_name, update_mask, expire_time, labels
-    ):
+    def update_snapshot(self, snapshot_name, topic_name, update_mask, expire_time, labels):
         """
         :param snapshot_name: The name of the snapshot
         :param topic_name: The ID of the topic from which this snapshot is retaining messages.
@@ -499,16 +491,9 @@ class PubSubClient(BaseGoogleClient):
         :param labels: labels dict
         :return: Snapshot
         """
-        snapshot = assign_params(
-            name=snapshot_name, topic=topic_name, expireTime=expire_time, labels=labels
-        )
+        snapshot = assign_params(name=snapshot_name, topic=topic_name, expireTime=expire_time, labels=labels)
         body = assign_params(snapshot=snapshot, updateMask=update_mask)
-        return (
-            self.service.projects()
-            .snapshots()
-            .patch(name=snapshot_name, body=body)
-            .execute()
-        )
+        return self.service.projects().snapshots().patch(name=snapshot_name, body=body).execute()
 
     def delete_snapshot(self, snapshot_name):
         """
@@ -516,12 +501,57 @@ class PubSubClient(BaseGoogleClient):
         :param snapshot_name: full snapshot name
         :return: Empty response
         """
-        return (
-            self.service.projects().snapshots().delete(snapshot=snapshot_name).execute()
-        )
+        return self.service.projects().snapshots().delete(snapshot=snapshot_name).execute()
 
 
 """ HELPER FUNCTIONS"""
+
+
+def get_base_credential_config(service_account_key: str | None, wif_config: str | None) -> dict:
+    """
+    Validates that exactly one base credential is configured and returns it as a dict.
+    :param service_account_key: The Service Account private key JSON string
+    :param wif_config: The Workload Identity Federation configuration JSON string
+    :return: The parsed base credential dict
+    """
+    if service_account_key and wif_config:
+        raise DemistoException(BOTH_BASE_CREDENTIALS_ERROR)
+    if not service_account_key and not wif_config:
+        raise DemistoException(NO_BASE_CREDENTIALS_ERROR)
+
+    if wif_config:
+        try:
+            wif_config_dict = json.loads(wif_config)
+        except ValueError as e:
+            raise DemistoException(WIF_CONFIG_PARSE_ERROR) from e
+        if not isinstance(wif_config_dict, dict) or wif_config_dict.get("type") != EXTERNAL_ACCOUNT_TYPE:
+            raise DemistoException(INVALID_WIF_CONFIG_TYPE_ERROR)
+        return wif_config_dict
+
+    try:
+        service_account_dict = json.loads(str(service_account_key), strict=False)
+    except ValueError as e:
+        raise DemistoException(SA_KEY_PARSE_ERROR) from e
+    if not isinstance(service_account_dict, dict):
+        raise DemistoException(SA_KEY_PARSE_ERROR)
+    if service_account_dict.get("type") == EXTERNAL_ACCOUNT_TYPE:
+        raise DemistoException(WIF_IN_SA_FIELD_ERROR)
+    return service_account_dict
+
+
+def get_impersonation_target(impersonate_service_account: str | None) -> str | None:
+    """
+    Normalizes and validates the 'Service Account to impersonate' parameter.
+    :param impersonate_service_account: The raw parameter value
+    :return: The stripped service account email, or None when impersonation is not configured
+    """
+    target = (impersonate_service_account or "").strip()
+    if not target:
+        return None
+    local_part, _, domain = target.partition("@")
+    if not local_part or not domain.endswith(SERVICE_ACCOUNT_EMAIL_SUFFIX):
+        raise DemistoException(INVALID_IMPERSONATION_EMAIL_ERROR)
+    return target
 
 
 def init_google_client(
@@ -531,6 +561,8 @@ def init_google_client(
     insecure,
     credentials: dict = None,
     service_account_json: str = None,
+    wif_credentials: dict = None,
+    impersonate_service_account: str = None,
     **kwargs,
 ) -> PubSubClient:
     """
@@ -540,31 +572,40 @@ def init_google_client(
     :param default_project: Default project to use
     :param default_max_msgs: Max messages to pull per fetch
     :param insecure: Flag - do not validate https certs
+    :param credentials: The Service Account private key credentials (password holds the JSON)
+    :param wif_credentials: The Workload Identity Federation configuration credentials (password holds the JSON)
+    :param impersonate_service_account: Optional email of a target service account to impersonate
     :param kwargs:
     :return:
     """
+    service_account_key = (credentials or {}).get("password") or service_account_json
+    wif_config = (wif_credentials or {}).get("password")
+    client_secret = get_base_credential_config(service_account_key, wif_config)
+    impersonation_target = get_impersonation_target(impersonate_service_account)
     try:
-        service_account_json = json.loads(str(
-            credentials.get('password')
-            if isinstance(credentials, dict)
-            else service_account_json))
         client = PubSubClient(
             default_project=default_project,
             default_subscription=default_subscription,
             default_max_msgs=default_max_msgs,
             service_name=SERVICE_NAME,
             service_version=SERVICE_VERSION,
-            client_secret=service_account_json,
+            client_secret=client_secret,
             scopes=SCOPES,
             insecure=insecure,
+            impersonate_service_account=impersonation_target,
             **kwargs,
         )
         return client
+    except RefreshError as e:
+        error_message = CREDENTIALS_REFRESH_ERROR
+        if impersonation_target:
+            error_message += IMPERSONATION_REFRESH_ERROR_HINT
+        if e.args:
+            error_message += f" Reason: {e.args[0]}"
+        raise DemistoException(error_message) from e
     except ValueError as e:
-        return_error(
-            "Failed to parse Service Account Private Key in json format, please make sure you entered it correctly"
-        )
-        raise e
+        error_message = WIF_CONFIG_PARSE_ERROR if wif_config else SA_KEY_PARSE_ERROR
+        raise DemistoException(f"{error_message} Reason: {e}") from e
 
 
 def message_to_incident(message):
@@ -612,7 +653,7 @@ def convert_datetime_to_iso_str(publish_time):
         return publish_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def attribute_pairs_to_dict(attrs_str: Optional[str], delim_char: str = ","):
+def attribute_pairs_to_dict(attrs_str: str | None, delim_char: str = ","):
     """
     Transforms a string of multiple inputs to a dictionary list
 
@@ -645,14 +686,10 @@ def test_module(client: PubSubClient, is_fetch: bool):
     :param client: GoogleClient
     :return: 'ok' if test passed, anything else will fail the test.
     """
-    client.list_topic(
-        GoogleNameParser.get_project_name(client.default_project), page_size=1
-    )
+    client.list_topic(GoogleNameParser.get_project_name(client.default_project), page_size=1)
     if is_fetch:
         client.pull_messages(
-            GoogleNameParser.get_subscription_project_name(
-                client.default_project, client.default_subscription
-            ),
+            GoogleNameParser.get_subscription_project_name(client.default_project, client.default_subscription),
             max_messages=1,
         )
     return "ok"
@@ -663,7 +700,7 @@ def topics_list_command(
     project_id: str,
     page_size: str = None,
     page_token: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Get topics list by project_id
     Requires one of the following OAuth scopes:
@@ -682,9 +719,7 @@ def topics_list_command(
 
     topics = list(res.get("topics", []))
     next_page_token = res.get("nextPageToken")
-    readable_output = tableToMarkdown(
-        f"Topics for project {project_id}", topics, ["name"]
-    )
+    readable_output = tableToMarkdown(f"Topics for project {project_id}", topics, ["name"])
     outputs = {"GoogleCloudPubSubTopics(val && val.name === obj.name)": topics}
     if next_page_token:
         outputs["GoogleCloudPubSub.Topics.nextPageToken"] = next_page_token
@@ -699,7 +734,7 @@ def publish_message_command(
     data: str = None,
     attributes: str = None,
     delim_char_attributes: str = ",",
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Publishes message in the topic
     Requires one of the following OAuth scopes:
@@ -753,7 +788,7 @@ def get_publish_body(message_attributes, message_data, delim_char):
     message = {}
     if message_data:
         # convert to base64 string
-        message["data"] = base64.b64encode(message_data.encode("utf8")).decode('utf8')
+        message["data"] = base64.b64encode(message_data.encode("utf8")).decode("utf8")
     if message_attributes:
         message["attributes"] = attribute_pairs_to_dict(message_attributes, delim_char)
     body = {"messages": [message]}
@@ -766,7 +801,7 @@ def pull_messages_command(
     project_id: str,
     max_messages: str = None,
     ack: str = None,
-) -> Tuple[str, dict, list]:
+) -> tuple[str, dict, list]:
     """
     Pulls messages from the subscription
     Requires one of the following OAuth scopes:
@@ -781,15 +816,11 @@ def pull_messages_command(
     :param ack: Acknowledge the messages pulled if set to true.
     :return: list of messages
     """
-    full_subscription_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    full_subscription_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     raw_msgs = client.pull_messages(full_subscription_name, max_messages)
     if "receivedMessages" in raw_msgs:
         acknowledges, msgs = extract_acks_and_msgs(raw_msgs)
-        ec = {
-            "GoogleCloudPubSubPulledMessages(val && val.messageId === obj.messageId)": msgs
-        }
+        ec = {"GoogleCloudPubSubPulledMessages(val && val.messageId === obj.messageId)": msgs}
         if ack == "true":
             client.ack_messages(full_subscription_name, acknowledges)
         hr = tableToMarkdown("Google Cloud PubSub Messages", msgs, removeNull=True)
@@ -799,8 +830,11 @@ def pull_messages_command(
 
 
 def ack_messages_command(
-    client: PubSubClient, ack_ids: str, subscription_id: str, project_id: str,
-) -> Tuple[str, dict, list]:
+    client: PubSubClient,
+    ack_ids: str,
+    subscription_id: str,
+    project_id: str,
+) -> tuple[str, dict, list]:
     """
     ACKs previously pulled messages using ack Ids
     Requires one of the following OAuth scopes:
@@ -814,9 +848,7 @@ def ack_messages_command(
     :param subscription_id: Subscription name to pull messages from
     :return: Success message
     """
-    sub_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    sub_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     ack_ids = argToList(ack_ids)
     raw_res = client.ack_messages(sub_name, ack_ids)
     title = f"Subscription {subscription_id} had the following ids acknowledged"
@@ -842,8 +874,7 @@ def extract_acks_and_msgs(raw_msgs, add_ack_to_msg=True):
                 decoded_data = base64.b64decode(decoded_data).decode("utf-8")
             except Exception as e:
                 # display message with b64 value
-                demisto.debug(f'Unable to encode {decoded_data}:\n{e}')
-                pass
+                demisto.debug(f"Unable to encode {decoded_data}:\n{e}")
 
             msg["data"] = decoded_data
             ack_id = raw_msg.get("ackId")
@@ -861,7 +892,7 @@ def subscriptions_list_command(
     page_size: str = None,
     page_token: str = None,
     topic_id: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Get subscription list by project_id or by topic_id
     Requires one of the following OAuth scopes:
@@ -883,14 +914,10 @@ def subscriptions_list_command(
         subs = [{"name": sub} for sub in raw_response.get("subscriptions", [])]
         next_page_token = raw_response.get("nextPageToken")
         title += f" for topic {topic_id} in project {project_id}"
-        readable_output = tableToMarkdown(
-            title, subs, headers=["name"], headerTransform=pascalToSpace
-        )
+        readable_output = tableToMarkdown(title, subs, headers=["name"], headerTransform=pascalToSpace)
     else:
         full_project_name = GoogleNameParser.get_project_name(project_id)
-        raw_response = client.list_project_subs(
-            full_project_name, page_size, page_token
-        )
+        raw_response = client.list_project_subs(full_project_name, page_size, page_token)
         subs = raw_response.get("subscriptions", "")
         next_page_token = raw_response.get("nextPageToken")
         title += f" in project {project_id}"
@@ -910,9 +937,7 @@ def subscriptions_list_command(
     return readable_output, outputs, raw_response
 
 
-def get_subscription_command(
-    client: PubSubClient, subscription_id: str, project_id: str
-) -> Tuple[str, dict, dict]:
+def get_subscription_command(client: PubSubClient, subscription_id: str, project_id: str) -> tuple[str, dict, dict]:
     """
     Get subscription list by project_id or by topic_id
     Requires one of the following OAuth scopes:
@@ -925,9 +950,7 @@ def get_subscription_command(
     :param project_id: project name
     :return: subscription
     """
-    full_sub_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    full_sub_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     sub = client.get_sub(full_sub_name)
     sub["deliveryType"] = "Push" if sub.get("pushConfig") else "Pull"
     title = f"Subscription {subscription_id}"
@@ -948,7 +971,7 @@ def create_subscription_command(
     message_retention_duration: str = "",
     labels: str = "",
     expiration_ttl: str = "",
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Creates a subscription
     Requires one of the following OAuth scopes:
@@ -969,9 +992,7 @@ def create_subscription_command(
     :param expiration_ttl: The "time-to-live" duration for the subscription.
     :return: Created subscription
     """
-    full_sub_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    full_sub_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     full_topic_name = GoogleNameParser.get_topic_name(project_id, topic_id)
     labels = attribute_pairs_to_dict(labels)
     push_attributes = attribute_pairs_to_dict(push_attributes)
@@ -1009,7 +1030,7 @@ def update_subscription_command(
     message_retention_duration: str = "",
     labels: str = "",
     expiration_ttl: str = "",
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Creates a subscription
     Requires one of the following OAuth scopes:
@@ -1031,9 +1052,7 @@ def update_subscription_command(
     :param expiration_ttl: The "time-to-live" duration for the subscription.
     :return: Created subscription
     """
-    full_sub_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    full_sub_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     full_topic_name = GoogleNameParser.get_topic_name(project_id, topic_id)
     labels = attribute_pairs_to_dict(labels)
     push_attributes = attribute_pairs_to_dict(push_attributes)
@@ -1066,7 +1085,7 @@ def create_topic_command(
     allowed_persistence_regions: str = "",
     kms_key_name: str = None,
     labels: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Creates a topic
     :param client: PubSub client instance
@@ -1080,18 +1099,14 @@ def create_topic_command(
     topic_name = GoogleNameParser.get_topic_name(project_id, topic_id)
     allowed_persistence_regions = argToList(allowed_persistence_regions)
     labels = attribute_pairs_to_dict(labels)
-    raw_topic = client.create_topic(
-        topic_name, labels, allowed_persistence_regions, kms_key_name
-    )
+    raw_topic = client.create_topic(topic_name, labels, allowed_persistence_regions, kms_key_name)
     title = f"Topic **{topic_id}** was created successfully"
     readable_output = tableToMarkdown(title, raw_topic, headerTransform=pascalToSpace)
     outputs = {"GoogleCloudPubSubTopics": raw_topic}
     return readable_output, outputs, raw_topic
 
 
-def delete_topic_command(
-    client: PubSubClient, project_id: str, topic_id: str
-) -> Tuple[str, dict, dict]:
+def delete_topic_command(client: PubSubClient, project_id: str, topic_id: str) -> tuple[str, dict, dict]:
     """
     Delete a topic
     :param client: PubSub client instance
@@ -1113,7 +1128,7 @@ def update_topic_command(
     allowed_persistence_regions: str = "",
     kms_key_name: str = None,
     labels: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Creates a topic
     :param client: PubSub client instance
@@ -1128,9 +1143,7 @@ def update_topic_command(
     topic_name = GoogleNameParser.get_topic_name(project_id, topic_id)
     allowed_persistence_regions = argToList(allowed_persistence_regions)
     labels = attribute_pairs_to_dict(labels)
-    raw_topic = client.update_topic(
-        topic_name, labels, allowed_persistence_regions, kms_key_name, update_mask
-    )
+    raw_topic = client.update_topic(topic_name, labels, allowed_persistence_regions, kms_key_name, update_mask)
     title = f"Topic {topic_id} was updated successfully"
     readable_output = tableToMarkdown(title, raw_topic, headerTransform=pascalToSpace)
     outputs = {"GoogleCloudPubSubTopics(val && val.name === obj.name)": raw_topic}
@@ -1143,7 +1156,7 @@ def seek_message_command(
     subscription_id: str,
     time_string: str = None,
     snapshot: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Get topics list by project_id
     Requires one of the following OAuth scopes:
@@ -1160,14 +1173,10 @@ def seek_message_command(
     """
     if not time_string and not snapshot:
         return_error("Please provide either a time_string or a snapshot")
-    sub_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    sub_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     raw_res = client.subscription_seek_message(sub_name, time_string, snapshot)
     readable_output = (
-        "Message seek was successful for **"
-        + (f"time: {time_string}" if time_string else f"snapshot:{snapshot}")
-        + "**"
+        "Message seek was successful for **" + (f"time: {time_string}" if time_string else f"snapshot:{snapshot}") + "**"
     )
     return readable_output, {}, raw_res
 
@@ -1178,7 +1187,7 @@ def snapshot_list_command(
     topic_id: str = None,
     page_size: str = None,
     page_token: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Get snapshots list by project_id or topic_id
     Requires one of the following OAuth scopes:
@@ -1217,7 +1226,7 @@ def snapshot_create_command(
     subscription_id: str,
     snapshot_id: str,
     labels: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Create a snapshot
     Requires one of the following OAuth scopes:
@@ -1232,16 +1241,12 @@ def snapshot_create_command(
     :param labels: Input format: "key=val" pairs sepearated by ",".
     :return: list of topics
     """
-    subscription_name = GoogleNameParser.get_subscription_project_name(
-        project_id, subscription_id
-    )
+    subscription_name = GoogleNameParser.get_subscription_project_name(project_id, subscription_id)
     snapshot_name = GoogleNameParser.get_snapshot_project_name(project_id, snapshot_id)
     labels = attribute_pairs_to_dict(labels)
     raw_snapshot = client.create_snapshot(subscription_name, snapshot_name, labels)
     title = f"Snapshot **{snapshot_id}** was created successfully"
-    readable_output = tableToMarkdown(
-        title, raw_snapshot, headerTransform=pascalToSpace
-    )
+    readable_output = tableToMarkdown(title, raw_snapshot, headerTransform=pascalToSpace)
     outputs = {"GoogleCloudPubSubSnapshots": raw_snapshot}
     return readable_output, outputs, raw_snapshot
 
@@ -1254,7 +1259,7 @@ def snapshot_update_command(
     update_mask: str,
     expire_time: str = None,
     labels: str = None,
-) -> Tuple[str, dict, dict]:
+) -> tuple[str, dict, dict]:
     """
     Updates a snapshot
     Requires one of the following OAuth scopes:
@@ -1274,22 +1279,14 @@ def snapshot_update_command(
     snapshot_name = GoogleNameParser.get_snapshot_project_name(project_id, snapshot_id)
     topic_name = GoogleNameParser.get_topic_name(project_id, topic_id)
     labels = attribute_pairs_to_dict(labels)
-    raw_snapshot = client.update_snapshot(
-        snapshot_name, topic_name, update_mask, expire_time, labels
-    )
+    raw_snapshot = client.update_snapshot(snapshot_name, topic_name, update_mask, expire_time, labels)
     title = f"Snapshot **{snapshot_id}** was updated successfully"
-    readable_output = tableToMarkdown(
-        title, raw_snapshot, headerTransform=pascalToSpace
-    )
-    outputs = {
-        "GoogleCloudPubSubSnapshots(val && val.name === obj.name)": raw_snapshot
-    }
+    readable_output = tableToMarkdown(title, raw_snapshot, headerTransform=pascalToSpace)
+    outputs = {"GoogleCloudPubSubSnapshots(val && val.name === obj.name)": raw_snapshot}
     return readable_output, outputs, raw_snapshot
 
 
-def snapshot_delete_command(
-    client: PubSubClient, project_id: str, snapshot_id: str
-) -> Tuple[str, dict, dict]:
+def snapshot_delete_command(client: PubSubClient, project_id: str, snapshot_id: str) -> tuple[str, dict, dict]:
     """
     Delete a topic
     :param client: PubSub client instance
@@ -1303,9 +1300,7 @@ def snapshot_delete_command(
     return readable_output, {}, raw_res
 
 
-def fetch_incidents(
-    client: PubSubClient, last_run: dict, first_fetch_time: str, ack_incidents: bool
-):
+def fetch_incidents(client: PubSubClient, last_run: dict, first_fetch_time: str, ack_incidents: bool):
     """
     This function will execute each interval (default is 1 minute).
     :param client: GoogleClient initialized with default_project, default_subscription and default_max_msgs
@@ -1314,18 +1309,14 @@ def fetch_incidents(
     :param ack_incidents: Boolean flag - when set to True will ack back the fetched messages
     :return: incidents: Incidents that will be created in Demisto
     """
-    sub_name = GoogleNameParser.get_subscription_project_name(
-        client.default_project, client.default_subscription
-    )
+    sub_name = GoogleNameParser.get_subscription_project_name(client.default_project, client.default_subscription)
 
     # Setup subscription for fetch
-    last_run_fetched_ids, last_run_time = setup_subscription_last_run(
-        client, first_fetch_time, last_run, sub_name, ack_incidents
-    )
+    last_run_fetched_ids, last_run_time = setup_subscription_last_run(client, first_fetch_time, last_run, sub_name, ack_incidents)
 
     # Pull unique messages if available
     msgs, msg_ids, acknowledges, max_publish_time = try_pull_unique_messages(
-        client, sub_name, last_run_fetched_ids, last_run_time, retry_times=1
+        client, sub_name, last_run_fetched_ids, last_run_time, ack_incidents, retry_times=1
     )
 
     # Handle fetch results
@@ -1342,9 +1333,7 @@ def fetch_incidents(
     )
 
 
-def setup_subscription_last_run(
-    client, first_fetch_time, last_run, sub_name, ack_incidents
-):
+def setup_subscription_last_run(client, first_fetch_time, last_run, sub_name, ack_incidents):
     """
     Setups the subscription last run data, and seeks the subscription to a previous time if relevant
     :param client: PubSub client
@@ -1371,15 +1360,14 @@ def setup_subscription_last_run(
     return last_run_fetched_ids, last_run_time
 
 
-def try_pull_unique_messages(
-    client, sub_name, previous_msg_ids, last_run_time, retry_times=0
-):
+def try_pull_unique_messages(client, sub_name, previous_msg_ids, last_run_time, ack_incidents, retry_times=0):
     """
     Tries to pull unique messages for the subscription
     :param client: PubSub client
     :param sub_name: Subscription name
     :param previous_msg_ids: Previous message ids set
     :param last_run_time: previous run time
+    :param ack_incidents: should ack incidents
     :param retry_times: How many times to retry pulling
     :return:
         1. Unique list of messages
@@ -1403,17 +1391,11 @@ def try_pull_unique_messages(
                 return msgs, msg_ids, res_acks, max_publish_time
             # no new messages - retry -1
             elif len(new_msg_ids) == 0 and retry_times > 0:
-                demisto.debug(
-                    f"GCP_PUBSUB_MSG Duplicates with max_publish_time: {max_publish_time}"
-                )
-                return try_pull_unique_messages(
-                    client, sub_name, previous_msg_ids, retry_times - 1
-                )
-            # clean non-unique ids from raw_msgs
-            else:
-                filtered_raw_msgs = filter_non_unique_messages(
-                    raw_msgs, previous_msg_ids, last_run_time
-                )
+                demisto.debug(f"GCP_PUBSUB_MSG Duplicates with max_publish_time: {max_publish_time}")
+                return try_pull_unique_messages(client, sub_name, previous_msg_ids, retry_times - 1, ack_incidents)
+            # clean non-unique ids from raw_msgs (in case non-ack)
+            elif not ack_incidents:
+                filtered_raw_msgs = filter_non_unique_messages(raw_msgs, previous_msg_ids, last_run_time)
                 res_acks, res_msgs = extract_acks_and_msgs(filtered_raw_msgs)
                 (
                     res_msg_ids,
@@ -1434,6 +1416,9 @@ def is_unique_msg(msg, previous_msg_ids, previous_run_time):
     if message_dict:
         msg_id = message_dict.get("messageId")
         msg_pub_time = message_dict.get("publishTime", "")
+        unique_msg = msg_id not in previous_msg_ids and msg_pub_time > previous_run_time
+        if not unique_msg:
+            demisto.debug(f"Dropping {msg_id=}. {msg_pub_time=}")
         return msg_id not in previous_msg_ids and msg_pub_time > previous_run_time
     return False
 
@@ -1489,6 +1474,7 @@ def handle_fetch_results(
             incidents.append(incident)
         # ACK messages if relevant
         if ack_incidents:
+            demisto.debug(f"ACK: {acknowledges}")
             client.ack_messages(sub_name, acknowledges)
         # Recreate last run to return with new values
         last_run = {
@@ -1497,13 +1483,9 @@ def handle_fetch_results(
         }
     # We didn't manage to pull any unique messages, so we're trying to increment micro seconds - not relevant for ack
     elif not ack_incidents:
-        last_run_time_dt = dateparser.parse(
-            max_publish_time if max_publish_time else last_run_time
-        )
+        last_run_time_dt = dateparser.parse(max_publish_time if max_publish_time else last_run_time)
         assert last_run_time_dt is not None
-        last_run_time = convert_datetime_to_iso_str(
-            last_run_time_dt + timedelta(microseconds=1)
-        )
+        last_run_time = convert_datetime_to_iso_str(last_run_time_dt + timedelta(microseconds=1))
         # Update last run time
         last_run[LAST_RUN_TIME_KEY] = last_run_time
     return incidents, last_run
@@ -1511,10 +1493,10 @@ def handle_fetch_results(
 
 def main():
     params = demisto.params()
-    client = init_google_client(**params)
     command = demisto.command()
     LOG(f"Command being called is {command}")
     try:
+        client = init_google_client(**params)
         commands = {
             "gcp-pubsub-topic-publish-message": publish_message_command,
             "gcp-pubsub-topic-messages-pull": pull_messages_command,
@@ -1539,9 +1521,7 @@ def main():
             ack_incidents = params.get("ack_incidents")
             first_fetch_time = params.get("first_fetch_time").rstrip()
             last_run = demisto.getLastRun()
-            incidents, last_run = fetch_incidents(
-                client, last_run, first_fetch_time, ack_incidents
-            )
+            incidents, last_run = fetch_incidents(client, last_run, first_fetch_time, ack_incidents)
             demisto.incidents(incidents)
             demisto.setLastRun(last_run)
         else:
@@ -1553,9 +1533,7 @@ def main():
 
     # Log exceptions
     except Exception as e:
-        return_error(
-            f"Failed to execute {demisto.command()} command. Error: {str(e)} , traceback: {traceback.format_exc()}"
-        )
+        return_error(f"Failed to execute {demisto.command()} command. Error: {e!s} , traceback: {traceback.format_exc()}")
 
 
 if __name__ in ("__main__", "__builtin__", "builtins"):

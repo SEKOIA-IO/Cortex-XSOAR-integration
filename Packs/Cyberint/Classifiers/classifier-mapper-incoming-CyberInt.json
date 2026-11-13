@@ -7,30 +7,30 @@
             "dontMapEventToLabels": false,
             "internalMapping": {
                 "Alert ID": {
+                    "simple": "id"
+                },
+                "CyberInt Alert ID": {
                     "simple": "ref_id"
                 },
                 "Alert Name": {
                     "simple": "title"
                 },
                 "CyberInt Alert Data": {
-					"complex": {
-						"filters": [],
-						"root": "alert_data",
-						"transformers": [
-							{
-								"args": {
-									"headers": {},
-									"is_auto_json_transform": {},
-									"json_transform_properties": {},
-									"title": {}
-								},
-								"operator": "JsonToTable"
-							}
-						]
-					}
-				},
-                "CyberInt Alert ID": {
-                    "simple": "ref_id"
+                    "complex": {
+                        "filters": [],
+                        "root": "alert_data",
+                        "transformers": [
+                            {
+                                "args": {
+                                    "headers": {},
+                                    "is_auto_json_transform": {},
+                                    "json_transform_properties": {},
+                                    "title": {}
+                                },
+                                "operator": "JsonToTable"
+                            }
+                        ]
+                    }
                 },
                 "CyberInt Attachments": {
                     "complex": {
@@ -96,7 +96,8 @@
                             }
                         ]
                     }
-                },"CyberInt Impacts": {
+                },
+                "CyberInt Impacts": {
                     "complex": {
                         "filters": [],
                         "root": "impacts",
@@ -171,6 +172,9 @@
                 "CyberInt Threat Actor": {
                     "simple": "threat_actor"
                 },
+                "name": {
+                    "simple": "alert_name"
+                },
                 "CyberInt Ticket ID": {
                     "simple": "ticket_id"
                 },
@@ -219,9 +223,6 @@
                 "Threat Actor": {
                     "simple": "threat_actor"
                 },
-                "name": {
-                    "simple": "alert_name"
-                },
                 "occurred": {
                     "complex": {
                         "filters": [],
@@ -242,10 +243,44 @@
                     }
                 },
                 "severity": {
-                    "simple": "severity"
+                    "complex": {
+                        "filters": [],
+                        "root": "severity",
+                        "transformers": [
+                            {
+                                "args": {
+                                    "input_values": {
+                                        "isContext": false,
+                                        "value": {
+                                            "complex": null,
+                                            "simple": "low,medium,high,very_high"
+                                        }
+                                    },
+                                    "mapped_values": {
+                                        "isContext": false,
+                                        "value": {
+                                            "complex": null,
+                                            "simple": "1,2,3,4"
+                                        }
+                                    }
+                                },
+                                "operator": "MapValuesTransformer"
+                            }
+                        ]
+                    }
                 },
                 "source": {
                     "simple": "source"
+                },
+                "Cyberint Alert URL": {
+                    "simple": "alert_data.url"
+                },
+                "CyberInt CVEs": {
+                    "complex": {
+                        "root": "alert_data.cves",
+                        "accessor": "name",
+                        "transformers": []
+                    }
                 }
             }
         },
@@ -253,13 +288,13 @@
             "dontMapEventToLabels": false,
             "internalMapping": {
                 "Alert ID": {
+                    "simple": "id"
+                },
+                "CyberInt Alert ID": {
                     "simple": "ref_id"
                 },
                 "Alert Name": {
                     "simple": "title"
-                },
-                "CyberInt Alert ID": {
-                    "simple": "ref_id"
                 },
                 "CyberInt Attachments": {
                     "complex": {
@@ -270,6 +305,9 @@
                 },
                 "CyberInt Closure reason": {
                     "simple": "closure_reason"
+                },
+                "CyberInt Closure reason Description": {
+                    "simple": "closure_reason_description"
                 },
                 "CyberInt Confidence": {
                     "simple": "confidence"
@@ -371,7 +409,8 @@
                         "root": "tags",
                         "transformers": []
                     }
-                },"CyberInt Descriptors": {
+                },
+                "CyberInt Descriptors": {
                     "complex": {
                         "filters": [],
                         "root": "tags",
@@ -479,7 +518,7 @@
                     "simple": "mirror_instance"
                 },
                 "name": {
-                    "simple": "alert_name"
+                    "simple": "title"
                 },
                 "occurred": {
                     "complex": {
@@ -504,16 +543,39 @@
                     "complex": {
                         "filters": [],
                         "root": "severity",
-                        "transformers": []
+                        "transformers": [
+                            {
+                                "args": {
+                                    "input_values": {
+                                        "isContext": false,
+                                        "value": {
+                                            "complex": null,
+                                            "simple": "low,medium,high,very_high"
+                                        }
+                                    },
+                                    "mapped_values": {
+                                        "isContext": false,
+                                        "value": {
+                                            "complex": null,
+                                            "simple": "1,2,3,4"
+                                        }
+                                    }
+                                },
+                                "operator": "MapValuesTransformer"
+                            }
+                        ]
                     }
                 },
                 "source": {
                     "simple": "source"
+                },
+                "Cyberint Alert URL": {
+                    "simple": "alert_data.url"
                 }
             }
         }
     },
-    "name": "CyberInt (mapper)",
+    "name": "CyberInt Incoming (mapper)",
     "type": "mapping-incoming",
     "version": -1,
     "fromVersion": "6.0.0"

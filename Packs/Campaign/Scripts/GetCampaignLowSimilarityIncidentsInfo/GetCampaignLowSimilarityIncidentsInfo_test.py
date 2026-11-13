@@ -1,21 +1,21 @@
+import pytest
 from CommonServerPython import *
 from GetCampaignLowSimilarityIncidentsInfo import *
 
-REQUIRED_KEYS = ['id', 'name', 'emailfrom', 'recipients', 'severity', 'status', 'created']
-STR_VAL_KEYS = ['name', 'emailfrom', 'recipients', 'created']
+REQUIRED_KEYS = ["id", "name", "emailfrom", "recipients", "severity", "status", "created"]
+STR_VAL_KEYS = ["name", "emailfrom", "recipients", "created"]
 
 NUM_OF_INCIDENTS = 5
 MOCKED_INCIDENTS = [
-    {key.replace('_', ''): f'test_{key}_{i}' if key in STR_VAL_KEYS else i for key in REQUIRED_KEYS}
+    {key.replace("_", ""): f"test_{key}_{i}" if key in STR_VAL_KEYS else i for key in REQUIRED_KEYS}
     for i in range(NUM_OF_INCIDENTS)
 ]
 
 UPDATED_MOCKED_INCIDENTS = [
-    {key.replace('_', ''): 3 if key in KEYS_FETCHED_BY_QUERY else i for key in REQUIRED_KEYS}
-    for i in range(NUM_OF_INCIDENTS)
+    {key.replace("_", ""): 3 if key in KEYS_FETCHED_BY_QUERY else i for key in REQUIRED_KEYS} for i in range(NUM_OF_INCIDENTS)
 ]
 
-SOME_ERROR = 'Raised by mock of demisto.context'
+SOME_ERROR = "Raised by mock of demisto.context"
 
 
 def raise_exception():
@@ -36,25 +36,25 @@ def test_incidents_info_md_happy_path(mocker):
 
     """
     # prepare
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.update_incident_with_required_keys')
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context', return_value=MOCKED_INCIDENTS)
-    mocker.patch.object(demisto, 'results')
-    mocker.patch.object(demisto, 'incidents', return_value=MOCKED_INCIDENTS)
-    mocker.patch.object(demisto, 'executeCommand')
-    mocker.patch.object(demisto, 'context', return_value={'EmailCampaign': {'fieldsToDisplay': REQUIRED_KEYS}})
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.update_incident_with_required_keys")
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context", return_value=MOCKED_INCIDENTS)
+    mocker.patch.object(demisto, "results")
+    mocker.patch.object(demisto, "incidents", return_value=MOCKED_INCIDENTS)
+    mocker.patch.object(demisto, "executeCommand")
+    mocker.patch.object(demisto, "context", return_value={"EmailCampaign": {"fieldsToDisplay": REQUIRED_KEYS}})
     # run
     main()
-    hr = demisto.results.call_args[0][0]['HumanReadable']
+    hr = demisto.results.call_args[0][0]["HumanReadable"]
 
     # validate required keys are header in the MD and the expected values are the table
     assert all(string_to_table_header(key) in hr for key in REQUIRED_KEYS)
-    assert all(f'test_{key}_' in hr for key in STR_VAL_KEYS)
+    assert all(f"test_{key}_" in hr for key in STR_VAL_KEYS)
     assert all(status in hr for status in STATUS_DICT.values())
-    assert all(f'[{i}](#/Details/{i})' in hr for i in range(NUM_OF_INCIDENTS))  # linkable incident id
+    assert all(f"[{i}](#/Details/{i})" in hr for i in range(NUM_OF_INCIDENTS))  # linkable incident id
 
     # validate the call to update empty fields
     args = demisto.executeCommand.call_args[0][1]
-    assert args['customFields'] == DEFAULT_CUSTOM_FIELDS
+    assert args["customFields"] == DEFAULT_CUSTOM_FIELDS
 
 
 def test_incidents_info_md_for_empty_context(mocker):
@@ -71,14 +71,14 @@ def test_incidents_info_md_for_empty_context(mocker):
 
     """
     # prepare
-    mocker.patch.object(demisto, 'results')
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context', return_value=[])
+    mocker.patch.object(demisto, "results")
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context", return_value=[])
 
     # run
     main()
 
     # validate
-    assert demisto.results.call_args[0][0]['HumanReadable'] == NO_CAMPAIGN_INCIDENTS_MSG
+    assert demisto.results.call_args[0][0]["HumanReadable"] == NO_CAMPAIGN_INCIDENTS_MSG
 
 
 def test_incidents_info_md_with_invalid_keys(mocker):
@@ -97,18 +97,18 @@ def test_incidents_info_md_with_invalid_keys(mocker):
     # prepare
     incident_with_invalid_status = MOCKED_INCIDENTS[4]
     incident_without_status = MOCKED_INCIDENTS[0].copy()
-    incident_without_status.pop('status')
+    incident_without_status.pop("status")
     incidents = [incident_with_invalid_status, incident_without_status]
-    mocker.patch.object(demisto, 'results')
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context', return_value=incidents)
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.update_incident_with_required_keys', return_value=incidents)
+    mocker.patch.object(demisto, "results")
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context", return_value=incidents)
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.update_incident_with_required_keys", return_value=incidents)
 
     # run
     main()
-    hr = demisto.results.call_args[0][0]['HumanReadable']
+    hr = demisto.results.call_args[0][0]["HumanReadable"]
 
     # validate
-    assert 'Status' not in hr
+    assert "Status" not in hr
     assert all(status not in hr for status in STATUS_DICT.values())
 
 
@@ -126,42 +126,72 @@ def test_some_error(mocker):
 
     """
 
-    mocker.patch.object(demisto, 'results')
-    mocker.patch.object(demisto, 'context', side_effect=raise_exception)
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.update_incident_with_required_keys')
+    mocker.patch.object(demisto, "results")
+    mocker.patch.object(demisto, "context", side_effect=raise_exception)
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.update_incident_with_required_keys")
 
     # run
     try:
         main()
-        assert False, 'SystemExit should occurred'
+        assert False, "SystemExit should occurred"  # noqa: B011, PT015
 
     except SystemExit:
-        assert demisto.results.call_args[0][0]['Contents'] == SOME_ERROR
+        assert demisto.results.call_args[0][0]["Contents"] == SOME_ERROR
 
 
 def test_updated_status_and_severity(mocker):
     """
-        Given -
-            Status or severity of incidents in campaign was changed
+    Given -
+        Status or severity of incidents in campaign was changed
 
-        When -
-            Get the incidents info
+    When -
+        Get the incidents info
 
-        Then -
-            Validate the updated values is returned
+    Then -
+        Validate the updated values is returned
     """
 
     # prepare
-    mocker.patch.object(demisto, 'results')
-    mocker.patch('GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context', return_value=MOCKED_INCIDENTS)
-    mocker.patch.object(demisto,
-                        'executeCommand',
-                        return_value=[{'Contents': json.dumps(UPDATED_MOCKED_INCIDENTS), 'Type': 'str'}])
+    mocker.patch.object(demisto, "results")
+    mocker.patch("GetCampaignLowSimilarityIncidentsInfo.get_campaign_incidents_from_context", return_value=MOCKED_INCIDENTS)
+    mocker.patch.object(
+        demisto, "executeCommand", return_value=[{"Contents": json.dumps(UPDATED_MOCKED_INCIDENTS), "Type": "str"}]
+    )
 
     # run
     main()
 
     # validate
-    hr = demisto.results.call_args[0][0]['HumanReadable']
-    hr.count('| Archive |') == NUM_OF_INCIDENTS  # all incidents should have the 'Archive' status
-    hr.count('| 3 |') == NUM_OF_INCIDENTS  # all incidents should have severity 3
+    hr = demisto.results.call_args[0][0]["HumanReadable"]
+    hr.count("| Archive |") == NUM_OF_INCIDENTS  # noqa: B015  # all incidents should have the 'Archive' status
+    hr.count("| 3 |") == NUM_OF_INCIDENTS  # noqa: B015  # all incidents should have severity 3
+
+
+@pytest.mark.parametrize(
+    "is_platform_res, version_ge, incident_id, expected_link",
+    [
+        (True, True, "997329", "[997329](/issue-view/997329)"),
+        (True, False, "997329", "[997329](/issue-view/997329)"),
+        (False, True, "997329", "[997329](/Details/997329)"),
+        (False, False, "997329", "[997329](#/Details/997329)"),
+    ],
+)
+def test_get_incident_link_creator(mocker, is_platform_res, version_ge, incident_id, expected_link):
+    """
+    Given:
+        - An incident ID.
+        - Case 1: Unified Cortex platform (XSIAM v3 / XSOAR on platform) -> issue-view URL.
+        - Case 2: Unified Cortex platform takes precedence regardless of demisto version.
+        - Case 3: Cortex XSOAR 8.x (version >= 8.4.0) -> path-based URL.
+        - Case 4: Cortex XSOAR 6.x (version < 8.4.0) -> legacy hash-based URL.
+    When:
+        - Calling the incident link creator.
+    Then:
+        - Ensure the correct link format is produced for each platform (XSUP-78154).
+    """
+    import GetCampaignLowSimilarityIncidentsInfo
+
+    mocker.patch.object(GetCampaignLowSimilarityIncidentsInfo, "is_platform", return_value=is_platform_res)
+    mocker.patch.object(GetCampaignLowSimilarityIncidentsInfo, "is_demisto_version_ge", return_value=version_ge)
+
+    assert GetCampaignLowSimilarityIncidentsInfo.get_incident_link_creator()(incident_id) == expected_link

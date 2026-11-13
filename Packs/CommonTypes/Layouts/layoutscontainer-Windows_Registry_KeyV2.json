@@ -560,7 +560,7 @@
                         "h": 2,
                         "i": "indicator-quick-view-info-reputationSources",
                         "moved": false,
-                        "name": "Reputation",
+                        "name": "Verdict",
                         "static": false,
                         "type": "reputationSources",
                         "w": 1,
@@ -689,5 +689,9 @@
     "name": "Registry Key Indicator",
     "system": false,
     "version": -1,
-    "fromVersion": "6.10.0"
+    "fromVersion": "6.10.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

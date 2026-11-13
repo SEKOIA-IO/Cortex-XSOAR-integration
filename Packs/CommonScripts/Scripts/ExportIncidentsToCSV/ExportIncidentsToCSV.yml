@@ -18,7 +18,7 @@ dependson:
   must:
   - core-api-post
   - core-api-get
-dockerimage: demisto/python3:3.10.13.83255
+dockerimage: demisto/python3:3.12.14.13495286
 enabled: true
 name: ExportIncidentsToCSV
 runas: DBotWeakRole
@@ -32,5 +32,13 @@ fromversion: 6.5.0
 marketplaces:
 - xsoar
 - marketplacev2
+- platform
+supportedModules:
+- agentix
+- cloud
+- cloud_runtime_security
+- cloud_posture
+- xsiam
+- edr
 tests:
 - No tests (auto formatted)

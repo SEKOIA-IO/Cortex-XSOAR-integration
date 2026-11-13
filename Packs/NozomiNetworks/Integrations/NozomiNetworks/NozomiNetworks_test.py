@@ -1,21 +1,33 @@
 import pytest
 from NozomiNetworks import *
+import demistomock as demisto
+from unittest.mock import MagicMock, patch
 
-NOZOMIGUARDIAN_URL = 'https://test.com'
+demisto.callingContext = {"context": {"IntegrationBrand": "NozomiNetworks"}}
+
+NOZOMIGUARDIAN_URL = "https://test.com"
 
 
-@pytest.mark.parametrize('obj, expected', [({'last_id': "an_id"}, True), ({}, False), (None, False), ])
-def test_has_last_id(obj, expected):
-    assert has_last_id(obj) is expected
+def mock_sign_in(client):
+    client.bearer_token = "mock_access_token"
+    client.token_expiry = datetime.now() + timedelta(seconds=1800)
+    client.use_basic_auth = False
 
 
-@pytest.mark.parametrize('obj, expected', [({'last_fetch': "a_timestamp"}, True), ({}, False), (None, False), ])
+@pytest.fixture
+def client_with_mock_sign_in():
+    client = Client(base_url=NOZOMIGUARDIAN_URL)
+    client.sign_in = MagicMock(side_effect=lambda: mock_sign_in(client))
+    return client
+
+
+@pytest.mark.parametrize("obj, expected", [({"last_fetch": "a_timestamp"}, True), ({}, False), (None, False)])
 def test_has_last_run(obj, expected):
     assert has_last_run(obj) is expected
 
 
 def test_start_time_return_value():
-    assert start_time({'last_fetch': 1540390400000}) == "1540390400000"
+    assert start_time({"last_fetch": 1540390400000}) == "1540390400000"
 
 
 def test_start_time_return_timestamp():
@@ -25,89 +37,216 @@ def test_start_time_return_timestamp():
 
 
 def test_start_time_if_last_run_0_return_default():
-    time = start_time({'last_fetch': '0'})
+    time = start_time({"last_fetch": "0"})
     assert time is not None
     assert len(time) == 13
 
 
-@pytest.mark.parametrize('obj, expected', [(None, ''), ('', ''), ("1540390400000", " | where time > 1540390400000"), ])
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        (None, ""),
+        ("", ""),
+        ("1540390400000", " | where record_created_at > 1540390400000"),
+    ],
+)
 def test_time_filter(obj, expected):
     assert better_than_time_filter(obj) == expected
 
 
-@pytest.mark.parametrize('obj, expected', [(None, ''), ('', ''), ("1540390400000", " | where time == 1540390400000"), ])
-def test_equal_time_filter_with_ts(obj, expected):
-    assert equal_than_time_filter(obj) == expected
+def test_incidents_when_ibtt_is_none(requests_mock):
+    st = "1392048082000"
+    last_run = {"last_fetch": "1392048082000"}
+    risk = "4"
+    also_n2os_incidents = True
+
+    client = __get_client([], requests_mock)
+
+    with patch("NozomiNetworks.incidents_better_than_time", return_value=None):
+        incidents_result, lft = incidents(st, last_run, risk, also_n2os_incidents, client)
+
+        assert incidents_result == []
+        assert lft == last_run.get("last_fetch", st)
 
 
 def test_parse_incidents():
     i = parse_incident(
-        {'id': '1af93f46-65c1-4f52-a46a-2a181597fb0c', 'type_id': 'NET:RST-FROM-SLAVE',
-         'name': 'Link RST sent by Slave',
-         'description': 'The slave 10.197.23.139 sent a RST of the connection to the master.', 'severity': 10,
-         'mac_src': '00:02:3e:99:c9:5d', 'mac_dst': '00:c0:c9:30:04:f1', 'ip_src': '10.197.23.182',
-         'ip_dst': '10.197.23.139', 'risk': '4.5', 'protocol': 'iec104', 'src_roles': 'master', 'dst_roles': 'slave',
-         'time': 1392048082242, 'ack': False, 'port_src': 1097, 'port_dst': 2404, 'status': 'open', 'threat_name': '',
-         'type_name': 'Link RST sent by Slave', 'zone_src': 'RemoteRTU', 'zone_dst': 'RemoteRTU'})
-    del i['occurred']
+        {
+            "id": "1af93f46-65c1-4f52-a46a-2a181597fb0c",
+            "type_id": "NET:RST-FROM-SLAVE",
+            "name": "Link RST sent by Slave",
+            "description": "The slave 10.197.23.139 sent a RST of the connection to the master.",
+            "severity": 10,
+            "mac_src": "00:02:3e:99:c9:5d",
+            "mac_dst": "00:c0:c9:30:04:f1",
+            "ip_src": "10.197.23.182",
+            "ip_dst": "10.197.23.139",
+            "risk": "4.5",
+            "protocol": "iec104",
+            "src_roles": "master",
+            "dst_roles": "slave",
+            "record_created_at": 1392048082242,
+            "ack": False,
+            "port_src": 1097,
+            "port_dst": 2404,
+            "status": "open",
+            "threat_name": "",
+            "type_name": "Link RST sent by Slave",
+            "zone_src": "RemoteRTU",
+            "zone_dst": "RemoteRTU",
+        }
+    )
+
+    del i["occurred"]
 
     assert i == {
-        'name': 'Link RST sent by Slave_1af93f46-65c1-4f52-a46a-2a181597fb0c',
-        'severity': 2,
-        'rawJSON': '{"id": "1af93f46-65c1-4f52-a46a-2a181597fb0c", '
-                   '"type_id": "NET:RST-FROM-SLAVE", "name": "Link RST sent by Slave", '
-                   '"description": "The slave 10.197.23.139 sent a RST of the connection to the master.", '
-                   '"severity": 10, "mac_src": "00:02:3e:99:c9:5d", "mac_dst": "00:c0:c9:30:04:f1", '
-                   '"ip_src": "10.197.23.182", "ip_dst": "10.197.23.139", "risk": "4.5", "protocol": "iec104", '
-                   '"src_roles": "master", "dst_roles": "slave", "time": 1392048082242, "ack": false, '
-                   '"port_src": 1097, "port_dst": 2404, "status": "open", "threat_name": "", '
-                   '"type_name": "Link RST sent by Slave", "zone_src": "RemoteRTU", "zone_dst": "RemoteRTU"}'
+        "name": "Link RST sent by Slave_1af93f46-65c1-4f52-a46a-2a181597fb0c",
+        "severity": 1,
+        "rawJSON": '{"id": "1af93f46-65c1-4f52-a46a-2a181597fb0c", '
+        '"type_id": "NET:RST-FROM-SLAVE", "name": "Link RST sent by Slave", '
+        '"description": "The slave 10.197.23.139 sent a RST of the connection to the master.", '
+        '"severity": 10, "mac_src": "00:02:3e:99:c9:5d", "mac_dst": "00:c0:c9:30:04:f1", '
+        '"ip_src": "10.197.23.182", "ip_dst": "10.197.23.139", "risk": "4.5", "protocol": "iec104", '
+        '"src_roles": "master", "dst_roles": "slave", "record_created_at": 1392048082242, "ack": false, '
+        '"port_src": 1097, "port_dst": 2404, "status": "open", "threat_name": "", '
+        '"type_name": "Link RST sent by Slave", "zone_src": "RemoteRTU", "zone_dst": "RemoteRTU"}',
     }
 
 
-@pytest.mark.parametrize('obj, expected', [(10, 4), (9.0, 4), (8.5, 4), (2.3, 1), (1.6, 1)])
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        (0, 1),
+        (1, 1),
+        (1.6, 1),
+        (2.3, 1),
+        (5, 1),
+        (5.9, 1),
+        ("6", 2),
+        (6, 2),
+        (7, 2),
+        (7.9, 2),
+        (8, 3),
+        (8.5, 3),
+        ("9.0", 3),
+        (9, 3),
+        (9.9, 3),
+        (10, 4),
+        ("10.0", 4),
+    ],
+)
 def test_parse_severity(obj, expected):
-    assert parse_severity({'risk': obj}) is expected
+    assert parse_severity({"risk": obj}) == expected
 
 
 def test_http_incident_request(requests_mock):
-    request_path = '/api/open/query/do?query=alerts'
+    request_path = "/api/open/query/do?query=alerts"
     r = __get_client(
-        [
-            {
-                'json': __load_test_data('./test_data/query_alerts.json'),
-                'path': request_path
-            }
-        ],
-        requests_mock).http_get_request(request_path)
-    assert len(r['result']) == 126
-    assert r['total'] == 126
+        [{"json": __load_test_data("./test_data/query_alerts.json"), "path": request_path}], requests_mock
+    ).http_get_request(request_path)
+    assert len(r["result"]) == 126
+    assert r["total"] == 126
 
 
-def test_incidents_better_than_id():
-    filtered = incidents_better_than_id([{'id': 'a'}, {'id': 'b'}, {'id': 'f'}, {'id': '0'}], 'a')
-    assert filtered == [{'id': 'b'}, {'id': 'f'}]
+def test_response_with_error():
+    client = MagicMock()
+
+    client.http_post_request.return_value = {"error": "pippo"}
+
+    assert ack_unack_alerts(ids=[1, 2, 3], status=True, client=client) is None
+
+
+def test_ack_unack_alerts_no_call_for_empty_data():
+    client = MagicMock()
+    ack_unack_alerts([], True, client)
+    client.http_post_request.assert_not_called()
 
 
 def test_incidents_filtered(requests_mock):
-    fi, lr, lid = incidents(
-        '1392048082000',
-        None,
+    fi, lr = incidents(
+        "1392048082000",
         {},
-        '4',
+        "4",
         True,
         __get_client(
-            [{'json': __load_test_data('./test_data/incidents_better_than_time.json'),
-              'path': '/api/open/query/do?query=alerts | sort time asc | sort id asc '
-              '| where time > 1392048082000 | where risk >= 4 | head 20'}],
-            requests_mock))
+            [
+                {
+                    "json": __load_test_data("./test_data/incidents_better_than_time.json"),
+                    "path": "/api/open/query/do?query=alerts | sort record_created_at asc "
+                    "| where record_created_at > 1392048082000 | where risk >= 4&page=1&count=100",
+                }
+            ],
+            requests_mock,
+        ),
+    )
 
-    assert lid is not None
     assert lr == 1392048082242
-    assert list(map(lambda i: {
-        'name': f"{i['name'].partition('_')[0]}",
-        'severity': i['severity']
-    }, fi)) == [{'name': 'Link RST sent by Slave', 'severity': 2}, {'name': 'New Node', 'severity': 4}]
+    assert [{"name": f"{i['name'].partition('_')[0]}", "severity": i["severity"]} for i in fi] == [
+        {"name": "Link RST sent by Slave", "severity": 1},
+        {"name": "New Node", "severity": 3},
+    ]
+
+
+def test_incidents_equal_to_time_returns_data(requests_mock):
+    import urllib.parse
+
+    st = "1392048082000"
+    risk = "4"
+    also_n2os_incidents = True
+
+    query = f"alerts | sort record_created_at asc | where record_created_at == {st} | where risk >= 4"
+    request_path = f"/api/open/query/do?query={urllib.parse.quote(query)}&page=1&count=100"
+
+    client = __get_client(
+        [
+            {
+                "json": {
+                    "result": [
+                        {"id": 1, "name": "Exact Time Incident 1", "record_created_at": int(st), "risk": 5.0},
+                        {"id": 2, "name": "Exact Time Incident 2", "record_created_at": int(st), "risk": 4.0},
+                    ],
+                    "total": 2,
+                },
+                "path": request_path,
+            }
+        ],
+        requests_mock,
+    )
+
+    incidents_result = incidents_equal_to_time(st, page=1, risk=risk, also_n2os_incidents=also_n2os_incidents, client=client)
+
+    assert requests_mock.called
+    assert len(incidents_result) == 2
+    assert incidents_result[0]["name"] == "Exact Time Incident 1"
+    assert incidents_result[1]["name"] == "Exact Time Incident 2"
+
+
+def test_incidents_calls_equal_to_time_when_max_page_reached():
+    st = "1392048082000"
+    last_run = {"last_fetch": st, "page": MAX_PAGE_NUMBER_REACHABLE}
+    risk = "4"
+    also_n2os_incidents = True
+
+    mock_ibtt = [{"id": 1, "name": "From Better Than", "record_created_at": int(st), "risk": 5.0}]
+    mock_iett = [
+        {"id": 1, "name": "From Better Than", "record_created_at": int(st), "risk": 5.0},
+        {"id": 2, "name": "From Equal To", "record_created_at": int(st), "risk": 4.0},
+    ]
+
+    client = MagicMock()
+
+    with (
+        patch("NozomiNetworks.incidents_better_than_time", return_value=mock_ibtt) as mock_btt,
+        patch("NozomiNetworks.incidents_equal_to_time", return_value=mock_iett) as mock_ett,
+    ):
+        results, lft = incidents(st, last_run, risk, also_n2os_incidents, client)
+
+        assert mock_btt.called
+        assert mock_ett.called
+        assert len(results) == 2
+        names = [i["name"].split("_")[0] for i in results]  # remove incident ID suffix
+        assert "From Better Than" in names
+        assert "From Equal To" in names
 
 
 def test_nozomi_alerts_ids_from_demisto_incidents():
@@ -115,49 +254,173 @@ def test_nozomi_alerts_ids_from_demisto_incidents():
 
 
 def test_is_alive(requests_mock):
-    assert is_alive(
-        __get_client(
-            [{'json': __load_test_data('./test_data/alive.json'), 'path': '/api/open/query/do?query=alerts | count'}],
-            requests_mock)) == 'ok'
+    requests_mock.post(
+        f"{NOZOMIGUARDIAN_URL}/api/open/sign_in",
+        json={"access_token": "mock_access_token", "token_type": "Bearer", "expires_in": 1800},
+    )
+
+    requests_mock.get(
+        f"{NOZOMIGUARDIAN_URL}/api/open/query/do?query=alerts | count", json={"result": [{"count": 126}], "total": 1}
+    )
+
+    client = Client(base_url=NOZOMIGUARDIAN_URL)
+    assert is_alive(client) == "ok"
 
 
 def test_ids_from_incidents():
-    assert ids_from_incidents([{'id': 1}, {'id': 2}]) == [1, 2]
+    assert ids_from_incidents([{"id": 1}, {"id": 2}]) == [1, 2]
 
 
-@pytest.mark.parametrize('obj, expected', [('8', ' | where risk >= 8'), ('', ''), (None, '')])
+@pytest.mark.parametrize("obj, expected", [("8", " | where risk >= 8"), ("", ""), (None, "")])
 def test_risk_filter(obj, expected):
     assert risk_filter(obj) == expected
 
 
-@pytest.mark.parametrize('obj, expected', [(True, ''), (False, ' | where is_incident == false')])
+@pytest.mark.parametrize(
+    "obj, expected",
+    [
+        (None, ""),
+        ("", ""),
+        ("   ", ""),
+        ("where risk >= 8", " | where risk >= 8"),
+        ("  where risk >= 8  ", " | where risk >= 8"),
+        ("| where risk >= 8", " | where risk >= 8"),
+        ("|where risk >= 8", " |where risk >= 8"),
+        ("where risk >= 8 | where is_security == true", " | where risk >= 8 | where is_security == true"),
+    ],
+)
+def test_custom_alert_filter(obj, expected):
+    assert custom_alert_filter(obj) == expected
+
+
+def test_incidents_with_custom_alert_filter(requests_mock):
+    with patch.object(demisto, "params", return_value={"customAlertFilter": "where type_id == SIGN:MALWARE-DETECTED"}):
+        fi, _ = incidents(
+            "1392048082000",
+            {},
+            "4",
+            False,
+            __get_client(
+                [
+                    {
+                        "json": __load_test_data("./test_data/incidents_better_than_time.json"),
+                        "path": "/api/open/query/do?query=alerts | sort record_created_at asc "
+                        "| where record_created_at > 1392048082000 | where risk >= 4 | where is_incident == false "
+                        "| where type_id == SIGN:MALWARE-DETECTED&page=1&count=100",
+                    }
+                ],
+                requests_mock,
+            ),
+        )
+
+    assert len(fi) == 2
+
+
+@pytest.mark.parametrize(
+    "demisto_params, expected",
+    [
+        ({}, []),
+        ({"defaultIncidentRole": ""}, []),
+        ({"defaultIncidentRole": "Administrator"}, ["Administrator"]),
+        ({"defaultIncidentRole": "Analyst_L2"}, ["Analyst_L2"]),
+        ({"defaultIncidentRole": "Analyst_L2, Administrator"}, ["Analyst_L2", "Administrator"]),
+    ],
+)
+def test_default_incident_roles(demisto_params, expected):
+    with patch.object(demisto, "params", return_value=demisto_params):
+        assert default_incident_roles() == expected
+
+
+def test_parse_incident_with_roles():
+    alert = {"id": "1", "name": "New Node", "record_created_at": 1392048082242, "risk": "9.0"}
+
+    assert parse_incident(alert, ["Analyst_L2"])["roles"] == ["Analyst_L2"]
+    assert "roles" not in parse_incident(alert)
+    assert "roles" not in parse_incident(alert, [])
+
+
+def test_fetch_incidents_assigns_default_role():
+    alerts = [
+        {"id": "1", "name": "New Node", "record_created_at": 1392048082242, "risk": "9.0"},
+        {"id": "2", "name": "Link RST sent by Slave", "record_created_at": 1392048082242, "risk": "4.5"},
+    ]
+    client = MagicMock()
+    client.http_get_request.return_value = {"result": alerts}
+
+    with (
+        patch.object(demisto, "params", return_value={"defaultIncidentRole": "Analyst_L2"}),
+        patch.object(demisto, "incidents") as mock_incidents,
+        patch.object(demisto, "setLastRun"),
+    ):
+        fetch_incidents(client, st="1392048082000", last_run={"page": 1}, risk="1", fetch_also_n2os_incidents=True)
+
+    created_incidents = mock_incidents.call_args[0][0]
+    assert len(created_incidents) == 2
+    assert all(incident["roles"] == ["Analyst_L2"] for incident in created_incidents)
+
+
+def test_fetch_incidents_without_default_role():
+    alerts = [{"id": "1", "name": "New Node", "record_created_at": 1392048082242, "risk": "9.0"}]
+    client = MagicMock()
+    client.http_get_request.return_value = {"result": alerts}
+
+    with patch.object(demisto, "params", return_value={}):
+        fetched, _ = fetch_incidents(
+            client, st="1392048082000", last_run={"page": 1}, risk="1", fetch_also_n2os_incidents=True, test_mode=True
+        )
+
+    assert "roles" not in fetched[0]
+
+
+@pytest.mark.parametrize("obj, expected", [(True, ""), (False, " | where is_incident == false")])
 def test_also_n2os_incidents_filter_true(obj, expected):
-    assert also_n2os_incidents_filter(True) == ''
+    assert also_n2os_incidents_filter(True) == ""
 
 
 def test_find_assets(requests_mock):
-    result = find_assets({}, __get_client(
-        [
-            {
-                'json': __load_test_data('./test_data/find_assets.json'),
-                'path': '/api/open/query/do?query=assets | sort id | head 50'
-            }
-        ],
-        requests_mock
-    ))
+    result = find_assets(
+        {},
+        __get_client(
+            [
+                {
+                    "json": __load_test_data("./test_data/find_assets.json"),
+                    "path": "/api/open/query/do?query=assets | sort id | head 50",
+                }
+            ],
+            requests_mock,
+        ),
+    )
 
-    assert ('### Nozomi Networks - Results for Find Assets' in result['readable_output']) is True
-    assert len(result['outputs']) == 8
-    assert result['outputs_key_field'] == 'id'
-    assert result['outputs_prefix'] == 'Nozomi.Asset'
+    assert ("### Nozomi Networks - Results for Find Assets" in result["readable_output"]) is True
+    assert len(result["outputs"]) == 8
+    assert result["outputs_key_field"] == "id"
+    assert result["outputs_prefix"] == "Nozomi.Asset"
+
+
+def test_find_assets_with_none_result_in_loop(requests_mock):
+    response_sequence = [{"result": None}, {"result": [{"id": "1", "name": "Asset 1"}]}]
+
+    client = MagicMock()
+    client.http_get_request = MagicMock(side_effect=response_sequence)
+
+    args = {}
+    head = 10
+    result = find_assets(args, client, head=head)
+
+    client.http_get_request.assert_called()
+    assert len(result["outputs"]) == 1
+    assert result["outputs"][0]["id"] == "1"
+    assert "Nozomi.Asset" in result["outputs_prefix"]
+    assert result["outputs_key_field"] == "id"
+    assert "Asset 1" in result["readable_output"]
 
 
 def test_assets_limit_from_args():
-    assert assets_limit_from_args({'limit': 40}) == 40
+    assert assets_limit_from_args({"limit": 40}) == 40
 
 
 def test_assets_limit_from_args_string():
-    assert assets_limit_from_args({'limit': '40'}) == 40
+    assert assets_limit_from_args({"limit": "40"}) == 40
 
 
 def test_assets_limit_from_args_empty():
@@ -165,7 +428,7 @@ def test_assets_limit_from_args_empty():
 
 
 def test_assets_max_limit_reached_return_1000():
-    assert assets_limit_from_args({'limit': 1001}) == 100
+    assert assets_limit_from_args({"limit": 1001}) == 100
 
 
 def test_assets_limit_from_args_none():
@@ -174,117 +437,418 @@ def test_assets_limit_from_args_none():
 
 def test_find_assets_empty(requests_mock):
     result = find_assets(
-        {'filter': ' | where level == 4'},
+        {"filter": " | where level == 4"},
         __get_client(
             [
                 {
-                    'json': __load_test_data('./test_data/empty_find_asset.json'),
-                    'path': '/api/open/query/do?query=assets | sort id | where level == 4 | head 50'
+                    "json": __load_test_data("./test_data/empty_find_asset.json"),
+                    "path": "/api/open/query/do?query=assets | sort id | where level == 4 | head 50",
                 }
             ],
-            requests_mock
-        ))
-    assert result['outputs'] == []
-    assert result['readable_output'] == 'Nozomi Networks - No assets found'
+            requests_mock,
+        ),
+    )
+    assert result["outputs"] == []
+    assert result["readable_output"] == "Nozomi Networks - No assets found"
 
 
 def test_better_than_id_filter_empty():
-    assert better_than_id_filter(None) == ''
-    assert better_than_id_filter('') == ''
+    assert better_than_id_filter(None) == ""
+    assert better_than_id_filter("") == ""
 
 
 def test_better_than_id_filter():
-    assert better_than_id_filter('an_id') == ' | where id > an_id'
+    assert better_than_id_filter("an_id") == " | where id > an_id"
 
 
 def test_filter_from_args_empty():
     filter_from_args({})
-    assert filter_from_args({}) == ''
+    assert filter_from_args({}) == ""
 
 
 def test_filter_from_args_none():
-    assert filter_from_args(None) == ''
+    assert filter_from_args(None) == ""
 
 
 def test_filter_from_args_valid():
-    assert filter_from_args({'filter': ' | where id == 123'}) == ' | where id == 123'
+    assert filter_from_args({"filter": " | where id == 123"}) == " | where id == 123"
 
 
 def test_filter_without_where():
-    assert filter_from_args({'filter': 'id == 123'}) == ' | where id == 123'
+    assert filter_from_args({"filter": "id == 123"}) == " | where id == 123"
 
 
 def test_filter_with_where():
-    assert filter_from_args({'filter': '| where id == 123'}) == '| where id == 123'
+    assert filter_from_args({"filter": "| where id == 123"}) == "| where id == 123"
 
 
 def test_ip_from_mac(requests_mock):
-    mac = '00:d0:c9:ca:bd:6a'
+    mac = "00:d0:c9:ca:bd:6a"
     result = find_ip_by_mac(
-        {'mac': mac, 'only_nodes_confirmed': False},
+        {"mac": mac, "only_nodes_confirmed": False},
         __get_client(
             [
                 {
-                    'json': __load_test_data('./test_data/find_by_mac.json'),
-                    'path': '/api/open/query/do?query=nodes | select ip mac_address '
-                            '| where mac_address == 00:d0:c9:ca:bd:6a'
+                    "json": __load_test_data("./test_data/find_by_mac.json"),
+                    "path": "/api/open/query/do?query=nodes | select ip mac_address | where mac_address == 00:d0:c9:ca:bd:6a",
                 }
             ],
-            requests_mock
-        ))
-    assert result['readable_output'] == "Nozomi Networks - Results for the Ip from Mac Search is " \
-                                        "['10.196.97.231', '172.16.0.4']"
-    assert result['outputs'] == {'ips': ['10.196.97.231', '172.16.0.4'], 'mac': mac}
-    assert result['outputs_prefix'] == 'Nozomi.IpByMac'
-    assert result['outputs_key_field'] is None
+            requests_mock,
+        ),
+    )
+    assert result["readable_output"] == "Nozomi Networks - Results for the Ip from Mac Search is ['10.196.97.231', '172.16.0.4']"
+    assert result["outputs"] == {"ips": ["10.196.97.231", "172.16.0.4"], "mac": mac}
+    assert result["outputs_prefix"] == "Nozomi.IpByMac"
+    assert result["outputs_key_field"] is None
 
 
 def test_ip_from_mac_not_found(requests_mock):
     result = find_ip_by_mac(
-        {'mac': '12:33:44:55:bd:6a', 'only_nodes_confirmed': False},
+        {"mac": "12:33:44:55:bd:6a", "only_nodes_confirmed": False},
         __get_client(
             [
                 {
-                    'json': __load_test_data('./test_data/empty_find_by_mac.json'),
-                    'path': '/api/open/query/do?query=nodes | select ip mac_address '
-                            '| where mac_address == 12:33:44:55:bd:6a'
+                    "json": __load_test_data("./test_data/empty_find_by_mac.json"),
+                    "path": "/api/open/query/do?query=nodes | select ip mac_address | where mac_address == 12:33:44:55:bd:6a",
                 }
             ],
-            requests_mock
-        ))
-    assert result['readable_output'] == 'Nozomi Networks - No IP results were found for mac address: 12:33:44:55:bd:6a'
-    assert result['outputs'] is None
+            requests_mock,
+        ),
+    )
+    assert result["readable_output"] == "Nozomi Networks - No IP results were found for mac address: 12:33:44:55:bd:6a"
+    assert result["outputs"] is None
+
+
+def test_incidents_head_limit(requests_mock):
+    import urllib.parse
+
+    query = "alerts | sort record_created_at asc | where record_created_at > 1392048082000 | where risk >= 4"
+    request_path = f"/api/open/query/do?query={urllib.parse.quote(query)}&page=1&count=100"
+
+    client = __get_client(
+        [
+            {
+                "json": {
+                    "result": [
+                        {
+                            "id": 1,
+                            "name": "Mock Incident 1",
+                            "record_created_at": 1392048082001,
+                            "risk": 4.5,  # Example field for severity parsing
+                        },
+                        {"id": 2, "name": "Mock Incident 2", "record_created_at": 1392048082002, "risk": 3.0},
+                    ],
+                    "total": 2,
+                },
+                "path": request_path,
+            }
+        ],
+        requests_mock,
+    )
+
+    incidents_result, lft = incidents("1392048082000", {}, "4", True, client)
+
+    assert requests_mock.called
+    assert lft == 1392048082002
+    assert len(incidents_result) == 2
+    assert incidents_result[0]["name"] == "Mock Incident 1_1"
+    assert incidents_result[1]["name"] == "Mock Incident 2_2"
+
+
+def test_last_fetched_time_empty_incidents():
+    last_run = {"last_fetch": 1392048082000}
+    result = last_fetched_time([], last_run)
+    assert result == 1392048082000
+
+    incidents = [{"id": 1}]
+    result = last_fetched_time(incidents, last_run)
+    assert result == 1392048082000
 
 
 def test_query_count_alerts(requests_mock):
     result = query(
-        {'query': 'alerts | count'},
+        {"query": "alerts | count"},
         __get_client(
-            [
-                {
-                    'json': __load_test_data('./test_data/alive.json'),
-                    'path': '/api/open/query/do?query=alerts | count | head 500'
-                }
-            ],
-            requests_mock
-        ))
-    assert result['outputs'] == [{'count': 126}]
-    assert result['outputs_prefix'] == 'Nozomi.Query.Result'
-    assert result['outputs_key_field'] == ''
+            [{"json": __load_test_data("./test_data/alive.json"), "path": "/api/open/query/do?query=alerts | count | head 500"}],
+            requests_mock,
+        ),
+    )
+    assert result["outputs"] == [{"count": 126}]
+    assert result["outputs_prefix"] == "Nozomi.Query.Result"
+    assert result["outputs_key_field"] == ""
+
+
+def test_sign_in(client_with_mock_sign_in):
+    client = client_with_mock_sign_in
+    client.sign_in()
+    assert client.bearer_token == "mock_access_token"
+    assert not client.use_basic_auth
+
+
+def test_fallback_to_basic_auth_real_logic(requests_mock, capfd):
+    with capfd.disabled():
+        client = Client(base_url=NOZOMIGUARDIAN_URL)
+        requests_mock.post(f"{NOZOMIGUARDIAN_URL}/api/open/sign_in", status_code=500)
+        try:
+            client.sign_in()
+        except Exception as e:
+            assert "Authentication failed" in str(e)
+
+        assert client.use_basic_auth
+
+
+def test_sign_in_successful(requests_mock):
+    requests_mock.post(
+        f"{NOZOMIGUARDIAN_URL}/api/open/sign_in", json={}, status_code=200, headers={"Authorization": "Bearer mock_token"}
+    )
+
+    client = Client(base_url=NOZOMIGUARDIAN_URL, auth_credentials=("mock_key", "mock_token"))
+    client.sign_in()
+
+    assert client.bearer_token == "Bearer mock_token"
+    assert not client.use_basic_auth
+
+
+def test_sign_in_failure_with_auth_fallback(requests_mock):
+    requests_mock.post(f"{NOZOMIGUARDIAN_URL}/api/open/sign_in", status_code=401, text="Unauthorized")
+
+    client = Client(base_url=NOZOMIGUARDIAN_URL, auth_credentials=("mock_key", "mock_token"))
+    client.sign_in()
+
+    assert client.bearer_token is None
+    assert client.use_basic_auth
+
+
+def test_sign_in_exception_handling(requests_mock):
+    requests_mock.post(f"{NOZOMIGUARDIAN_URL}/api/open/sign_in", exc=requests.exceptions.ConnectionError)
+
+    client = Client(base_url=NOZOMIGUARDIAN_URL, auth_credentials=("mock_key", "mock_token"))
+    client.sign_in()
+
+    assert client.bearer_token is None
+    assert client.use_basic_auth
+
+
+def test_request_auth_failure():
+    __run_request_test(401, "Authentication failure or resource forbidden.")
+
+
+def test_request_forbidden_failure():
+    __run_request_test(403, "Authentication failure or resource forbidden.")
+
+
+@patch("NozomiNetworks.handle_proxy")
+def test_build_proxies_with_proxy_enabled(mock_handle_proxy):
+    mock_handle_proxy.return_value = {"http": "pippoebasta"}
+
+    client = Client(base_url="https://test.com", proxy=True)
+    proxies = client.build_proxies()
+
+    assert proxies == {"http": "pippoebasta"}
+    mock_handle_proxy.assert_called_once()
+
+
+def test_build_proxies_without_proxy():
+    client = Client(base_url="https://test.com", proxy=False)
+    proxies = client.build_proxies()
+    assert proxies == {}
+
+
+def test_build_proxies_with_none_proxy():
+    client = Client(base_url="https://test.com", proxy=None)
+    proxies = client.build_proxies()
+    assert proxies == {}
+
+
+@pytest.mark.parametrize(
+    "use_basic_auth, bearer_token, expected_headers",
+    [
+        (True, "dummy_token", {"accept": "application/json"}),
+        (False, "Bearer my_token", {"accept": "application/json", "Authorization": "Bearer my_token"}),
+        (True, None, {"accept": "application/json"}),
+    ],
+)
+def test_build_headers(use_basic_auth, bearer_token, expected_headers):
+    client = Client(bearer_token=bearer_token, use_basic_auth=use_basic_auth)
+    assert client.build_headers() == expected_headers
+
+
+@pytest.mark.parametrize(
+    "demisto_params, expected_result, expect_exception",
+    [
+        ({"incidentPerRun": "15"}, 15, False),
+        ({}, DEFAULT_COUNT_ALERTS, False),
+        ({"incidentPerRun": "abc"}, None, True),
+    ],
+)
+def test_incident_per_run(demisto_params, expected_result, expect_exception):
+    with patch("NozomiNetworks.demisto") as mock_demisto:
+        mock_demisto.params.return_value = demisto_params
+        if expect_exception:
+            with pytest.raises(ValueError):
+                incident_per_run()
+        else:
+            result = incident_per_run()
+            assert result == expected_result
+
+
+@pytest.mark.parametrize(
+    "current_page, incidents_count, incident_per_run_value, expected_next_page",
+    [
+        (50, 10, 20, 1),
+        (50, 30, 20, 51),
+        (100, 10, 20, 1),
+        (99, 0, 20, 99),
+        (100, 0, 20, 100),
+        (50, 20, 20, 51),
+        (100, 50, 20, 1),
+    ],
+)
+def test_build_next_page(current_page, incidents_count, incident_per_run_value, expected_next_page):
+    with patch("NozomiNetworks.incident_per_run", return_value=incident_per_run_value):
+        result = build_next_page(current_page, incidents_count)
+        assert result == expected_next_page
+
+
+@pytest.mark.parametrize(
+    "last_fetch, next_page, st, expected_result",
+    [
+        (1672531200000, 1, 1672617600000, 1672531200000),
+        (1672531200000, 2, 1672617600000, 1672617600000),
+        (1672531200000, 10, 1672617600000, 1672617600000),
+    ],
+)
+def test_last_fetch_to_set(last_fetch, next_page, st, expected_result):
+    result = last_fetch_to_set(last_fetch, next_page, st)
+    assert result == expected_result
 
 
 def __get_client(dummy_responses, requests_mock):
-    for dummy_response in dummy_responses:
-        requests_mock.get(
-            f'{NOZOMIGUARDIAN_URL}{dummy_response["path"]}',
-            json=dummy_response["json"]
-        )
-    return Client(
-        f'{NOZOMIGUARDIAN_URL}',
-        auth=('test', 'test')
+    requests_mock.post(
+        f"{NOZOMIGUARDIAN_URL}/api/open/sign_in",
+        json={"access_token": "mock_access_token", "token_type": "Bearer", "expires_in": 1800},
     )
+
+    for dummy_response in dummy_responses:
+        requests_mock.get(f'{NOZOMIGUARDIAN_URL}{dummy_response["path"]}', json=dummy_response["json"])
+
+    client = Client(base_url=NOZOMIGUARDIAN_URL)
+
+    client.sign_in()
+
+    return client
+
+
+def __run_request_test(status_code, expected_exception_message):
+    client = Client(base_url=NOZOMIGUARDIAN_URL)
+    client.bearer_token = "mock_token"
+
+    with patch("NozomiNetworks.requests.request") as mock_request:
+        mock_response = MagicMock()
+        mock_response.status_code = status_code
+        mock_request.return_value = mock_response
+
+        with pytest.raises(Exception) as exc_info:
+            client._make_request("GET", "/test/path")
+
+        assert str(exc_info.value) == expected_exception_message
 
 
 def __load_test_data(json_path):
     with open(json_path) as f:
         return json.load(f)
+
+
+CUSTOM_NAME_ALERT = {
+    "id": "1af93f46-65c1-4f52-a46a-2a181597fb0c",
+    "type_id": "NET:RST-FROM-SLAVE",
+    "name": "Link RST sent by Slave",
+    "description": "The slave 10.197.23.139 sent a RST of the connection to the master.",
+    "risk": "4.5",
+    "record_created_at": 1392048082242,
+}
+DEFAULT_NAME = "Link RST sent by Slave_1af93f46-65c1-4f52-a46a-2a181597fb0c"
+
+
+def test_incident_name_default_without_pattern():
+    assert incident_name(CUSTOM_NAME_ALERT) == DEFAULT_NAME
+    assert incident_name(CUSTOM_NAME_ALERT, "") == DEFAULT_NAME
+
+
+def test_incident_name_custom_pattern():
+    assert incident_name(CUSTOM_NAME_ALERT, "{type_id}_{id}") == "NET:RST-FROM-SLAVE_1af93f46-65c1-4f52-a46a-2a181597fb0c"
+    assert incident_name(CUSTOM_NAME_ALERT, "{name} - {ip_src}") == "Link RST sent by Slave -"
+
+
+def test_incident_name_missing_and_empty_fields():
+    alert = {**CUSTOM_NAME_ALERT, "description": ""}
+    assert incident_name(alert, "{type_id} - {description}") == "NET:RST-FROM-SLAVE -"
+    assert incident_name(alert, "{missing}|{type_id}") == "|NET:RST-FROM-SLAVE"
+    assert incident_name(alert, "{missing}") == DEFAULT_NAME
+
+
+@pytest.mark.parametrize("pattern", ["   ", "\t\n ", "{missing}", " {missing} \t{description} "])
+def test_incident_name_blank_result_falls_back_to_default(pattern):
+    alert = {**CUSTOM_NAME_ALERT, "description": ""}
+    assert incident_name(alert, pattern) == DEFAULT_NAME
+
+
+def test_incident_name_is_deterministic_and_sanitized():
+    alert = {**CUSTOM_NAME_ALERT, "description": "a\nb\t\tc"}
+    pattern = "{{literal}} {type_id} {description}"
+    assert incident_name(alert, pattern) == incident_name(alert, pattern) == "{literal} NET:RST-FROM-SLAVE a b c"
+
+
+def test_incident_name_values_are_not_reinterpolated_or_html():
+    alert = {**CUSTOM_NAME_ALERT, "description": "<script>{type_id}</script>"}
+    assert incident_name(alert, "{description}") == "script{type_id}/script"
+
+
+def test_incident_name_max_length():
+    assert MAX_INCIDENT_NAME_LENGTH == 76
+    name = incident_name({**CUSTOM_NAME_ALERT, "description": "x" * 1000}, "{description}")
+    assert len(name) == MAX_INCIDENT_NAME_LENGTH
+    assert name.endswith("...")
+    exact = incident_name({**CUSTOM_NAME_ALERT, "description": "x" * 76}, "{description}")
+    assert exact == "x" * 76
+
+
+def test_incident_name_long_example_is_truncated():
+    name = incident_name(CUSTOM_NAME_ALERT, "{type_id}_{id} - {description}")
+    assert name == "NET:RST-FROM-SLAVE_1af93f46-65c1-4f52-a46a-2a181597fb0c - The slave 10.19..."
+
+
+def test_parse_incident_uses_name_pattern():
+    assert parse_incident(CUSTOM_NAME_ALERT, name_pattern="{type_id}_{id}")["name"] == (
+        "NET:RST-FROM-SLAVE_1af93f46-65c1-4f52-a46a-2a181597fb0c"
+    )
+    assert parse_incident(CUSTOM_NAME_ALERT, name_pattern="  ")["name"] == DEFAULT_NAME
+    assert parse_incident(CUSTOM_NAME_ALERT)["name"] == DEFAULT_NAME
+
+
+def test_custom_incident_name_pattern_from_params():
+    assert custom_incident_name_pattern({"customIncidentNamePattern": "  {type_id}_{id} "}) == "{type_id}_{id}"
+    assert custom_incident_name_pattern({"customIncidentNamePattern": "   "}) == ""
+    assert custom_incident_name_pattern({"customIncidentNamePattern": None}) == ""
+    assert custom_incident_name_pattern({}) == ""
+
+
+def test_incidents_apply_custom_name_pattern():
+    alerts = [{**CUSTOM_NAME_ALERT, "id": f"id-{n}"} for n in range(3)]
+    with patch("NozomiNetworks.incidents_better_than_time", return_value=alerts):
+        parsed, _ = incidents(0, {}, None, False, MagicMock(), "{type_id}_{id}")
+        default_named, _ = incidents(0, {}, None, False, MagicMock())
+    assert [i["name"] for i in parsed] == [f"NET:RST-FROM-SLAVE_id-{n}" for n in range(3)]
+    assert [i["name"] for i in default_named] == [f"Link RST sent by Slave_id-{n}" for n in range(3)]
+
+
+def test_fetch_incidents_reads_name_pattern_from_params():
+    alerts = [CUSTOM_NAME_ALERT]
+    params = {"customIncidentNamePattern": "{type_id}_{id}", "fetchTime": "7 days"}
+    with (
+        patch.object(demisto, "params", return_value=params),
+        patch.object(demisto, "getLastRun", return_value={}),
+        patch("NozomiNetworks.incidents_better_than_time", return_value=alerts),
+    ):
+        parsed, _ = fetch_incidents(MagicMock(), st="0", last_run={}, test_mode=True)
+    assert parsed[0]["name"] == "NET:RST-FROM-SLAVE_1af93f46-65c1-4f52-a46a-2a181597fb0c"

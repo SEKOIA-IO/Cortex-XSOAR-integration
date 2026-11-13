@@ -7,10 +7,14 @@ Note that adding code to CommonServerUserPython can override functions in Common
 from __future__ import print_function
 
 import base64
+import binascii
 import gc
+import io as _io
 import json
 import logging
 import os
+import pickle as _pickle
+import pickletools
 import re
 import socket
 import sys
@@ -20,11 +24,13 @@ import types
 import urllib
 import gzip
 import ssl
+import signal
 from random import randint
 import xml.etree.cElementTree as ET
 from collections import OrderedDict
 from datetime import datetime, timedelta
 from abc import abstractmethod
+
 from distutils.version import LooseVersion
 from threading import Lock
 from functools import wraps
@@ -39,13 +45,16 @@ def __line__():
     return cf.f_back.f_lineno  # type: ignore[union-attr]
 
 
-# 43 - The line offset from the beginning of the file.
+# The number is the line offset from the beginning of the file. If you added an import, update this number accordingly.
 _MODULES_LINE_MAPPING = {
-    'CommonServerPython': {'start': __line__() - 44, 'end': float('inf')},
+    'CommonServerPython': {'start': __line__() - 50, 'end': float('inf')},
 }
 
 XSIAM_EVENT_CHUNK_SIZE = 2 ** 20  # 1 Mib
-XSIAM_EVENT_CHUNK_SIZE_LIMIT = 4 * (10 ** 6)  # 4 MB
+XSIAM_EVENT_CHUNK_SIZE_LIMIT = 9 * (10 ** 6)  # 9 MB, note that the allowed max size for 1 entry is 5MB.
+# So if you're using a "heavy" API it is recommended to use maximum of 4MB chunk size.
+MAX_ALLOWED_ENTRY_SIZE = 5 * (10 ** 6)  # 5 MB, this is the maximum allowed size of a single entry.
+# So if you're using a "heavy" API it is recommended to use maximum of 9MB chunk size.
 ASSETS = "assets"
 EVENTS = "events"
 DATA_TYPES = [EVENTS, ASSETS]
@@ -53,28 +62,22 @@ MASK = '<XX_REPLACED>'
 SEND_PREFIX = "send: b'"
 SAFE_SLEEP_START_TIME = datetime.now()
 MAX_ERROR_MESSAGE_LENGTH = 50000
-
+# Max number of characters of an external API response body kept when appended
+# to a CortexExternalApiError message (avoids dumping huge payloads).
+MAX_API_RESPONSE_BODY_LENGTH = 500
+NUM_OF_WORKERS = 20
+# Max compressed chunks in flight at once on the streaming + multiple_threads path (bounds peak memory).
+# With streaming + multiple_threads, peak resident compressed chunks is N+1 (N in flight + 1 being built);
+# it does NOT scale with the total number of events, unlike the non-streaming multiple_threads path.
+MAX_INFLIGHT_CHUNKS = NUM_OF_WORKERS
+HAVE_SUPPORT_MULTITHREADING_CALLED_ONCE = False
+JSON_SEPARATORS = (",", ":")  # To get the most compact JSON representation, we should specify (',', ':') to eliminate whitespace.
+DEFAULT_INSIGHT_CACHE_SIZE = 3072
+FETCH_COMMANDS = ('fetch-incidents', 'fetch-credentials', 'fetch-indicators', 'fetch-assets')
+LONG_RUNNING_COMMAND = 'long-running-execution'
+                                                
 
 def register_module_line(module_name, start_end, line, wrapper=0):
-    """
-        Register a module in the line mapping for the traceback line correction algorithm.
-
-        :type module_name: ``str``
-        :param module_name: The name of the module. (required)
-
-        :type start_end: ``str``
-        :param start_end: Whether to register the line as the start or the end of the module.
-            Possible values: start, end. (required)
-
-        :type line: ``int``
-        :param line: the line number to record. (required)
-
-        :type wrapper: ``int``
-        :param wrapper: Wrapper size (used for inline replacements with headers such as ApiModules). (optional)
-
-        :return: None
-        :rtype: ``None``
-    """
     global _MODULES_LINE_MAPPING
     default_module_info = {'start': 0, 'start_wrapper': 0, 'end': float('inf'), 'end_wrapper': float('inf')}
     try:
@@ -94,15 +97,6 @@ def register_module_line(module_name, start_end, line, wrapper=0):
 
 
 def _find_relevant_module(line):
-    """
-    Find which module contains the given line number.
-
-    :type line: ``int``
-    :param trace_str: Line number to search. (required)
-
-    :return: The name of the module.
-    :rtype: ``str``
-    """
     global _MODULES_LINE_MAPPING
 
     relevant_module = ''
@@ -117,15 +111,7 @@ def _find_relevant_module(line):
 
 
 def fix_traceback_line_numbers(trace_str):
-    """
-    Fixes the given traceback line numbers.
 
-    :type trace_str: ``str``
-    :param trace_str: The traceback string to edit. (required)
-
-    :return: The new formated traceback.
-    :rtype: ``str``
-    """
     def is_adjusted_block(start, end, adjusted_lines):
         return any(
             block_start < start < end < block_end
@@ -201,9 +187,10 @@ try:
     import requests
     from requests.adapters import HTTPAdapter
     from urllib3.util import Retry
-    from typing import Optional, Dict, List, Any, Union, Set, cast
+    from typing import Optional, Dict, List, Any, Union, Set, Tuple, Iterator, Iterable, cast
 
     from urllib3 import disable_warnings
+
     disable_warnings()
 
     import dateparser  # type: ignore
@@ -227,10 +214,10 @@ HOUR = timedelta(hours=1)
 # The max number of profiling related rows to print to the log on memory dump
 PROFILING_DUMP_ROWS_LIMIT = 20
 
-
 if IS_PY3:
     STRING_TYPES = (str, bytes)  # type: ignore
     STRING_OBJ_TYPES = (str,)
+    import concurrent.futures
 
 else:
     STRING_TYPES = (str, unicode)  # type: ignore # noqa: F821
@@ -287,6 +274,7 @@ class EntryType(object):
     WARNING = 11
     STATIC_VIDEO_FILE = 12
     MAP_ENTRY_TYPE = 15
+    DEBUG_MODE_FILE = 16
     WIDGET = 17
     EXECUTION_METRICS = 19
 
@@ -362,6 +350,102 @@ class FileAttachmentType(object):
     :rtype: ``str``
     """
     ATTACHED = "attached_file"
+
+
+class QuickActionPreview(object):
+    """
+    A container class for storing quick action data previews.
+    This class is intended to be populated by commands like `!get-remote-data-preview`
+    and placed directly into the root context under `QuickActionPreview`.
+
+    :return: None
+    :rtype: ``None``.
+    """
+
+    def __init__(self, id=None, title=None, description=None, status=None,
+                 assignee=None, creation_date=None, severity=None):
+        """
+        A container class for storing quick action data previews.
+        This class is intended to be populated by commands like `!get-remote-data-preview`
+        and placed directly into the root context under `QuickActionPreview`.
+        Attributes:
+            id (Optional[str]): The ID of the ticket.
+            title (Optional[str]): The title or summary of the ticket or action.
+            description (Optional[str]): A brief description or details about the action.
+            status (Optional[str]): Current status (e.g., Open, In Progress, Closed).
+            assignee (Optional[str]): The user or entity assigned to the action.
+            creation_date (Optional[str]): The date and time when the item was created.
+            severity (Optional[str]): Indicates the priority or severity level.
+        :return: None
+        :rtype: ``None``
+        """
+        self.id = id
+        self.title = title
+        self.description = description
+        self.status = status
+        self.assignee = assignee
+        self.creation_date = creation_date
+        self.severity = severity
+
+        missing_fields = [field_name for field_name, value in self.__dict__.items() if value is None]
+        if missing_fields:
+            demisto.debug("Missing fields: {}".format(', '.join(missing_fields)))
+
+    def to_context(self):
+        """
+        Converts the instance to a dictionary.
+
+        :return: Dictionary representation of the QuickActionPreview instance.
+        :rtype: dict
+        """
+        return self.__dict__
+
+
+class MirrorObject(object):
+    """
+    A container class for storing ticket metadata used in mirroring integrations.
+    This class is intended to be populated by commands like `!jira-create-issue`
+    and placed directly into the root context under `MirrorObject`.
+
+    :return: None
+    :rtype: ``None``.
+    """
+
+    def __init__(self, object_url=None, object_id=None, object_name=None):
+        """
+        A container class for storing ticket metadata used in mirroring integrations.
+        This class is intended to be populated by commands like `!jira-create-issue`
+        and placed directly into the root context under `MirrorObject`.
+        Attributes:
+            object_url (Optional[str]): Direct URL to the created ticket for preview/use.
+            object_id (Optional[str]): Unique identifier of the created ticket.
+        :return: None
+        :rtype: ``None``.
+        """
+        self.object_url = object_url
+        self.object_id = object_id
+        self.object_name = object_name
+
+        missing_fields_list = []
+        if self.object_url is None:
+            missing_fields_list.append('object_url')
+        if self.object_id is None:
+            missing_fields_list.append('object_id')
+        if self.object_name is None:
+            missing_fields_list.append('object_name')
+
+        if missing_fields_list:
+            debug_message = "MirrorObject: Initialized with missing mandatory fields: {}"
+            demisto.debug(debug_message.format(', '.join(missing_fields_list)))
+
+    def to_context(self):
+        """
+        Converts the instance to a dictionary.
+
+        :return: Dictionary representation of the MirrorObject instance.
+        :rtype: dict
+        """
+        return self.__dict__
 
 
 brands = {
@@ -450,6 +534,7 @@ class DBotScoreReliability(object):
     :rtype: ``None``
     """
 
+    A_PLUS_PLUS = 'A++ - Reputation script'
     A_PLUS = 'A+ - 3rd party enrichment'
     A = 'A - Completely reliable'
     B = 'B - Usually reliable'
@@ -467,6 +552,7 @@ class DBotScoreReliability(object):
         # type: (str) -> bool
 
         return _type in (
+            DBotScoreReliability.A_PLUS_PLUS,
             DBotScoreReliability.A_PLUS,
             DBotScoreReliability.A,
             DBotScoreReliability.B,
@@ -477,7 +563,9 @@ class DBotScoreReliability(object):
         )
 
     @staticmethod
-    def get_dbot_score_reliability_from_str(reliability_str):   # pragma: no cover
+    def get_dbot_score_reliability_from_str(reliability_str):  # pragma: no cover
+        if reliability_str == DBotScoreReliability.A_PLUS_PLUS:
+            return DBotScoreReliability.A_PLUS_PLUS
         if reliability_str == DBotScoreReliability.A_PLUS:
             return DBotScoreReliability.A_PLUS
         elif reliability_str == DBotScoreReliability.A:
@@ -529,8 +617,82 @@ class ErrorTypes(object):
     RETRY_ERROR = "RetryError"
 
 
+class CortexErrorCode(object):
+    """Error codes for content standardized errors.
+
+    Provides a unified taxonomy covering argument validation, resource lookup,
+    API/network issues, data parsing, permissions, and execution failures.
+    Used by :class:`CortexError` and its subclasses so that LLM agents can
+    programmatically distinguish error categories and decide whether to retry,
+    fix an argument, or escalate.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    # -- Argument Errors ----------------------------------------------
+    MISSING_ARGUMENT = "MISSING_ARGUMENT"
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"
+    CONFLICTING_ARGUMENTS = "CONFLICTING_ARGUMENTS"
+
+    # -- Resource Errors ----------------------------------------------
+    RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
+
+    # -- API / Network Errors -----------------------------------------
+    API_ERROR = "API_ERROR"
+    AUTH_ERROR = "AUTH_ERROR"
+    QUOTA_ERROR = "QUOTA_ERROR"
+    SERVICE_ERROR = "SERVICE_ERROR"
+    CONNECTION_ERROR = "CONNECTION_ERROR"
+    PROXY_ERROR = "PROXY_ERROR"
+    SSL_ERROR = "SSL_ERROR"
+    TIMEOUT_ERROR = "TIMEOUT_ERROR"
+
+    # -- Data Errors (failures parsing data returned by the API/service) --
+    API_RESPONSE_PARSE_ERROR = "API_RESPONSE_PARSE_ERROR"
+
+    # -- Permission Errors --------------------------------------------
+    PERMISSION_ERROR = "PERMISSION_ERROR"
+
+    # -- Execution Errors ---------------------------------------------
+    EXECUTION_ERROR = "EXECUTION_ERROR"
+    UNSUPPORTED_COMMAND = "UNSUPPORTED_COMMAND"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+# Key used inside the ``ExtendedPayload`` dict of an error entry to carry
+# the content error type.  Defined as a module-level constant so the name
+# can be changed in one place.
+EXTENDED_PAYLOAD_ERROR_CODE_KEY = 'error_code'
+
+# Value returned by ``demisto.caller()`` when the script/command is executed
+# from an Agentix (LLM agent) flow.  Used to decide whether ``return_error``
+# should surface the automatic, machine-friendly error message instead of a
+# human-authored one.
+AGENTIX_CALLER = 'agentix'
+
+
+def is_caller_agentix():
+    """Check whether the current execution was triggered by an Agentix agent.
+
+    Uses ``demisto.caller()`` (when available) and compares it to
+    :data:`AGENTIX_CALLER`.  Safe to call on older servers that do not expose
+    the ``caller`` method - in that case it returns ``False``.
+
+    :return: ``True`` if the caller is Agentix, ``False`` otherwise.
+    :rtype: ``bool``
+    """
+    try:
+        if not hasattr(demisto, 'caller'):
+            return False
+        return demisto.caller() == AGENTIX_CALLER
+    except Exception as exc:
+        demisto.debug('is_caller_agentix failed to determine caller: {}'.format(exc))
+        return False
+
+
 class FeedIndicatorType(object):
-    """Type of Indicator (Reputations), used in TIP integrations"""
+    """Type of Indicator (Reputations), used in TIM integrations"""
     Account = "Account"
     CVE = "CVE"
     Domain = "Domain"
@@ -653,6 +815,7 @@ class ThreatIntel:
         TOOL = 'Tool'
         THREAT_ACTOR = 'Threat Actor'
         INFRASTRUCTURE = 'Infrastructure'
+        TACTIC = 'Tactic'
 
     class ObjectsScore(object):
         """
@@ -669,6 +832,7 @@ class ThreatIntel:
         TOOL = 2
         THREAT_ACTOR = 3
         INFRASTRUCTURE = 2
+        TACTIC = 0
 
     class KillChainPhases(object):
         """
@@ -1016,7 +1180,7 @@ def positiveUrl(entry):
     return False
 
 
-def positiveFile(entry):    # pragma: no cover
+def positiveFile(entry):  # pragma: no cover
     """
        Checks if the given entry from a file reputation query is positive (known bad) (deprecated)
 
@@ -1101,7 +1265,7 @@ def formatEpochDate(t):
     return ''
 
 
-def shortCrowdStrike(entry):    # pragma: no cover
+def shortCrowdStrike(entry):  # pragma: no cover
     """
        Display CrowdStrike Intel results in Markdown (deprecated)
 
@@ -1140,7 +1304,7 @@ def shortCrowdStrike(entry):    # pragma: no cover
     return entry
 
 
-def shortUrl(entry):    # pragma: no cover
+def shortUrl(entry):  # pragma: no cover
     """
        Formats a URL reputation entry into a short table (deprecated)
 
@@ -1168,7 +1332,7 @@ def shortUrl(entry):    # pragma: no cover
     return {'ContentsFormat': 'text', 'Type': 4, 'Contents': 'Unknown provider for result: ' + entry['Brand']}
 
 
-def shortFile(entry):   # pragma: no cover
+def shortFile(entry):  # pragma: no cover
     """
        Formats a file reputation entry into a short table (deprecated)
 
@@ -1314,6 +1478,86 @@ def is_error(execute_command_result):
 isError = is_error
 
 
+def get_error_code(execute_command_result):
+    """Extract the standardized error code from an ``executeCommand`` result.
+
+    Reads the machine-readable error code that :func:`return_error` attaches to
+    an error entry's ``ExtendedPayload`` (under
+    :data:`EXTENDED_PAYLOAD_ERROR_CODE_KEY`). The value is a
+    :class:`CortexErrorCode` member (e.g. ``"AUTH_ERROR"``,
+    ``"MISSING_ARGUMENT"``), letting a calling script/playbook classify the
+    failure of a sub-command without parsing the human-readable ``Contents``.
+
+    Accepts either a single entry (``dict``) or a list of entries (the typical
+    shape returned by ``demisto.executeCommand()``); for a list, the first
+    error entry that carries an error code is returned.
+
+    :type execute_command_result: ``dict`` or ``list``
+    :param execute_command_result: Result of ``demisto.executeCommand()`` - a
+        single entry dict or a list of entry dicts.
+
+    :rtype: ``str`` or ``None``
+    :return: The :class:`CortexErrorCode` value from ``ExtendedPayload``, or
+        ``None`` if no error code is present.
+    """
+    if isinstance(execute_command_result, dict):
+        execute_command_result = [execute_command_result]
+
+    if isinstance(execute_command_result, list):
+        for entry in execute_command_result:
+            if isinstance(entry, dict) and entry.get('Type') == entryTypes['error']:
+                extended = entry.get('ExtendedPayload') or {}
+                error_code = extended.get(EXTENDED_PAYLOAD_ERROR_CODE_KEY)
+                if error_code:
+                    return error_code
+    return None
+
+
+def _classify_error_message(message):
+    """Classify an error message into a :class:`CortexErrorCode` value.
+
+    Uses text heuristics to detect common error patterns - including
+    server-generated errors (e.g. ``"Unsupported Command"``) that have
+    no ``ExtendedPayload``.
+
+    :type message: ``str``
+    :param message: The error message to classify.
+
+    :rtype: ``str`` or ``None``
+    :return: A :class:`CortexErrorCode` value, or *None* if unrecognised.
+    """
+    if not message:
+        return None
+    msg = message.lower()
+    if 'unsupported command' in msg:
+        return CortexErrorCode.UNSUPPORTED_COMMAND
+    if 'no integration instance' in msg or 'verify you have proper integration' in msg:
+        return CortexErrorCode.EXECUTION_ERROR
+    if any(kw in msg for kw in ('unauthorized', 'authentication failed', 'invalid credentials')):
+        return CortexErrorCode.AUTH_ERROR
+    if any(kw in msg for kw in ('rate limit', 'quota exceeded', 'too many requests')):
+        return CortexErrorCode.QUOTA_ERROR
+    if any(kw in msg for kw in ('timed out', 'timeout', 'request timeout')):
+        return CortexErrorCode.TIMEOUT_ERROR
+    if any(kw in msg for kw in ('connection error', 'connection refused', 'unreachable', 'connect timeout')):
+        return CortexErrorCode.CONNECTION_ERROR
+    if any(kw in msg for kw in ('permission denied', 'forbidden', 'insufficient permissions')):
+        return CortexErrorCode.PERMISSION_ERROR
+    if any(kw in msg for kw in ('invalid argument', 'invalid value', 'invalid parameter', 'is not a valid')):
+        return CortexErrorCode.INVALID_ARGUMENT
+    if any(kw in msg for kw in ('missing argument', 'missing required argument', 'required argument')):
+        return CortexErrorCode.MISSING_ARGUMENT
+    if 'not found' in msg:
+        return CortexErrorCode.RESOURCE_NOT_FOUND
+    if any(kw in msg for kw in ('ssl', 'certificate verify')):
+        return CortexErrorCode.SSL_ERROR
+    if 'proxy' in msg:
+        return CortexErrorCode.PROXY_ERROR
+    if any(kw in msg for kw in ('failed to parse', 'json decode', 'jsondecodeerror', 'invalid json', 'unable to parse')):
+        return CortexErrorCode.API_RESPONSE_PARSE_ERROR
+    return None
+
+
 def FormatADTimestamp(ts):
     """
        Formats an Active Directory timestamp into human readable time representation
@@ -1409,6 +1653,21 @@ def b64_encode(text):
     return res
 
 
+def b64_decode(b64_str):
+    """
+    Decode a str in a base 64 format to a picture.
+    Replaces the use of base64.b64decode function which doesn't add padding to the supplied str.
+
+    :param b64_str: string to decode
+    :type b64_str: str
+    :return: decoded binary
+    :rtype: bytes
+    """
+    b64 = b64_str.encode('ascii')
+    b64 += b'=' * (-len(b64) % 4)  # add padding
+    return binascii.a2b_base64(b64)
+
+
 def encode_string_results(text):
     """
     Encode string as utf-8, if any unicode character exists.
@@ -1426,7 +1685,7 @@ def encode_string_results(text):
         return text.encode("utf8", "replace")
 
 
-def safe_load_json(json_object):    # pragma: no cover
+def safe_load_json(json_object):  # pragma: no cover
     """
     Safely loads a JSON object from an argument. Allows the argument to accept either a JSON in string form,
     or an entry ID corresponding to a JSON file.
@@ -1592,6 +1851,17 @@ def stringUnEscape(st):
     return st.replace('\\r', '\r').replace('\\n', '\n').replace('\\t', '\t')
 
 
+def doubleBackslashes(st):
+    """
+       Double any backslashes in the given string if it contains two backslashes.
+       :type st: ``str``
+       :param st: The string to be modified (required).
+       :return: A modified string with doubled backslashes.
+       :rtype: ``str``
+    """
+    return st.replace('\\', '\\\\')
+
+
 class IntegrationLogger(object):
     """
       a logger for python integrations:
@@ -1672,6 +1942,7 @@ class IntegrationLogger(object):
                 a = self.encode(a)
                 to_add.append(stringEscape(a))
                 to_add.append(stringUnEscape(a))
+                to_add.append(doubleBackslashes(a))
                 js = json.dumps(a)
                 if js.startswith('"'):
                     js = js[1:]
@@ -1982,15 +2253,15 @@ def argToBoolean(value):
         :param value: the value to evaluate
         :type value: ``string|bool``
 
-        :return: a boolean representatation of 'value'
+        :return: a boolean representation of 'value'
         :rtype: ``bool``
     """
     if isinstance(value, bool):
         return value
     if isinstance(value, STRING_OBJ_TYPES):
-        if value.lower() in ['true', 'yes']:
+        if value.lower() in ('y', 'yes', 't', 'true', 'on', '1'):
             return True
-        elif value.lower() in ['false', 'no']:
+        elif value.lower() in ('n', 'no', 'f', 'false', 'off', '0'):
             return False
         else:
             raise ValueError('Argument does not contain a valid boolean-like value')
@@ -1998,9 +2269,26 @@ def argToBoolean(value):
         raise ValueError('Argument is neither a string nor a boolean')
 
 
+def arg_to_bool_or_none(value):
+    """
+    Converts a value to a boolean or None.
+
+    :type value: ``Any``
+    :param value: The value to convert to boolean or None.
+
+    :return: Returns None if the input is None, otherwise returns the boolean representation of the value using the argToBoolean function.
+    :rtype: ``bool`` or ``None``
+    """
+    if value is None:
+        return None
+    else:
+        return argToBoolean(value)
+
+
 def appendContext(key, data, dedup=False):
     """
-       Append data to the investigation context
+       Append data to the investigation context.
+       Usable by scripts not integrations, since it uses setContext
 
        :type key: ``str``
        :param key: The context path (required)
@@ -2212,7 +2500,8 @@ class JsonTransformer:
         if isinstance(json_input, list):
             if not json_input or (not isinstance(json_input[0], list) and not isinstance(json_input[0], dict)):
                 # if the items of the lists are primitive, put the values in one line
-                yield path, 'values', ', '.join(json_input)
+                yield path, 'values', ', '.join(str(x) for x in json_input)
+
             else:
                 for i, item in enumerate(json_input):
                     for res in self.json_to_path_generator(item, path + [i]):  # this is yield from for python2 BC
@@ -2279,7 +2568,10 @@ def tableToMarkdown(name, t, headers=None, headerTransform=None, removeNull=Fals
     if not headers and isinstance(t, dict) and len(t.keys()) == 1:
         # in case of a single key, create a column table where each element is in a different row.
         headers = list(t.keys())
-        t = list(t.values())[0]
+        # if the value of the single key is a non-empty list, unpack it for creating a column table.
+        single_value = list(t.values())[0]
+        if isinstance(single_value, list) and single_value:
+            t = single_value
 
     if not isinstance(t, list):
         t = [t]
@@ -2358,7 +2650,7 @@ def tableToMarkdown(name, t, headers=None, headerTransform=None, removeNull=Fals
 tblToMd = tableToMarkdown
 
 
-def createContextSingle(obj, id=None, keyTransform=None, removeNull=False):     # pragma: no cover
+def createContextSingle(obj, id=None, keyTransform=None, removeNull=False):  # pragma: no cover
     """Receives a dict with flattened key values, and converts them into nested dicts
 
     :type obj: ``dict`` or ``list``
@@ -2548,7 +2840,7 @@ def flattenTable(tableDict):
     return [flattenRow(row) for row in tableDict]
 
 
-MARKDOWN_CHARS = r"\`*_{}[]()#+-!|"
+MARKDOWN_CHARS = r"\`*_{}[]()#+-!|~"
 
 
 def stringEscapeMD(st, minimal_escaping=False, escape_multiline=False):
@@ -2579,6 +2871,57 @@ def stringEscapeMD(st, minimal_escaping=False, escape_multiline=False):
         st = "".join(["\\" + str(c) if c in MARKDOWN_CHARS else str(c) for c in st])
 
     return st
+
+
+def sanitize_html_output(value, allow_tags=None):
+    # type: (str, Optional[Set[str]]) -> str
+    """Escape HTML for safe rendering in ContentsFormat:'html' outputs.
+
+    :type value: ``str``
+    :param value: Raw string that may contain attacker-controlled content.
+
+    :type allow_tags: ``Optional[Set[str]]``
+    :param allow_tags: Optional set of allowed HTML tag names
+        (e.g. ``{'b','i','a','br','p','table','tr','td','th'}``). If ``None``, escapes everything.
+
+    :return: HTML-safe string.
+    :rtype: ``str``
+    """
+    try:
+        from html import escape as _html_escape  # Python 3
+    except ImportError:
+        from cgi import escape as _cgi_escape  # Python 2
+
+        def _html_escape(s, quote=True):
+            return _cgi_escape(s, quote=quote).replace("'", "&#x27;")
+    if allow_tags is None:
+        return _html_escape(str(value))
+    # For allowlist mode, use bleach if available, else strip all
+    try:
+        import bleach
+        return bleach.clean(str(value), tags=allow_tags, strip=True)
+    except ImportError:
+        return _html_escape(str(value))
+
+
+def getFilePathSafe(entry_id):
+    # type: (str) -> dict
+    """Wrapper around demisto.getFilePath() that basenames the 'name' field.
+
+    Prevents path traversal when callers use the returned name as a filesystem destination.
+
+    :type entry_id: ``str``
+    :param entry_id: The entry ID of the file.
+
+    :return: dict with ``'id'``, ``'path'``, and ``'name'`` keys, where ``'name'`` is basenamed.
+    :rtype: ``dict``
+    """
+    result = demisto.getFilePath(entry_id)
+    if not result:
+        return result
+    if "name" in result:
+        result["name"] = os.path.basename(result["name"])
+    return result
 
 
 def raiseTable(root, key):
@@ -2840,6 +3183,24 @@ def is_ipv6_valid(address):
         return False
     return True
 
+def is_ip_address_internal(ip):
+    """
+    Checks if an IP address is an internal (RFC 1918) IP, Available from python3.
+
+    :return: True if the given IP address is an internal.
+    :rtype: ``bool``
+    """
+    if IS_PY3:
+        # pylint: disable=import-error
+        import ipaddress
+        # pylint: enable=import-error
+        try:
+            ip_obj = ipaddress.ip_address(ip)
+            return ip_obj.is_private
+        except ValueError:
+            return False
+    else:
+        return False
 
 def is_ip_valid(s, accept_v6_ips=False):
     """
@@ -2905,6 +3266,10 @@ class Common(object):
 
         @abstractmethod
         def to_context(self):
+            pass
+
+        @abstractmethod
+        def to_minimum_context(self):
             pass
 
         @staticmethod
@@ -3016,6 +3381,9 @@ class Common(object):
             }
             return ret_value
 
+        def to_minimum_context(self):
+            return self.to_context()
+
         def to_readable(self):
             dbot_score_to_text = {0: 'Unknown',
                                   1: 'Good',
@@ -3055,7 +3423,7 @@ class Common(object):
             if not context_prefix:
                 raise ValueError('context_prefix is mandatory for creating the indicator')
 
-            self.CONTEXT_PATH = '{context_prefix}(val.value && val.value == obj.value)'.\
+            self.CONTEXT_PATH = '{context_prefix}(val.value && val.value == obj.value)'. \
                 format(context_prefix=context_prefix)
 
             self.value = value
@@ -3091,6 +3459,21 @@ class Common(object):
                 relationships_context = [relationship.to_context() for relationship in self.relationships if
                                          relationship.to_context()]
                 ret_value['Relationships'] = relationships_context
+
+            return ret_value
+
+        def to_minimum_context(self):
+            custom_context = {
+                'value': self.value
+            }
+
+            ret_value = {
+                self.CONTEXT_PATH: custom_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+            ret_value[Common.DBotScore.get_context_path()]['Type'] = self.indicator_type
 
             return ret_value
 
@@ -3206,6 +3589,24 @@ class Common(object):
         :type dbot_score: ``DBotScore``
         :param dbot_score: If IP has a score then create and set a DBotScore object.
 
+        :type organization_prevalence: ``int``
+        :param organization_prevalence: The number of times the indicator is detected in the organization.
+
+        :type global_prevalence: ``int``
+        :param global_prevalence: The number of times the indicator is detected across all organizations.
+
+        :type organization_first_seen: ``str``
+        :param organization_first_seen: ISO 8601 date time string; when the indicator was first seen in the organization.
+
+        :type organization_last_seen: ``str``
+        :param organization_last_seen: ISO 8601 date time string; the last time a specific organization encountered an indicator.
+
+        :type first_seen_by_source: ``str``
+        :param first_seen_by_source: ISO 8601 date time string; when the indicator was first seen by the source vendor.
+
+        :type last_seen_by_source: ``str``
+        :param last_seen_by_source: ISO 8601 date time string; when the indicator was last seen by the source vendor.
+
         :return: None
         :rtype: ``None``
         """
@@ -3221,10 +3622,13 @@ class Common(object):
                      geo_country=None, geo_description=None, detection_engines=None, positive_engines=None,
                      organization_name=None, organization_type=None, feed_related_indicators=None, tags=None,
                      malware_family=None, relationships=None, blocked=None, description=None, stix_id=None,
-                     whois_records=None):
+                     whois_records=None, organization_prevalence=None,
+                     global_prevalence=None, organization_first_seen=None, organization_last_seen=None,
+                     first_seen_by_source=None, last_seen_by_source=None, ip_type="IP"):
 
             # Main value of the indicator
             self.ip = ip
+            self.ip_type = ip_type
 
             # Core custom fields - IP
             self.blocked = blocked
@@ -3263,6 +3667,12 @@ class Common(object):
             self.feed_related_indicators = feed_related_indicators
             self.malware_family = malware_family
             self.relationships = relationships
+            self.organization_prevalence = organization_prevalence
+            self.global_prevalence = global_prevalence
+            self.organization_first_seen = organization_first_seen
+            self.organization_last_seen = organization_last_seen
+            self.first_seen_by_source = first_seen_by_source
+            self.last_seen_by_source = last_seen_by_source
 
             if not isinstance(dbot_score, Common.DBotScore):
                 raise ValueError('dbot_score must be of type DBotScore')
@@ -3374,6 +3784,24 @@ class Common(object):
             if self.malware_family:
                 ip_context['MalwareFamily'] = self.malware_family
 
+            if self.organization_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                ip_context['OrganizationPrevalence'] = self.organization_prevalence
+
+            if self.global_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                ip_context['GlobalPrevalence'] = self.global_prevalence
+
+            if self.organization_first_seen:
+                ip_context['OrganizationFirstSeen'] = self.organization_first_seen
+
+            if self.organization_last_seen:
+                ip_context['OrganizationLastSeen'] = self.organization_last_seen
+
+            if self.first_seen_by_source:
+                ip_context['FirstSeenBySource'] = self.first_seen_by_source
+
+            if self.last_seen_by_source:
+                ip_context['LastSeenBySource'] = self.last_seen_by_source
+
             if self.dbot_score and self.dbot_score.score == Common.DBotScore.BAD:
                 ip_context['Malicious'] = {
                     'Vendor': self.dbot_score.integration_name,
@@ -3385,8 +3813,33 @@ class Common(object):
                                          relationship.to_context()]
                 ip_context['Relationships'] = relationships_context
 
+            if self.ip_type == "IP":
+                context_path = Common.IP.CONTEXT_PATH
+
+            elif self.ip_type == "IPv6":
+                context_path = Common.IP.CONTEXT_PATH.replace("IP", "IPv6")
+
             ret_value = {
-                Common.IP.CONTEXT_PATH: ip_context
+                context_path: ip_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+        def to_minimum_context(self):
+            ip_context = {
+                'Address': self.ip
+            }
+
+            if self.ip_type == "IP":
+                context_path = Common.IP.CONTEXT_PATH
+            elif self.ip_type == "IPv6":
+                context_path = Common.IP.CONTEXT_PATH.replace("IP", "IPv6")
+
+            ret_value = {
+                context_path: ip_context
             }
 
             if self.dbot_score:
@@ -3431,6 +3884,9 @@ class Common(object):
                 'OriginalName': self.original_name,
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class FeedRelatedIndicators(object):
         """
         FeedRelatedIndicators class
@@ -3461,6 +3917,9 @@ class Common(object):
                 'description': self.description
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class Rank:
         """
         Single row in a rank grid field
@@ -3481,6 +3940,9 @@ class Common(object):
                 'source': self.source,
                 'rank': self.rank
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class ExternalReference(object):
         """
@@ -3506,6 +3968,9 @@ class Common(object):
                 'sourcename': self.source_name,
                 'sourceid': self.source_id,
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class Certificates(object):
         """
@@ -3542,6 +4007,9 @@ class Common(object):
                 'validto': self.valid_to
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class Hash(object):
         """
         Hash class
@@ -3567,6 +4035,9 @@ class Common(object):
                 'value': self.hash_value,
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class CommunityNotes(object):
         """
         CommunityNotes class
@@ -3591,6 +4062,9 @@ class Common(object):
                 'note': self.note,
                 'timestamp': self.timestamp,
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class Publications(object):
         """
@@ -3627,6 +4101,9 @@ class Common(object):
                 'timestamp': self.timestamp,
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class Behaviors(object):
         """
         Behaviors class
@@ -3651,6 +4128,9 @@ class Common(object):
                 'details': self.details,
                 'title': self.action,
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class ThreatTypes(object):
         """
@@ -3680,6 +4160,9 @@ class Common(object):
                 'threatcategory': self.threat_category,
                 'threatcategoryconfidence': self.threat_category_confidence,
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class WhoisRecord(object):
         """
@@ -3711,6 +4194,9 @@ class Common(object):
                 'date': self.whois_record_date
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class DNSRecord(object):
         """
         DNSRecord class
@@ -3741,6 +4227,9 @@ class Common(object):
                 'data': self.dns_record_data
             }
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class CPE:
         """
         Represents one Common Platform Enumeration (CPE) object, see https://nvlpubs.nist.gov/nistpubs/legacy/ir/nistir7695.pdf
@@ -3760,6 +4249,9 @@ class Common(object):
             return {
                 'CPE': self.cpe,
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class File(Indicator):
         """
@@ -3872,6 +4364,24 @@ class Common(object):
         :type stix_id: ``str``
         :param stix_id: File assigned STIX ID.
 
+        :type organization_prevalence: ``int``
+        :param organization_prevalence: The number of times the indicator is detected in the organization.
+
+        :type global_prevalence: ``int``
+        :param global_prevalence: The number of times the indicator is detected across all organizations.
+
+        :type organization_first_seen: ``str``
+        :param organization_first_seen: ISO 8601 date time string; when the indicator was first seen in the organization.
+
+        :type organization_last_seen: ``str``
+        :param organization_last_seen: ISO 8601 date time string; the last time a specific organization encountered an indicator.
+
+        :type first_seen_by_source: ``str``
+        :param first_seen_by_source: ISO 8601 date time string; when the indicator was first seen by the source vendor.
+
+        :type last_seen_by_source: ``str``
+        :param last_seen_by_source: ISO 8601 date time string; when the indicator was last seen by the source vendor.
+
         :rtype: ``None``
         :return: None
         """
@@ -3886,7 +4396,9 @@ class Common(object):
                      feed_related_indicators=None, malware_family=None, imphash=None, quarantined=None, campaign=None,
                      associated_file_names=None, traffic_light_protocol=None, organization=None, community_notes=None,
                      publications=None, threat_types=None, behaviors=None, relationships=None,
-                     creation_date=None, description=None, hashes=None, stix_id=None):
+                     creation_date=None, description=None, hashes=None, stix_id=None, organization_prevalence=None,
+                     global_prevalence=None, organization_first_seen=None, organization_last_seen=None,
+                     first_seen_by_source=None, last_seen_by_source=None):
 
             # Main value of a file (Hashes)
             self.md5 = md5
@@ -3927,6 +4439,12 @@ class Common(object):
             self.publications = publications
             self.threat_types = threat_types
             self.behaviors = behaviors
+            self.organization_prevalence = organization_prevalence
+            self.global_prevalence = global_prevalence
+            self.organization_first_seen = organization_first_seen
+            self.organization_last_seen = organization_last_seen
+            self.first_seen_by_source = first_seen_by_source
+            self.last_seen_by_source = last_seen_by_source
 
             # XSOAR Fields
             self.relationships = relationships
@@ -4042,6 +4560,24 @@ class Common(object):
             if self.behaviors:
                 file_context['Behavior'] = self.create_context_table(self.behaviors)
 
+            if self.organization_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                file_context['OrganizationPrevalence'] = self.organization_prevalence
+
+            if self.global_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                file_context['GlobalPrevalence'] = self.global_prevalence
+
+            if self.organization_first_seen:
+                file_context['OrganizationFirstSeen'] = self.organization_first_seen
+
+            if self.organization_last_seen:
+                file_context['OrganizationLastSeen'] = self.organization_last_seen
+
+            if self.first_seen_by_source:
+                file_context['FirstSeenBySource'] = self.first_seen_by_source
+
+            if self.last_seen_by_source:
+                file_context['LastSeenBySource'] = self.last_seen_by_source
+
             if self.dbot_score and self.dbot_score.score == Common.DBotScore.BAD:
                 file_context['Malicious'] = {
                     'Vendor': self.dbot_score.integration_name,
@@ -4052,6 +4588,27 @@ class Common(object):
                 relationships_context = [relationship.to_context() for relationship in self.relationships if
                                          relationship.to_context()]
                 file_context['Relationships'] = relationships_context
+
+            ret_value = {
+                Common.File.CONTEXT_PATH: file_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+        def to_minimum_context(self):
+            file_context = {}
+
+            if self.md5:
+                file_context['MD5'] = self.md5
+            if self.sha1:
+                file_context['SHA1'] = self.sha1
+            if self.sha256:
+                file_context['SHA256'] = self.sha256
+            if self.sha512:
+                file_context['SHA512'] = self.sha512
 
             ret_value = {
                 Common.File.CONTEXT_PATH: file_context
@@ -4223,6 +4780,20 @@ class Common(object):
 
             return ret_value
 
+        def to_minimum_context(self):
+            cve_context = {
+                'ID': self.id
+            }
+
+            ret_value = {
+                Common.CVE.CONTEXT_PATH: cve_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
     class EMAIL(Indicator):
         """
         EMAIL indicator class
@@ -4319,6 +4890,18 @@ class Common(object):
                 ret_value.update(self.dbot_score.to_context())
             return ret_value
 
+        def to_minimum_context(self):
+            email_context = {
+                'Email': {'Address': self.address}
+            }
+
+            ret_value = {
+                Common.EMAIL.CONTEXT_PATH: email_context
+            }
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+            return ret_value
+
     class URL(Indicator):
         """
         URL indicator - https://xsoar.pan.dev/docs/integrations/context-standards-mandatory#url
@@ -4394,6 +4977,24 @@ class Common(object):
         :type stix_id: ``str``
         :param stix_id: The URL STIX ID.
 
+        :type organization_prevalence: ``int``
+        :param organization_prevalence: The number of times the indicator is detected in the organization.
+
+        :type global_prevalence: ``int``
+        :param global_prevalence: The number of times the indicator is detected across all organizations.
+
+        :type organization_first_seen: ``str``
+        :param organization_first_seen: ISO 8601 date time string; when the indicator was first seen in the organization.
+
+        :type organization_last_seen: ``str``
+        :param organization_last_seen: ISO 8601 date time string; the last time a specific organization encountered an indicator.
+
+        :type first_seen_by_source: ``str``
+        :param first_seen_by_source: ISO 8601 date time string; when the indicator was first seen by the source vendor.
+
+        :type last_seen_by_source: ``str``
+        :param last_seen_by_source: ISO 8601 date time string; when the indicator was last seen by the source vendor.
+
         :return: None
         :rtype: ``None``
         """
@@ -4403,7 +5004,9 @@ class Common(object):
                      feed_related_indicators=None, tags=None, malware_family=None, port=None, internal=None,
                      campaign=None, traffic_light_protocol=None, threat_types=None, asn=None, as_owner=None,
                      geo_country=None, organization=None, community_notes=None, publications=None, relationships=None,
-                     blocked=None, certificates=None, description=None, stix_id=None):
+                     blocked=None, certificates=None, description=None, stix_id=None, organization_prevalence=None,
+                     global_prevalence=None, organization_first_seen=None, organization_last_seen=None,
+                     first_seen_by_source=None, last_seen_by_source=None):
 
             # Main indicator value
             self.url = url
@@ -4432,6 +5035,12 @@ class Common(object):
             self.geo_country = geo_country
             self.organization = organization
             self.publications = publications
+            self.organization_prevalence = organization_prevalence
+            self.global_prevalence = global_prevalence
+            self.organization_first_seen = organization_first_seen
+            self.organization_last_seen = organization_last_seen
+            self.first_seen_by_source = first_seen_by_source
+            self.last_seen_by_source = last_seen_by_source
 
             # XSOAR Fields
             self.relationships = relationships
@@ -4505,6 +5114,24 @@ class Common(object):
             if self.publications:
                 url_context['Publications'] = self.create_context_table(self.publications)
 
+            if self.organization_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                url_context['OrganizationPrevalence'] = self.organization_prevalence
+
+            if self.global_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                url_context['GlobalPrevalence'] = self.global_prevalence
+
+            if self.organization_first_seen:
+                url_context['OrganizationFirstSeen'] = self.organization_first_seen
+
+            if self.organization_last_seen:
+                url_context['OrganizationLastSeen'] = self.organization_last_seen
+
+            if self.first_seen_by_source:
+                url_context['FirstSeenBySource'] = self.first_seen_by_source
+
+            if self.last_seen_by_source:
+                url_context['LastSeenBySource'] = self.last_seen_by_source
+
             if self.dbot_score and self.dbot_score.score == Common.DBotScore.BAD:
                 url_context['Malicious'] = {
                     'Vendor': self.dbot_score.integration_name,
@@ -4515,6 +5142,20 @@ class Common(object):
                 relationships_context = [relationship.to_context() for relationship in self.relationships if
                                          relationship.to_context()]
                 url_context['Relationships'] = relationships_context
+
+            ret_value = {
+                Common.URL.CONTEXT_PATH: url_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+        def to_minimum_context(self):
+            url_context = {
+                'Data': self.url
+            }
 
             ret_value = {
                 Common.URL.CONTEXT_PATH: url_context
@@ -4546,6 +5187,24 @@ class Common(object):
 
         :type dns_records: ``DNSRecord``
         :param dns_records: A list of DNS records for the domain.
+
+        :type organization_prevalence: ``int``
+        :param organization_prevalence: The number of times the indicator is detected in the organization.
+
+        :type global_prevalence: ``int``
+        :param global_prevalence: The number of times the indicator is detected across all organizations.
+
+        :type organization_first_seen: ``str``
+        :param organization_first_seen: ISO 8601 date time string; when the indicator was first seen in the organization.
+
+        :type organization_last_seen: ``str``
+        :param organization_last_seen: ISO 8601 date time string; the last time a specific organization encountered an indicator.
+
+        :type first_seen_by_source: ``str``
+        :param first_seen_by_source: ISO 8601 date time string; when the indicator was first seen by the source vendor.
+
+        :type last_seen_by_source: ``str``
+        :param last_seen_by_source: ISO 8601 date time string; when the indicator was last seen by the source vendor.
         """
         CONTEXT_PATH = 'Domain(val.Name && val.Name == obj.Name)'
 
@@ -4560,7 +5219,9 @@ class Common(object):
                      community_notes=None, publications=None, geo_location=None, geo_country=None, geo_description=None,
                      tech_country=None, tech_name=None, tech_email=None, tech_organization=None, billing=None,
                      whois_records=None, relationships=None, description=None, stix_id=None, blocked=None,
-                     certificates=None, dns_records=None, rank=None):
+                     certificates=None, dns_records=None, rank=None, organization_prevalence=None,
+                     global_prevalence=None, organization_first_seen=None, organization_last_seen=None,
+                     first_seen_by_source=None, last_seen_by_source=None):
 
             # Main indicator value
             self.domain = domain
@@ -4609,7 +5270,7 @@ class Common(object):
             self.tech_email = tech_email
             self.billing = billing
 
-            # Additional custom records (none core)
+            # Additional custom records (non core)
             self.domain_status = domain_status
             self.name_servers = name_servers
             self.feed_related_indicators = feed_related_indicators
@@ -4623,6 +5284,12 @@ class Common(object):
             self.geo_location = geo_location
             self.geo_country = geo_country
             self.geo_description = geo_description
+            self.organization_prevalence = organization_prevalence
+            self.global_prevalence = global_prevalence
+            self.organization_first_seen = organization_first_seen
+            self.organization_last_seen = organization_last_seen
+            self.first_seen_by_source = first_seen_by_source
+            self.last_seen_by_source = last_seen_by_source
 
             # XSOAR Fields
             self.relationships = relationships
@@ -4706,6 +5373,24 @@ class Common(object):
 
             if self.malware_family:
                 domain_context['MalwareFamily'] = self.malware_family
+
+            if self.organization_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                domain_context['OrganizationPrevalence'] = self.organization_prevalence
+
+            if self.global_prevalence is not None:  # checking for `is not None` to allow `0`-value
+                domain_context['GlobalPrevalence'] = self.global_prevalence
+
+            if self.organization_first_seen:
+                domain_context['OrganizationFirstSeen'] = self.organization_first_seen
+
+            if self.organization_last_seen:
+                domain_context['OrganizationLastSeen'] = self.organization_last_seen
+
+            if self.first_seen_by_source:
+                domain_context['FirstSeenBySource'] = self.first_seen_by_source
+
+            if self.last_seen_by_source:
+                domain_context['LastSeenBySource'] = self.last_seen_by_source
 
             if self.dbot_score and self.dbot_score.score == Common.DBotScore.BAD:
                 domain_context['Malicious'] = {
@@ -4795,6 +5480,20 @@ class Common(object):
 
             if self.rank:
                 domain_context['Rank'] = self.create_context_table(self.rank)
+
+            return ret_value
+
+        def to_minimum_context(self):
+            domain_context = {
+                'Name': self.domain
+            }
+
+            ret_value = {
+                Common.Domain.CONTEXT_PATH: domain_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
 
             return ret_value
 
@@ -4893,6 +5592,17 @@ class Common(object):
 
             return ret_value
 
+        def to_minimum_context(self):
+            endpoint_context = {
+                'ID': self.id
+            }
+
+            ret_value = {
+                Common.Endpoint.CONTEXT_PATH: endpoint_context
+            }
+
+            return ret_value
+
     class Account(Indicator):
         """
         Account indicator - https://xsoar.pan.dev/docs/integrations/context-standards-recommended#account
@@ -4929,11 +5639,12 @@ class Common(object):
         """
         CONTEXT_PATH = 'Account(val.id && val.id == obj.id)'
 
-        def __init__(self, id, type=None, username=None, display_name=None, groups=None,
+        def __init__(self, id=None, type=None, username=None, display_name=None, groups=None,
                      domain=None, email_address=None, telephone_number=None, office=None, job_title=None,
                      department=None, country=None, state=None, city=None, street=None, is_enabled=None,
                      dbot_score=None, relationships=None, blocked=None, community_notes=None, creation_date=None,
-                     description=None, stix_id=None, tags=None, traffic_light_protocol=None, user_id=None):
+                     description=None, stix_id=None, tags=None, traffic_light_protocol=None, user_id=None,
+                     manager_email=None, manager_display_name=None, risk_level=None, **kwargs):
 
             self.id = id
             self.type = type
@@ -4960,16 +5671,21 @@ class Common(object):
             self.traffic_light_protocol = traffic_light_protocol
             self.user_id = user_id
             self.relationships = relationships
+            self.manager_email_address = manager_email
+            self.manager_display_name = manager_display_name
+            self.risk_level = risk_level
+            self.kwargs = kwargs
 
-            if not isinstance(dbot_score, Common.DBotScore):
+            if dbot_score and not isinstance(dbot_score, Common.DBotScore):
                 raise ValueError('dbot_score must be of type DBotScore')
 
             self.dbot_score = dbot_score
 
         def to_context(self):
-            account_context = {
-                'Id': self.id
-            }
+            account_context = {}
+
+            if self.id:
+                account_context['ID'] = self.id
 
             if self.type:
                 account_context['Type'] = self.type
@@ -4980,15 +5696,22 @@ class Common(object):
             if self.creation_date:
                 account_context['CreationDate'] = self.creation_date
 
-            irrelevent = ['CONTEXT_PATH', 'to_context', 'dbot_score', 'Id', 'create_context_table']
+            irrelevent = ['CONTEXT_PATH', 'to_context', 'dbot_score', 'id', 'create_context_table', 'kwargs', 'to_minimum_context']
             details = [detail for detail in dir(self) if not detail.startswith('__') and detail not in irrelevent]
 
             for detail in details:
-                if self.__getattribute__(detail):
+                if self.__getattribute__(detail) is not None:
                     if detail == 'email_address':
                         account_context['Email'] = {
                             'Address': self.email_address
                         }
+                    elif detail in ('manager_email_address', 'manager_display_name'):
+                        if 'Manager' not in account_context:
+                            account_context['Manager'] = {}
+                        if detail == 'manager_email_address':
+                            account_context['Manager']['Email'] = self.manager_email_address
+                        elif detail == 'manager_display_name':
+                            account_context['Manager']['DisplayName'] = self.manager_display_name
                     else:
                         Detail = camelize_string(detail, '_')
                         account_context[Detail] = self.__getattribute__(detail)
@@ -5006,6 +5729,31 @@ class Common(object):
 
             if self.community_notes:
                 account_context['CommunityNotes'] = self.create_context_table(self.community_notes)
+
+            if self.kwargs:
+                for key, value in self.kwargs.items():
+                    if key not in account_context:
+                        account_context[key] = value
+                    else:
+                        demisto.debug(
+                            'Skipping the addition of the "{key}" key to the account context as it already exists.'.format(
+                                key=key)
+                        )
+
+            ret_value = {
+                Common.Account.CONTEXT_PATH: account_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+        def to_minimum_context(self):
+            account_context = {}
+
+            if self.id:
+                account_context['ID'] = self.id
 
             ret_value = {
                 Common.Account.CONTEXT_PATH: account_context
@@ -5050,6 +5798,21 @@ class Common(object):
                     'Vendor': self.dbot_score.integration_name,
                     'Description': self.dbot_score.malicious_description
                 }
+
+            ret_value = {
+                Common.Cryptocurrency.CONTEXT_PATH: crypto_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+        def to_minimum_context(self):
+            crypto_context = {
+                'Address': self.address,
+                'AddressType': self.address_type
+            }
 
             ret_value = {
                 Common.Cryptocurrency.CONTEXT_PATH: crypto_context
@@ -5160,6 +5923,21 @@ class Common(object):
 
             return ret_value
 
+        def to_minimum_context(self):
+            attack_pattern_context = {
+                'STIXID': self.stix_id,
+                'Value': self.value
+            }
+
+            ret_value = {
+                Common.AttackPattern.CONTEXT_PATH: attack_pattern_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
     class CertificatePublicKey(object):
         """
         CertificatePublicKey class
@@ -5201,6 +5979,7 @@ class Common(object):
         :return: None
         :rtype: ``None``
         """
+
         class Algorithm(object):
             """
             Algorithm class to enumerate available algorithms
@@ -5288,6 +6067,9 @@ class Common(object):
 
             return publickey_context
 
+        def to_minimum_context(self):
+            return self.to_context()
+
     class GeneralName(object):
         """
         GeneralName class
@@ -5340,6 +6122,9 @@ class Common(object):
                 'Type': self.gn_type,
                 'Value': self.gn_value
             }
+
+        def to_minimum_context(self):
+            return self.to_context()
 
         def get_value(self):
             return self.gn_value
@@ -5413,6 +6198,7 @@ class Common(object):
         :return: None
         :rtype: ``None``
         """
+
         class SubjectAlternativeName(object):
             """
             SubjectAlternativeName class
@@ -5449,6 +6235,9 @@ class Common(object):
 
             def to_context(self):
                 return self.gn.to_context()
+
+            def to_minimum_context(self):
+                return self.to_context()
 
             def get_value(self):
                 return self.gn.get_value()
@@ -5493,6 +6282,9 @@ class Common(object):
                     authority_key_identifier_context["KeyIdentifier"] = self.key_identifier
 
                 return authority_key_identifier_context
+
+            def to_minimum_context(self):
+                return self.to_context()
 
         class DistributionPoint(object):
             """
@@ -5540,6 +6332,9 @@ class Common(object):
 
                 return distribution_point_context
 
+            def to_minimum_context(self):
+                return self.to_context()
+
         class CertificatePolicy(object):
             """
             CertificatePolicy class
@@ -5573,6 +6368,9 @@ class Common(object):
 
                 return certificate_policies_context
 
+            def to_minimum_context(self):
+                return self.to_context()
+
         class AuthorityInformationAccess(object):
             """
             AuthorityInformationAccess class
@@ -5601,6 +6399,9 @@ class Common(object):
                     "AccessMethod": self.access_method,
                     "AccessLocation": self.access_location.to_context()
                 }
+
+            def to_minimum_context(self):
+                return self.to_context()
 
         class BasicConstraints(object):
             """
@@ -5635,6 +6436,9 @@ class Common(object):
 
                 return basic_constraints_context
 
+            def to_minimum_context(self):
+                return self.to_context()
+
         class SignedCertificateTimestamp(object):
             """
             SignedCertificateTimestamp class
@@ -5655,6 +6459,7 @@ class Common(object):
             :return: None
             :rtype: ``None``
             """
+
             class EntryType(object):
                 """
                 EntryType class
@@ -5680,7 +6485,6 @@ class Common(object):
                 log_id,  # type: str
                 timestamp  # type: str
             ):
-
                 if not Common.CertificateExtension.SignedCertificateTimestamp.EntryType.is_valid_type(entry_type):
                     raise TypeError(
                         'entry_type must be of type Common.CertificateExtension.SignedCertificateTimestamp.EntryType enum'
@@ -5700,6 +6504,9 @@ class Common(object):
                 timestamps_context["EntryType"] = self.entry_type
 
                 return timestamps_context
+
+            def to_minimum_context(self):
+                return self.to_context()
 
         class ExtensionType(object):
             """
@@ -5938,6 +6745,9 @@ class Common(object):
                 extension_context["Value"] = self.value
 
             return extension_context
+
+        def to_minimum_context(self):
+            return self.to_context()
 
     class Certificate(Indicator):
         """
@@ -6207,6 +7017,133 @@ class Common(object):
 
             return ret_value
 
+        def to_minimum_context(self):
+            certificate_context = {
+                "SubjectDN": self.subject_dn
+            }
+
+            if self.sha512:
+                certificate_context["SHA512"] = self.sha512
+            if self.sha256:
+                certificate_context["SHA256"] = self.sha256
+            if self.sha1:
+                certificate_context["SHA1"] = self.sha1
+            if self.md5:
+                certificate_context["MD5"] = self.md5
+
+            ret_value = {
+                Common.Certificate.CONTEXT_PATH: certificate_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+    class Tactic(Indicator):
+        """
+        Tactic indicator
+
+        :type stix_id: ``str``
+        :param stix_id: The Tactic STIX ID
+
+        :type first_seen_by_source: ``str``
+        :param first_seen_by_source: The Tactic first seen by source
+
+        :type description: ``str``
+        :param description: The Tactic description
+
+        :type publications: ``str``
+        :param publications: The Tactic publications
+
+        :type mitre_id: ``str``
+        :param mitre_id: The Tactic mitre id.
+
+        :type tags: ``str``
+        :param tags: The Tactic tags.
+
+        :type dbot_score: ``DBotScore``
+        :param dbot_score:  If the address has reputation then create DBotScore object.
+
+        :type traffic_light_protocol: ``str``
+        :param traffic_light_protocol: The Traffic Light Protocol (TLP) color that is suitable for the Tactic.
+
+        :type community_notes: ``CommunityNotes``
+        :param community_notes:  A list of community notes for the Tactic.
+
+        :type external_references: ``ExternalReference``
+        :param external_references:  A list of id's and description of the Tactic via external refs.
+
+        :type value: ``str``
+        :param value: The Tactic value (name) - example: "Plist File Modification"
+
+        :return: None
+        :rtype: ``None``
+        """
+        CONTEXT_PATH = 'Tactic(val.Name && val.Name == obj.Name)'
+
+        def __init__(self, stix_id, first_seen_by_source=None, description=None, publications=None, mitre_id=None, tags=None,
+                     traffic_light_protocol=None, dbot_score=None, community_notes=None, external_references=None, value=None):
+
+            self.community_notes = community_notes
+            self.description = description
+            self.external_references = external_references
+            self.first_seen_by_source = first_seen_by_source
+            self.mitre_id = mitre_id
+            self.publications = publications
+            self.stix_id = stix_id
+            self.tags = tags
+            self.traffic_light_protocol = traffic_light_protocol
+            self.value = value
+            self.dbot_score = dbot_score
+
+        def to_context(self):
+            attack_pattern_context = {
+                'STIXID': self.stix_id,
+                "FirstSeenBySource": self.first_seen_by_source,
+                "Publications": self.publications,
+                "MITREID": self.mitre_id,
+                "Value": self.value,
+                "Tags": self.tags,
+                "Description": self.description
+            }
+
+            if self.external_references:
+                attack_pattern_context['ExternalReferences'] = self.create_context_table(self.external_references)
+
+            if self.traffic_light_protocol:
+                attack_pattern_context['TrafficLightProtocol'] = self.traffic_light_protocol
+
+            if self.dbot_score and self.dbot_score.score == Common.DBotScore.BAD:
+                attack_pattern_context['Malicious'] = {
+                    'Vendor': self.dbot_score.integration_name,
+                    'Description': self.dbot_score.malicious_description
+                }
+
+            ret_value = {
+                Common.AttackPattern.CONTEXT_PATH: attack_pattern_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
+        def to_minimum_context(self):
+            tactic_context = {
+                'STIXID': self.stix_id,
+                'Value': self.value
+            }
+
+            ret_value = {
+                Common.Tactic.CONTEXT_PATH: tactic_context
+            }
+
+            if self.dbot_score:
+                ret_value.update(self.dbot_score.to_context())
+
+            return ret_value
+
 
 class ScheduledCommand:
     """
@@ -6235,12 +7172,12 @@ class ScheduledCommand:
                              'version to 6.2.0 or later.'
 
     def __init__(
-            self,
-            command,  # type: str
-            next_run_in_seconds,  # type: int
-            args=None,  # type: Optional[Dict[str, Any]]
-            timeout_in_seconds=None,  # type: Optional[int]
-            items_remaining=0,  # type: Optional[int]
+        self,
+        command,  # type: str
+        next_run_in_seconds,  # type: int
+        args=None,  # type: Optional[Dict[str, Any]]
+        timeout_in_seconds=None,  # type: Optional[int]
+        items_remaining=0,  # type: Optional[int]
     ):
         self.raise_error_if_not_supported()
         self._command = command
@@ -6459,7 +7396,7 @@ def arg_to_datetime(arg, arg_name=None, is_utc=True, required=False, settings=No
             ms = ms / 1000.0
 
         if is_utc:
-            return datetime.utcfromtimestamp(ms).replace(tzinfo=timezone.utc)
+            return datetime.fromtimestamp(ms, tz=timezone.utc)
         else:
             return datetime.fromtimestamp(ms)
     if isinstance(arg, str):
@@ -6923,6 +7860,9 @@ class CommandResults:
     :type scheduled_command: ``ScheduledCommand``
     :param scheduled_command: manages the way the command should be polled.
 
+    :type extended_payload: ``dict``
+    :param extended_payload: (Optional) A dictionary representing the contents of ExtendedPayload for synchronization.
+
     :type execution_metrics: ``ExecutionMetrics``
     :param execution_metrics: contains metric data about a command's execution
 
@@ -6956,9 +7896,10 @@ class CommandResults:
                  relationships=None,
                  entry_type=None,
                  content_format=None,
+                 extended_payload=None,
                  execution_metrics=None,
                  replace_existing=False):
-        # type: (str, object, object, list, str, object, IndicatorsTimeline, Common.Indicator, bool, bool, List[str], ScheduledCommand, list, int, str, List[Any], bool) -> None  # noqa: E501
+        # type: (str, object, object, list, str, object, IndicatorsTimeline, Common.Indicator, bool, bool, List[str], ScheduledCommand, list, int, str, dict, List[Any], bool) -> None  # noqa: E501
         if raw_response is None:
             raw_response = outputs
         if outputs is not None:
@@ -6999,6 +7940,7 @@ class CommandResults:
         self.tags = tags
         self.scheduled_command = scheduled_command
         self.relationships = relationships
+        self.extended_payload = extended_payload
         self.execution_metrics = execution_metrics
         self.replace_existing = replace_existing
 
@@ -7023,14 +7965,47 @@ class CommandResults:
         indicators = [self.indicator] if self.indicator else self.indicators
 
         if indicators:
+            # Get InsightCacheSize from demisto.callingContext (in KB, default 3 MB = 3072 KB)
+            insight_cache_size_kb = demisto.callingContext.get("context", {}).get("InsightCacheSize", DEFAULT_INSIGHT_CACHE_SIZE)
+            insight_cache_size_bytes = insight_cache_size_kb * 1024
+
+            virtual_outputs = {}
             for indicator in indicators:
                 context_outputs = indicator.to_context()
 
                 for key, value in context_outputs.items():
-                    if key not in outputs:
-                        outputs[key] = []
+                    if key not in virtual_outputs:
+                        virtual_outputs[key] = []
+                    virtual_outputs[key].append(value)
 
-                    outputs[key].append(value)
+            context_size = len(json.dumps(virtual_outputs, default=str, separators=JSON_SEPARATORS, ensure_ascii=False))
+
+            # If the context size exceeds the limit, use to_minimum_context() instead
+            if context_size > insight_cache_size_bytes:
+                # Measure performance of to_minimum_context() - minimal context generation
+                for indicator in indicators:
+                    context_outputs = indicator.to_minimum_context()
+
+                    for key, value in context_outputs.items():
+                        if key not in outputs:
+                            outputs[key] = []
+
+                        outputs[key].append(value)
+
+                if human_readable:
+                    human_readable += "\nNote! some of the context data was not included because it went over the {}KB limit.".format(insight_cache_size_kb)
+                else:
+                    human_readable = "Note! some of the context data was not included because it went over the {}KB limit.".format(insight_cache_size_kb)
+
+                demisto.debug(
+                    "Context size ({} chars) exceeded limit ({} bytes). Will use the minimum context.".format(context_size, insight_cache_size_bytes)
+                )
+            else:
+                # Use the already calculated full context
+                outputs = virtual_outputs
+                demisto.debug(
+                    "Using full context ({} chars within {} bytes limit). ".format(context_size, insight_cache_size_bytes)
+                )
 
         if self.tags:
             tags = self.tags  # type: ignore[assignment]
@@ -7050,7 +8025,7 @@ class CommandResults:
                 if isinstance(self.outputs, (dict, list)):
                     human_readable = tableToMarkdown('Results', self.outputs)
                 else:
-                    human_readable = self.outputs   # type: ignore[assignment]
+                    human_readable = self.outputs  # type: ignore[assignment]
             if self.outputs_prefix and self.replace_existing:
                 next_token_path, _, next_token_key = self.outputs_prefix.rpartition('.')
                 if not next_token_path:
@@ -7094,6 +8069,10 @@ class CommandResults:
             'Note': mark_as_note,
             'Relationships': relationships
         }
+
+        if self.extended_payload:
+            return_entry['ExtendedPayload'] = self.extended_payload
+
         if tags:
             # This is for backward compatibility reasons
             return_entry['Tags'] = tags
@@ -7247,15 +8226,86 @@ def return_outputs(readable_output, outputs=None, raw_response=None, timeline=No
     demisto.results(return_entry)
 
 
+def _get_auto_error_message(error):
+    """Return the automatic (unified) error message for a content error, if any.
+
+    Looks for a :class:`CortexError` first in the ``error`` argument and then
+    in the currently-handled exception, and returns its automatic, unified
+    message built by :meth:`CortexError.auto_message` - which is built purely
+    from the error's structured arguments and *always ignores* any custom
+    message supplied by the caller (so Agentix always gets the standardized
+    message).
+
+    :type error: ``str`` or ``Exception``
+    :param error: The ``error`` value passed to :func:`return_error`.
+
+    :return: The automatic message, or ``None`` if no content error is available.
+    :rtype: ``str`` or ``None``
+    """
+    content_error = None
+    if isinstance(error, CortexError):
+        content_error = error
+    else:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, CortexError):
+            content_error = exc
+    if content_error is None:
+        return None
+    try:
+        return content_error.auto_message()
+    except Exception as exc:
+        demisto.debug('_get_auto_error_message failed to build message: {}'.format(exc))
+        return str(content_error)
+
+
+def _select_error_message(message, error):
+    """Choose which message ``return_error`` should surface.
+
+    Selection rules:
+      * **Agentix caller** -> always use the automatic, unified message built
+        from the :class:`CortexError` (when one is available); otherwise fall
+        back to the explicitly-passed ``message``.
+      * **Non-Agentix caller** -> prefer the explicitly-passed ``message``; if
+        none was provided, fall back to the automatic message.
+
+    :type message: ``str``
+    :param message: The explicit message passed to :func:`return_error`.
+
+    :type error: ``str`` or ``Exception``
+    :param error: The ``error`` value passed to :func:`return_error`.
+
+    :return: The message to display in the error entry.
+    :rtype: ``str``
+    """
+    auto_message = _get_auto_error_message(error)
+    if is_caller_agentix():
+        # Agentix prefers the machine-friendly, standardized message.
+        return auto_message or message
+    # Non-Agentix: respect an explicit message, otherwise use the auto one.
+    if message:
+        return message
+    return auto_message or message
+
+
 def return_error(message, error='', outputs=None):
     """
         Returns error entry with given message and exits the script
 
         :type message: ``str``
-        :param message: The message to return to the entry (required)
+        :param message: The message to return to the entry (required).
+            Message selection: when the caller is Agentix
+            (see :func:`is_caller_agentix`), the automatic, unified message
+            built from the :class:`CortexError` is used (falling back to this
+            ``message`` if none is available).  Otherwise this explicit
+            ``message`` is used, falling back to the automatic message when it
+            is empty.
 
         :type error: ``str`` or Exception
-        :param error: The raw error message to log (optional)
+        :param error: The raw error message to log (optional).
+            When *error* is a :class:`CortexError`, its ``error_code`` is
+            automatically attached to the error entry via ``ExtendedPayload``
+            and its :meth:`CortexError.build_message` provides the automatic,
+            unified message used for Agentix callers.
 
         :type outputs: ``dict or None``
         :param outputs: the outputs that will be returned to playbook/investigation context (optional)
@@ -7265,12 +8315,12 @@ def return_error(message, error='', outputs=None):
     """
     is_command = hasattr(demisto, 'command')
     try:
-        is_server_handled = is_command and demisto.command() in ('fetch-incidents',
-                                                                 'fetch-credentials',
-                                                                 'long-running-execution',
-                                                                 'fetch-indicators')
+        is_server_handled = is_command and (demisto.command() in FETCH_COMMANDS or demisto.command() == LONG_RUNNING_COMMAND)
     except Exception:
         is_server_handled = False
+    # Decide which message to surface based on the caller (Agentix vs. others)
+    # and whether a CortexError with an automatic, unified message is present.
+    message = _select_error_message(message, error)
     message = LOG(message)
     if error:
         LOG(str(error))
@@ -7295,12 +8345,41 @@ def return_error(message, error='', outputs=None):
             half_length = MAX_ERROR_MESSAGE_LENGTH // 2
             message = message[:half_length] + "...This error body was truncated..." + message[half_length * (-1):]
 
-        demisto.results({
+        error_entry = {
             'Type': entryTypes['error'],
             'ContentsFormat': formats['text'],
             'Contents': message,
             'EntryContext': outputs,
-        })
+        }
+
+        # Attach the content error type (and, when available, the retryable
+        # flag) inside ExtendedPayload so LLM agents can classify the failure
+        # and decide whether to retry, without parsing the human-readable
+        # Contents string.
+        # Priority for the CortexError source: error param -> current exception.
+        _cortex_error = error if isinstance(error, CortexError) else None
+        if _cortex_error is None:
+            exc = sys.exc_info()[1]
+            if isinstance(exc, CortexError):
+                _cortex_error = exc
+
+        # Error code: CortexError first, then a text-based heuristic fallback.
+        _error_type = _cortex_error.error_code if _cortex_error else None
+        if not _error_type:
+            _error_type = _classify_error_message(message)
+
+        extended_payload = {}
+        if _error_type:
+            extended_payload[EXTENDED_PAYLOAD_ERROR_CODE_KEY] = _error_type
+        # Expose only the boolean retryable flag (true/false), taken from the
+        # CortexError details.
+        if _cortex_error is not None and EXTENDED_PAYLOAD_RETRYABLE_KEY in _cortex_error.details:
+            extended_payload[EXTENDED_PAYLOAD_RETRYABLE_KEY] = \
+                _cortex_error.details[EXTENDED_PAYLOAD_RETRYABLE_KEY]
+        if extended_payload:
+            error_entry['ExtendedPayload'] = extended_payload
+
+        demisto.results(error_entry)
         sys.exit(0)
 
 
@@ -7565,6 +8644,7 @@ class CommandRunner:
     :return: None
     :rtype: ``None``
     """
+
     class Command:
         """
         Data class with the data required to execute a command.
@@ -7788,6 +8868,22 @@ def execute_command(command, args, extract_contents=True, fail_on_error=True):
     if is_error(res):
         error_message = get_error(res)
         if fail_on_error:
+            # Reuse the standardized error code from the failing sub-command's
+            # ExtendedPayload when present, otherwise classify from the message.
+            error_code = get_error_code(res)
+            if not error_code:
+                error_code = _classify_error_message(error_message)
+            if error_code:
+                # Use the base CortexError so the standardized error_code taken
+                # from the failing sub-command (which may be any category, e.g.
+                # AUTH_ERROR/QUOTA_ERROR) is carried as-is.
+                raise CortexError(
+                    # Original message kept for backward compatibility; the
+                    # error_code carries the standardized classification.
+                    override_message='Failed to execute {}. Error details:\n{}'.format(command, error_message),
+                    error_code=error_code,
+                    details={"command": command, "raw_error": error_message},
+                )
             raise DemistoException('Failed to execute {}. Error details:\n{}'.format(command, error_message))
         else:
             return False, error_message
@@ -8069,6 +9165,29 @@ def response_to_context(reponse_obj, user_predefiend_keys=None):
         return reponse_obj
 
 
+def safe_strptime(date_str, datetime_format, strptime=datetime.strptime):
+    """
+    Parses a date string to a datetime object, handling cases where the microsecond component is missing.
+
+    :type date_str: ``str``
+    :param date_str: The date string to parse (required)
+
+    :type datetime_format: ``str``
+    :param datetime_format: The format of the date string (required)
+
+    :type strptime: ``Callable``
+    :param strptime: The function to use for parsing the date string (optional)
+
+    :return: The parsed datetime object
+    :rtype: ``datetime.datetime``
+    """
+    try:
+        return strptime(date_str, datetime_format)
+    except ValueError as e:
+        demisto.debug('Failed to parse date {} with format {}: {}'.format(date_str, datetime_format, str(e)))
+        return strptime(date_str, datetime_format.replace('.%f', ''))
+
+
 def parse_date_range(date_range, date_format=None, to_timestamp=False, timezone=0, utc=True):
     """
         THIS FUNCTTION IS DEPRECATED - USE dateparser.parse instead
@@ -8184,7 +9303,7 @@ def date_to_timestamp(date_str_or_dt, date_format='%Y-%m-%dT%H:%M:%S'):
       :rtype: ``int``
     """
     if isinstance(date_str_or_dt, STRING_OBJ_TYPES):
-        return int(time.mktime(time.strptime(date_str_or_dt, date_format)) * 1000)
+        return int(time.mktime(safe_strptime(date_str_or_dt, date_format, time.strptime)) * 1000)
 
     # otherwise datetime.datetime
     return int(time.mktime(date_str_or_dt.timetuple()) * 1000)
@@ -8356,7 +9475,7 @@ def is_xsoar():
     :return: True iff the platform is XSOAR.
     :rtype: ``bool``
     """
-    return "xsoar" in demisto.demistoVersion().get("platform")
+    return "xsoar" in demisto.demistoVersion().get("platform", "")
 
 
 def is_xsoar_on_prem():
@@ -8385,6 +9504,13 @@ def is_xsoar_saas():
     """
     return demisto.demistoVersion().get("platform") == "xsoar" and is_xsiam_or_xsoar_saas()
 
+def is_platform():
+    """Determines whether running on a unified Cortex platform tenant.
+
+    :return: True iff the platform type is 'unified_platform'.
+    :rtype: ``bool``
+    """
+    return demisto.demistoVersion().get("platform") == "unified_platform"
 
 def is_xsiam():
     """Determines whether or not the platform is XSIAM.
@@ -8392,15 +9518,124 @@ def is_xsiam():
     :return: True iff the platform is XSIAM.
     :rtype: ``bool``
     """
-    return demisto.demistoVersion().get("platform") == "x2"
+    XSIAM_PLATFORM_CODES = {"x1", "x3", "x5"}
+    
+    version_info = demisto.demistoVersion()
+    is_xsiam_legacy = version_info.get("platform") == "x2"
+    is_xsiam_platform = is_platform() and (version_info.get("module") in XSIAM_PLATFORM_CODES)
+    return is_xsiam_legacy or is_xsiam_platform
+
+
+
+def resolve_should_push_events(args):
+    """Resolve the ``should_push_events`` flag from command args based on the current platform.
+
+    Extracts the ``should_push_events`` argument (defaulting to ``False``) and converts it
+    to a boolean. If it is ``True`` but the platform is not Cortex XSIAM, the value is
+    silently overridden to ``False`` and a debug log is emitted.
+
+    Use this in ``get-events`` debug commands to gracefully degrade on
+    non-XSIAM platforms (e.g., Cortex XSOAR) instead of raising an error.
+
+    :param args: The command arguments dict (``demisto.args()``), expected to optionally
+        contain a ``should_push_events`` key.
+    :type args: ``dict``
+    :return: The resolved push-events flag (``False`` on unsupported platforms).
+    :rtype: ``bool``
+
+    Example::
+
+        should_push = resolve_should_push_events(args)
+    """
+    should_push_events = argToBoolean(args.get("should_push_events", False))
+    if should_push_events and not is_xsiam():
+        demisto.debug("[Events Push Check] "
+                      "should_push_events is not supported on this platform. Overriding to False.")
+        return False
+    return should_push_events
 
 
 def is_using_engine():
     """Determines whether or not the platform is using engine.
+    NOTE:
+     - This method works only for system integrations (not custom).
+     - On xsoar 8, this method works only for integrations that runs on the xsoar pod - not on the engine-0 (mainly long running
+       integrations) such as:  EDL, Cortex Core - IOC, Cortex Core - IR, ExportIndicators, Generic Webhook, PingCastle,
+       Publish List, Simple API Proxy, Syslog v2, TAXII Server, TAXII2 Server, Web File Repository, Workday_IAM_Event_Generator,
+       XSOAR-Web-Server, Microsoft Teams, AWS-SNS-Listener.
+
     :return: True iff the platform is using engine.
     :rtype: ``bool``
     """
     return demisto.demistoVersion().get("engine")
+
+
+def is_integration_instance_running_on_engine():
+    """Determines whether the current integration instance runs on an xsoar engine.
+    If yes - returns the engine id.
+
+    :return: The engine id iff the instance is running on an xsaor engine.
+    :rtype: ``str``
+    """
+    engine_id = ''
+    integrations_raw_response = demisto.internalHttpRequest(
+        'POST', uri='/settings/integration/search', body='{\"size\":1000}'
+    )
+    integrations_body_raw_response = integrations_raw_response.get('body', '{}')
+    try:
+        integrations_body_response = json.loads(integrations_body_raw_response)  # type: ignore
+    except json.JSONDecodeError:  # type: ignore[attr-defined]
+        demisto.debug('Unable to load response {}'.format(integrations_body_raw_response))
+        integrations_body_response = {}
+
+    instances = integrations_body_response.get('instances', [])
+    instance_name = demisto.integrationInstance()
+    demisto.debug("Search for the data of the {} instance.".format(instance_name))
+    for instance in instances:
+        if instance_name == instance.get('name', ''):
+            engine_id = instance.get('engine', '')
+            break
+
+    if engine_id:  # engine_id = '' for instances that don't run on engine
+        demisto.debug("The {} instance runs on an xsoar engine, engine ID is: {}".format(instance_name, engine_id))
+    else:
+        demisto.debug("The {} instance does not run on an xsoar engine.".format(instance_name))
+
+    return engine_id
+
+
+def get_engine_base_url(engine_id):
+    """Gets the xsoar engine id and returns it's base url.
+    For example: for engine_id = '4ccccccc-5aaa-4000-b666-dummy_id', base url = '11.180.111.111:1443'.
+
+    :type engine_id: ``str``
+    :param engine_id: The xsoar engine id.
+
+    :return: The base URL of the engine.
+    :rtype: ``str`
+    """
+
+    engines_raw_response = demisto.internalHttpRequest(
+        'GET', uri='/engines', body=json.dumps({})
+    )
+    engines_body_raw_response = engines_raw_response.get('body', '{}')
+
+    try:
+        engines_body_response = json.loads(engines_body_raw_response)  # type: ignore
+    except json.JSONDecodeError:  # type: ignore[attr-defined]
+        demisto.debug('Unable to load response {}'.format(engines_body_raw_response))
+        engines_body_response = {}
+
+    engines = engines_body_response.get('engines', [])
+    demisto.debug("Search for the data of engine ID {}.".format(engine_id))
+    for engine in engines:
+        if engine.get('id') == engine_id:
+            engine_base_url = engine.get('baseUrl', '')
+            demisto.debug("The base URL of engine ID {} is: {}.".format(engine_id, engine_base_url))
+            return engine_base_url
+
+    demisto.debug("Couldn't find a base url for engine ID {}.".format(engine_id))
+    return ''
 
 
 class DemistoHandler(logging.Handler):
@@ -8425,7 +9660,7 @@ class DemistoHandler(logging.Handler):
 
 def censor_request_logs(request_log):
     """
-    Censors the request logs generated from the urllib library directly by replacing sensitive information such as tokens and cookies with a mask. 
+    Censors the request logs generated from the urllib library directly by replacing sensitive information such as tokens and cookies with a mask.
     In most cases, the sensitive value is the first word after the keyword, but in some cases, it is the second one.
     :param request_log: The request log to censor
     :type request_log: ``str``
@@ -8433,7 +9668,8 @@ def censor_request_logs(request_log):
     :return: The censored request log
     :rtype: ``str``
     """
-    keywords_to_censor = ['Authorization:', 'Cookie', "Token"]
+    keywords_to_censor = ['Authorization:', 'Cookie', "Token", "username",
+                          "password", "Key", "identifier", "credential", "client"]
     lower_keywords_to_censor = [word.lower() for word in keywords_to_censor]
 
     trimed_request_log = request_log.lstrip(SEND_PREFIX)
@@ -8445,9 +9681,11 @@ def censor_request_logs(request_log):
         if any(keyword in word.lower() for keyword in lower_keywords_to_censor):
             next_word = request_log_lst[i + 1] if i + 1 < len(request_log_lst) else None
             if next_word:
-                # If the next word is "Bearer" or "Basic" then we replace the word after it since thats the token
-                if next_word.lower() in ["bearer", "basic"] and i + 2 < len(request_log_lst):
+                # If the next word is "Bearer", "JWT", "Basic" or "LOG" then we replace the word after it since thats the token
+                if next_word.lower() in ["bearer", "jwt", "basic", "log"] and i + 2 < len(request_log_lst):
                     request_log_lst[i + 2] = MASK
+                elif request_log_lst[i + 1].endswith("}'"):
+                    request_log_lst[i + 1] = "\"{}\"}}'".format(MASK)
                 else:
                     request_log_lst[i + 1] = MASK
 
@@ -8586,7 +9824,7 @@ def parse_date_string(date_string, date_format='%Y-%m-%dT%H:%M:%S'):
         :rtype: ``(datetime.datetime, datetime.datetime)``
     """
     try:
-        return datetime.strptime(date_string, date_format)
+        return safe_strptime(date_string, date_format)
     except ValueError as e:
         error_message = str(e)
 
@@ -8633,7 +9871,7 @@ def parse_date_string(date_string, date_format='%Y-%m-%dT%H:%M:%S'):
         #      '2022-01-23T12:34:56.123456789' to '2022-01-23T12:34:56.123456'
         date_string = re.sub(r'([0-9]+\.[0-9]{6})[0-9]*([Zz]|[+-]\S+?)?', '\\1\\2', date_string)
 
-        return datetime.strptime(date_string, date_format)
+        return safe_strptime(date_string, date_format)
 
 
 def build_dbot_entry(indicator, indicator_type, vendor, score, description=None, build_malicious=True):
@@ -8760,7 +9998,7 @@ if 'requests' in sys.modules:
 
         # The ciphers string used to replace default cipher string
 
-        CIPHERS_STRING = '@SECLEVEL=1:ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:ECDH+AESGCM:DH+AESGCM:' \
+        CIPHERS_STRING = '@SECLEVEL=0:ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:ECDH+AESGCM:DH+AESGCM:' \
                          'ECDH+AES:DH+AES:RSA+ANESGCM:RSA+AES:!aNULL:!eNULL:!MD5:!DSS'
 
         class SSLAdapter(HTTPAdapter):
@@ -8787,6 +10025,42 @@ if 'requests' in sys.modules:
             def proxy_manager_for(self, *args, **kwargs):
                 kwargs['ssl_context'] = self.context
                 return super(SSLAdapter, self).proxy_manager_for(*args, **kwargs)
+
+    class UcpRequestContext(object):
+        """Mutable container for request components that the credential injection methods can modify.
+
+        :type headers: ``dict``
+        :param headers: The request headers. Example: {'Accept': 'application/json'}
+
+        :type params: ``dict``
+        :param params: The request URL query parameters. Example: {'limit': 50, 'sort': 'desc'}
+
+        :type auth: ``tuple``
+        :param auth: The basic authentication tuple. Example: ('admin_user', 'super_secret_password')
+
+        :type data: ``dict`` or ``str`` or ``bytes``
+        :param data: The body data for the request. Example: 'key=value&other=123'
+
+        :type json_data: ``dict``
+        :param json_data: The JSON payload for the request. Example: {'username': 'test_user', 'active': True}
+        """
+        __slots__ = ('headers', 'params', 'auth', 'data', 'json_data')
+
+        def __init__(self, headers, params, auth, data, json_data):
+            # Automatically guarantee these are safe dictionary copies, even if None is passed
+            self.headers = dict(headers or {})
+            self.params = dict(params or {})
+            self.auth = auth
+            self.data = data
+            self.json_data = json_data
+
+        def __iter__(self):
+            """Allows the object to be unpacked directly into variables."""
+            yield self.headers
+            yield self.params
+            yield self.auth
+            yield self.data
+            yield self.json_data
 
     class BaseClient(object):
         """Client to use in integrations with powerful _http_request
@@ -8819,6 +10093,7 @@ if 'requests' in sys.modules:
         """
 
         REQUESTS_TIMEOUT = 60
+        TIME_SENSITIVE_TOTAL_TIMEOUT = 15
 
         def __init__(
             self,
@@ -8848,7 +10123,6 @@ if 'requests' in sys.modules:
                 ensure_proxy_has_http_prefix()
             else:
                 skip_proxy()
-
             if not verify:
                 skip_cert_verification()
 
@@ -8857,7 +10131,179 @@ if 'requests' in sys.modules:
             system_timeout = os.getenv('REQUESTS_TIMEOUT', '')
             self.timeout = float(entity_timeout or system_timeout or timeout)
 
+            # Time-Sensitive Logic
+            self._time_sensitive_deadline = None
+            self._time_sensitive_total_timeout = self.TIME_SENSITIVE_TOTAL_TIMEOUT
+
+            if is_time_sensitive():
+                demisto.debug("Time-sensitive mode enabled. Setting execution time limit to {} seconds.".format(self._time_sensitive_total_timeout))
+                self._time_sensitive_deadline = time.time() + float(
+                    self._time_sensitive_total_timeout
+                )
+
             self.execution_metrics = ExecutionMetrics()
+
+        def _get_ucp_auth_error_codes(self):
+            # type: () -> tuple
+            """Returns a tuple of HTTP status codes that indicate an expired UCP token.
+
+            Override in subclasses if the vendor API uses non-standard authentication error codes
+            (e.g., returning (401, 403) instead of just (401,) for an expired token).
+
+            Example::
+
+                class Client(BaseClient):
+                    def _get_ucp_auth_error_codes(self):
+                        return (401, 403)
+            """
+            return (401,)
+        
+        def _apply_ucp_credentials(self, credentials, ctx):
+            # type: (dict, UcpRequestContext) -> None
+            """Overridable Method: Apply UCP credentials to the request context.
+
+            Dispatches to per-type methods that are individually overridable:
+            - _apply_ucp_oauth2()  -- for OAuth2 tokens
+            - _apply_ucp_api_key() -- for API keys
+            - _apply_ucp_plain()   -- for username/password (basic auth)
+
+            Override the specific per-type method if the vendor API uses a
+            non-standard mechanism (custom header, query param, request body).
+            Override this method only if you need to change the dispatch logic itself.
+
+            :type credentials: ``dict``
+            :param credentials: The credentials dictionary fetched from UCP. 
+                Example: {'type': 'api_key', 'api_key': {'key': '12345'}}
+
+            :type ctx: ``UcpRequestContext``
+            :param ctx: The mutable request context object. The matching _apply_ucp_* method will mutate this object.
+
+            :return: None
+            :rtype: ``None``
+            """
+            cred_type = credentials.get('type')
+
+            if cred_type == 'passthrough':
+                # A passthrough profile is self-managed: the integration applies the
+                # credential itself, or none is required. Leave the request untouched.
+                demisto.debug('[UCP][CommonServerPython.py] _apply_ucp_credentials: passthrough profile; '
+                              'leaving the request untouched (the integration owns this credential).')
+                return
+
+            # Bug on UCP side where they return different types for the same credential type. To be fixed in July'26 version
+            if cred_type == 'oauth2_client_credentials' or cred_type == 'oauth2_authorization_code' or cred_type == 'oauth2':
+                self._apply_ucp_oauth2(credentials, ctx)
+            elif cred_type == 'api_key':
+                self._apply_ucp_api_key(credentials, ctx)
+            elif cred_type == 'plain':
+                self._apply_ucp_plain(credentials, ctx)
+            else:
+                demisto.error('[UCP][CommonServerPython.py] _apply_ucp_credentials: Unsupported credential type: "{}". '
+                             'Supported types: oauth2, api_key, plain.'.format(cred_type))
+                raise UcpException()
+
+        def _apply_ucp_oauth2(self, credentials, ctx):
+            # type: (dict, UcpRequestContext) -> None
+            """Apply OAuth2 credentials. Override in subclasses for custom OAuth2
+            token placement (e.g., custom header name or query parameter).
+
+            Default: sets ``Authorization`` header to ``'{token_type} {access_token}'``.
+
+            Args:
+                credentials: dict from getUCPCredentials().
+                ctx: UcpRequestContext to mutate.
+            """
+            oauth2_data = credentials.get('oauth2', credentials)
+            token_type = oauth2_data.get('token_type', 'Bearer')
+            access_token = oauth2_data.get('access_token', '')
+            if not access_token:
+                demisto.error("[UCP][CommonServerPython.py] access_token is empty in UCP OAuth2 credentials")
+                raise UcpException()
+            ctx.headers['Authorization'] = '{} {}'.format(token_type, access_token)
+
+        def _apply_ucp_api_key(self, credentials, ctx):
+            # type: (dict, UcpRequestContext) -> None
+            """Apply API key credentials. Override for custom API key placement.
+
+            Default: sets Authorization header to 'Bearer {key}'.
+
+            Args:
+                credentials: dict from getUCPCredentials().
+                ctx: UcpRequestContext to mutate.
+
+            Example::
+
+                class Client(BaseClient):
+                    def _apply_ucp_api_key(self, credentials, ctx):
+                        api_key_data = credentials.get('api_key', credentials)
+                        ctx.headers['X-API-Key'] = api_key_data.get('key', '')
+            """
+            # API key fields may be nested inside credentials['api_key'];
+            # fall back to top-level for backward compatibility.
+            api_key_data = credentials.get('api_key', credentials)
+            key = api_key_data.get('key', '')
+            if not key:
+                demisto.error("[UCP][CommonServerPython.py] API key is empty in UCP credentials")
+                raise UcpException()
+            ctx.headers['Authorization'] = 'Bearer {}'.format(key)
+
+        def _apply_ucp_plain(self, credentials, ctx):
+            # type: (dict, UcpRequestContext) -> None
+            """Apply plain credentials (basic auth). Override for custom placement.
+
+            Default: sets ctx.auth tuple for requests basic auth.
+
+            Args:
+                credentials: dict from getUCPCredentials().
+                ctx: UcpRequestContext to mutate.
+            """
+            # Plain fields may be nested inside credentials['plain'];
+            # fall back to top-level for backward compatibility.
+            plain_data = credentials.get('plain', credentials)
+            username = plain_data.get('username', '')
+            if not username:
+                demisto.error("[UCP][CommonServerPython.py] username is empty in UCP plain credentials")
+                raise UcpException()
+            password = plain_data.get('password', '')
+            ctx.auth = (username, password)
+
+        def _resolve_ucp_capability(self):
+            # type: () -> tuple
+            """Resolve the (capability, sub_capability) for the current command.
+
+            Override in subclasses to provide integration-specific sub_capability
+            mapping.  The default returns ``(resolve_ucp_capability(), None)``.
+
+            :return: Tuple of ``(capability, sub_capability)``.
+            :rtype: ``tuple``
+
+            Example::
+
+                class Client(BaseClient):
+                    def _resolve_ucp_capability(self):
+                        return resolve_ucp_capability(), 'my-sub-capability'
+            """
+            return resolve_ucp_capability(), None
+
+        def _inject_ucp_credentials(self, ctx):
+            # type: (UcpRequestContext) -> str
+            """Resolve UCP credentials and apply them to *ctx* in place.
+
+            Resolves capability -> profile -> credentials, then dispatches to
+            the appropriate ``_apply_ucp_*`` method to mutate *ctx*.
+
+            :type ctx: ``UcpRequestContext``
+            :param ctx: The request context to mutate with UCP credentials.
+
+            :return: The ``method_unique_id`` used to fetch credentials (needed
+                for cache invalidation on auth failure retry).
+            :rtype: ``str``
+            """
+            capability, sub_capability = self._resolve_ucp_capability()
+            method_unique_id = get_ucp_method_unique_id(capability, sub_capability)
+            ucp_creds = get_ucp_credentials(method_unique_id)
+            self._apply_ucp_credentials(ucp_creds, ctx)
+            return method_unique_id
 
         def __del__(self):
             self._return_execution_metrics_results()
@@ -8872,6 +10318,7 @@ if 'requests' in sys.modules:
         def _implement_retry(self, retries=0,
                              status_list_to_retry=None,
                              backoff_factor=5,
+                             backoff_jitter=0.0,
                              raise_on_redirect=False,
                              raise_on_status=False):
             """
@@ -8900,6 +10347,10 @@ if 'requests' in sys.modules:
 
                 By default, backoff_factor set to 5
 
+            :type backoff_jitter ``float``
+            :param backoff_jitter: the sleep (backoff factor) is extended by
+                random.uniform(0, {backoff jitter})
+
             :type raise_on_redirect ``bool``
             :param raise_on_redirect: Whether, if the number of redirects is
                 exhausted, to raise a MaxRetryError, or to return a response with a
@@ -8913,10 +10364,13 @@ if 'requests' in sys.modules:
             """
             try:
                 method_whitelist = "allowed_methods" if hasattr(
-                    Retry.DEFAULT, "allowed_methods") else "method_whitelist"  # type: ignore[attr-defined]
-                whitelist_kawargs = {
+                    Retry.DEFAULT, "allowed_methods"
+                ) else "method_whitelist"  # type: ignore[attr-defined]
+                dynamic_kwargs = {
                     method_whitelist: frozenset(['GET', 'POST', 'PUT', 'PATCH', 'DELETE'])
                 }
+                if hasattr(Retry.DEFAULT, "backoff_jitter"):
+                    dynamic_kwargs["backoff_jitter"] = backoff_jitter
                 retry = Retry(
                     total=retries,
                     read=retries,
@@ -8926,7 +10380,7 @@ if 'requests' in sys.modules:
                     status_forcelist=status_list_to_retry,
                     raise_on_status=raise_on_status,
                     raise_on_redirect=raise_on_redirect,
-                    **whitelist_kawargs  # type: ignore[arg-type]
+                    **dynamic_kwargs  # type: ignore[arg-type]
                 )
                 http_adapter = HTTPAdapter(max_retries=retry)
 
@@ -8949,7 +10403,7 @@ if 'requests' in sys.modules:
         def _http_request(self, method, url_suffix='', full_url=None, headers=None, auth=None, json_data=None,
                           params=None, data=None, files=None, timeout=None, resp_type='json', ok_codes=None,
                           return_empty_response=False, retries=0, status_list_to_retry=None,
-                          backoff_factor=5, raise_on_redirect=False, raise_on_status=False,
+                          backoff_factor=5, backoff_jitter=0.0, raise_on_redirect=False, raise_on_status=False,
                           error_handler=None, empty_valid_codes=None, params_parser=None, with_metrics=False, **kwargs):
             """A wrapper for requests lib to send our requests and handle requests and responses better.
 
@@ -8997,6 +10451,13 @@ if 'requests' in sys.modules:
                 is 'json'. Other options are 'text', 'content', 'xml' or 'response'. Use 'response'
                  to return the full response object.
 
+                 To stream the response body incrementally (instead of loading the full body into memory),
+                 pass ``resp_type='response'`` together with ``stream=True`` (forwarded to ``requests`` via
+                 ``**kwargs``). You can then read the body lazily, e.g. ``res.iter_content(...)`` /
+                 ``res.iter_lines()`` or ``res.raw``, and combine it with ``stream_json_items`` /
+                 ``stream_xml_elements`` to parse one record at a time and keep peak memory ~flat. This is
+                 recommended for large ``fetch``/``fetch-assets`` responses.
+
             :type ok_codes: ``tuple``
             :param ok_codes:
                 The request codes to accept as OK, for example: (200, 201, 204). If you specify
@@ -9023,6 +10484,10 @@ if 'requests' in sys.modules:
                 than :attr:`Retry.BACKOFF_MAX`.
 
                 By default, backoff_factor set to 5
+
+            :type backoff_jitter ``float``
+            :param backoff_jitter: the sleep (backoff factor) is extended by
+                random.uniform(0, {backoff jitter})
 
             :type raise_on_redirect ``bool``
             :param raise_on_redirect: Whether, if the number of redirects is
@@ -9054,19 +10519,59 @@ if 'requests' in sys.modules:
             :return: Depends on the resp_type parameter
             :rtype: ``dict`` or ``str`` or ``bytes`` or ``xml.etree.ElementTree.Element`` or ``requests.Response``
             """
+            
+            # Time-Sensitive command Logic
+            request_timeout = timeout
+            request_retries = retries
+            remaining_time = None
+
+            # Time-Sensitive command mode
+            if self._time_sensitive_deadline:
+                remaining_time = self._time_sensitive_deadline - time.time()
+
+                if remaining_time <= 0:
+                    raise DemistoException(
+                            "Time-sensitive command execution time limit ({time_limit}s) reached before performing the API request."
+                            .format(time_limit=self._time_sensitive_total_timeout)
+                        )
+
+                request_retries = 0
+                request_timeout = remaining_time
+
+            # Set default timeout if one hasn't been set by user OR by time-sensitive logic
+            if request_timeout is None:
+                request_timeout = self.timeout
+
             try:
                 # Replace params if supplied
                 address = full_url if full_url else urljoin(self._base_url, url_suffix)
                 headers = headers if headers else self._headers
                 auth = auth if auth else self._auth
-                if retries:
-                    self._implement_retry(retries, status_list_to_retry, backoff_factor, raise_on_redirect, raise_on_status)
-                if not timeout:
-                    timeout = self.timeout
-                if IS_PY3 and params_parser:  # The `quote_via` parameter is supported only in python3.
+
+                if request_retries:
+                    self._implement_retry(
+                        request_retries,
+                        status_list_to_retry,
+                        backoff_factor,
+                        backoff_jitter,
+                        raise_on_redirect,
+                        raise_on_status,
+                    )
+
+                # -- UCP: Inject credentials into request --
+                current_method_unique_id = None
+                if should_use_ucp_auth():
+                    demisto.debug("[UCP][CommonServerPython.py] _http_request: injecting UCP credentials")
+                    ctx = UcpRequestContext(headers, params, auth, data, json_data)
+                    current_method_unique_id = self._inject_ucp_credentials(ctx)
+                    headers, params, auth, data, json_data = ctx
+
+
+                if (
+                    IS_PY3 and params_parser
+                ):  # The `quote_via` parameter is supported only in python3.
                     params = urllib.parse.urlencode(params, quote_via=params_parser)
 
-                # Execute
                 res = self._session.request(
                     method,
                     address,
@@ -9077,19 +10582,41 @@ if 'requests' in sys.modules:
                     files=files,
                     headers=headers,
                     auth=auth,
-                    timeout=timeout,
+                    timeout=request_timeout,
                     **kwargs
                 )
+                
+                # -- UCP: Invalidate credentials if we get an auth error --
+                if should_use_ucp_auth() and res.status_code in self._get_ucp_auth_error_codes():
+                    invalidate_ucp_credentials(current_method_unique_id)
+
                 if not self._is_status_code_valid(res, ok_codes):
                     self._handle_error(error_handler, res, with_metrics)
 
-                return self._handle_success(res, resp_type, empty_valid_codes, return_empty_response, with_metrics)
+                return self._handle_success(
+                    res,
+                    resp_type,
+                    empty_valid_codes,
+                    return_empty_response,
+                    with_metrics,
+                )
 
             except requests.exceptions.ConnectTimeout as exception:
                 if with_metrics:
                     self.execution_metrics.timeout_error += 1
-                err_msg = 'Connection Timeout Error - potential reasons might be that the Server URL parameter' \
-                          ' is incorrect or that the Server is not accessible from your host.'
+                err_msg = (
+                    "Connection Timeout Error - potential reasons might be that the Server URL parameter"
+                    " is incorrect or that the Server is not accessible from your host."
+                )
+                if (
+                    self._time_sensitive_deadline
+                    and remaining_time is not None
+                    and remaining_time <= request_timeout
+                ):
+                    err_msg = "Time-sensitive command execution time limit ({time_limit}s) exceeded. Original error: {original_msg}".format(
+                        time_limit=self._time_sensitive_total_timeout,
+                        original_msg=err_msg
+                    )
                 raise DemistoException(err_msg, exception)
             except requests.exceptions.SSLError as exception:
                 if with_metrics:
@@ -9114,8 +10641,8 @@ if 'requests' in sys.modules:
                 err_type = '<' + error_class[error_class.find('\'') + 1: error_class.rfind('\'')] + '>'
 
                 err_msg = 'Verify that the server URL parameter' \
-                    ' is correct and that you have access to the server from your host.' \
-                    '\nError Type: {}'.format(err_type)
+                          ' is correct and that you have access to the server from your host.' \
+                          '\nError Type: {}'.format(err_type)
                 if exception.errno and exception.strerror:
                     err_msg += '\nError Number: [{}]\nMessage: {}\n'.format(exception.errno, exception.strerror)
                 else:
@@ -9574,7 +11101,9 @@ def get_integration_context(sync=True, with_version=False):
         if with_version:
             return integration_context
         else:
-            return integration_context.get('context', {})
+            if isinstance(integration_context, list):
+                demisto.error("The integration context is a list with {} items".format(len(integration_context)))
+            return integration_context.get("context", {})
     else:
         return demisto.getIntegrationContext()
 
@@ -9706,6 +11235,781 @@ class DemistoException(Exception):
 
     def __str__(self):
         return str(self.message)
+    
+class UcpException(DemistoException):
+    """Exception for UCP (Unified Connector Platform) authentication errors.
+
+    Inherits from ``DemistoException`` and provides a default, user-friendly
+    message that does **not** expose internal terminology (UCP, connector, etc.).
+
+    Callers should log diagnostics via ``demisto.error()`` *before* raising,
+    then simply ``raise UcpException()`` to surface the generic message.
+    A custom *message* can be passed when a more specific (but still
+    user-safe) description is appropriate.
+    """
+
+    DEFAULT_MESSAGE = (
+        'An authentication configuration error occurred. '
+        'Please verify the integration instance configuration and try again. '
+        'If the problem persists, contact Cortex support.'
+    )
+
+    def __init__(self, message=None, exception=None, res=None, error_type=None, *args):
+        super(UcpException, self).__init__(
+            message or self.DEFAULT_MESSAGE, exception=exception, res=res, error_type=error_type, *args
+        )
+
+
+# -- Agentix Standardized Error Hierarchy -----------------------------
+#
+# These exceptions provide structured error information (error_code,
+# details dict) that ``return_error`` serializes via ``ExtendedPayload``
+# so that LLM agents can programmatically distinguish error categories
+# and decide whether to retry, fix an argument, or escalate.
+#
+# Hierarchy:
+#   DemistoException
+#     +-- CortexError  (base - carries error_code + details)
+#           +-- CortexMissingArgError
+#           +-- CortexInvalidArgError
+#           +-- CortexConflictingArgsError
+#           +-- CortexResourceNotFoundError
+#           +-- CortexExternalApiError
+#           |     +-- CortexAuthError
+#           |     +-- CortexRateLimitError
+#           |     +-- CortexTimeoutError
+#           |     +-- CortexConnectionError
+#           +-- CortexParseError
+#           +-- CortexPermissionError
+#           +-- CortexExecutionError
+
+
+class RetryGuidance(object):
+    """Whether (and how) an operation that failed is worth retrying.
+
+    Used by :class:`CortexError` to append an automatic retry hint to the
+    error message and to expose machine-readable guidance via
+    ``ExtendedPayload`` so that LLM agents can decide whether to retry, fix an
+    argument, or escalate.
+
+    * :data:`NOT_RETRYABLE` - retrying as-is will not help (e.g. invalid
+      credentials, missing permissions). Requires human/config intervention.
+    * :data:`RETRY_AFTER_FIX` - retrying can succeed only after the *input* is
+      corrected (e.g. a missing or invalid argument).
+    * :data:`RETRY_LATER` - the same request may succeed if retried later,
+      typically after a short wait (e.g. rate limiting, timeouts, transient
+      connection issues).
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    NOT_RETRYABLE = "not_retryable"
+    RETRY_AFTER_FIX = "retry_after_fix"
+    RETRY_LATER = "retry_later"
+
+    # Human-readable hint appended to the error message for each guidance value.
+    _HINTS = {
+        NOT_RETRYABLE: "Retrying will not help; this requires fixing the configuration or contacting support.",
+        RETRY_AFTER_FIX: "You can retry after correcting the input.",
+        RETRY_LATER: "This may be transient - you can retry the same request later.",
+    }
+
+    @classmethod
+    def hint(cls, guidance):
+        # type: (str) -> str
+        """Return the human-readable retry hint for a guidance value.
+
+        :type guidance: ``str``
+        :param guidance: A :class:`RetryGuidance` value.
+
+        :return: The human-readable retry hint, or an empty string if unknown.
+        :rtype: ``str``
+        """
+        return cls._HINTS.get(guidance, "")
+
+    @classmethod
+    def is_retryable(cls, guidance):
+        # type: (str) -> bool
+        """Return whether the given guidance value indicates a retry may help.
+
+        :type guidance: ``str``
+        :param guidance: A :class:`RetryGuidance` value.
+
+        :return: ``True`` if a retry may help, ``False`` otherwise.
+        :rtype: ``bool``
+        """
+        return guidance in (cls.RETRY_AFTER_FIX, cls.RETRY_LATER)
+
+
+# Key used inside ``details`` (and thus ``ExtendedPayload``) to carry the
+# retry guidance and the boolean retryable flag.
+EXTENDED_PAYLOAD_RETRY_GUIDANCE_KEY = 'retry_guidance'
+EXTENDED_PAYLOAD_RETRYABLE_KEY = 'retryable'
+
+
+class CortexError(DemistoException):
+    """Base exception for all content standardized errors.
+
+    Carries structured error information including ``error_code``,
+    ``retry_guidance`` and ``details`` that are attached to the error entry via
+    ``ExtendedPayload`` for LLM agent consumption.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | Generic fallback for an error that fits none of the specific         |
+    | subclasses below. PREFER a specific subclass whenever one applies -  |
+    | it sets the correct error_code and retry_guidance automatically,     |
+    | letting LLM agents (Agentix) classify the failure and decide whether |
+    | to retry. Use the base class directly only as a last resort.         |
+    +======================================================================+
+
+    :type override_message: ``str``
+    :param override_message: An OPTIONAL, fully-custom message that REPLACES the
+        automatically-built message for human (non-Agentix) display. Its primary
+        purpose is **backward compatibility** - preserving an existing,
+        hand-written error string while still gaining the structured
+        ``error_code`` / ``retry_guidance`` metadata. Leave it ``None`` to use
+        the standardized auto-built message (the recommended default).
+        Note: it is ignored for Agentix callers, who always receive the
+        machine-friendly :meth:`auto_message`. The structured arguments of each
+        subclass (e.g. the argument name, status code) build the auto message
+        and populate ``details`` regardless of this value.
+
+    :type error_code: ``str``
+    :param error_code: Machine-readable code from :class:`CortexErrorCode`.
+
+    :type details: ``dict``
+    :param details: Arbitrary key/value pairs providing context about the error.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.INTERNAL_ERROR  # type: str
+
+    # Default, auto-generated message used by ``build_message`` when no explicit
+    # message is supplied.  Subclasses override this (or ``build_message``) to
+    # provide a category-specific default.
+    _default_message = 'An error occurred.'  # type: str
+
+    # Whether/how this error category is worth retrying.  Subclasses override
+    # this with the appropriate :class:`RetryGuidance` value.  ``None`` means
+    # "unknown" and no retry hint is added.
+    retry_guidance = None  # type: Optional[str]
+
+    def __init__(self, override_message=None, error_code=None, details=None, **kwargs):
+        # Respect an instance-level error_code already set by a subclass
+        # __init__ (e.g. CortexExternalApiError status-code auto-classification) before
+        # delegating here; then the explicit param; then the class default.
+        self.error_code = error_code or self.__dict__.get('error_code') or self.__class__.error_code
+        self.details = details or {}
+        # Stores the optional, caller-supplied override message (if any) so that
+        # ``build_message`` can return it instead of the auto-built message.
+        # Subclasses that rely solely on the auto-built message pass
+        # ``override_message=None``.
+        self._custom_message = override_message
+        # Expose retry guidance (machine-readable) in details/ExtendedPayload.
+        if self.retry_guidance is not None:
+            self.details.setdefault(EXTENDED_PAYLOAD_RETRY_GUIDANCE_KEY, self.retry_guidance)
+            self.details.setdefault(
+                EXTENDED_PAYLOAD_RETRYABLE_KEY, RetryGuidance.is_retryable(self.retry_guidance)
+            )
+        super(CortexError, self).__init__(self.build_message(), error_type=self.error_code, **kwargs)
+
+    def _base_message(self):
+        """Return the *auto-generated* message body, ignoring any custom message.
+
+        Subclasses override this to build their category-specific message from
+        their own arguments (e.g. the missing argument name, the resource
+        identifier, the HTTP status code).  This method must NOT consult
+        :attr:`_custom_message` - that is handled centrally by
+        :meth:`build_message`.  The retry hint is appended by
+        :meth:`build_message` / :meth:`auto_message`.
+
+        :return: The auto-generated error message body (without retry hint).
+        :rtype: ``str``
+        """
+        return self._default_message
+
+    def _with_retry_hint(self, message):
+        """Append the retry hint (if any) to the given message."""
+        hint = RetryGuidance.hint(self.retry_guidance) if self.retry_guidance is not None else ""
+        if hint:
+            return "{} {}".format(message, hint)
+        return message
+
+    def auto_message(self):
+        """Build the automatic, unified message - always ignoring any custom message.
+
+        This is the machine-friendly, standardized message used for Agentix
+        callers.  It is built purely from the error's structured arguments
+        (via :meth:`_base_message`) plus the automatic retry hint, regardless of
+        whether a custom ``message`` was supplied to ``__init__``.
+
+        :return: The automatic, unified error message.
+        :rtype: ``str``
+        """
+        return self._with_retry_hint(self._base_message())
+
+    def build_message(self):
+        """Build the human-readable message to display for this error.
+
+        When an explicit ``message`` was supplied by the caller, it is returned
+        verbatim (no retry hint) so callers retain full control over the
+        wording.  Otherwise the automatic message (see :meth:`auto_message`) is
+        returned.
+
+        :return: The error message to display.
+        :rtype: ``str``
+        """
+        if self._custom_message:
+            return self._custom_message
+        return self.auto_message()
+
+
+class CortexMissingArgError(CortexError):
+    """Raised when a required argument (or one of several) is not provided.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | A mandatory command/script argument was not supplied at all (missing |
+    | or empty). Also for "at least one of these arguments is required".   |
+    | DO NOT use for an argument that WAS provided but holds a bad value - |
+    | use CortexInvalidArgError instead.                                   |
+    +======================================================================+
+
+    Supports three shapes, selected automatically:
+
+    * **Single required argument** - pass a single name as ``arg_name``::
+
+        CortexMissingArgError('hostname')
+        # "Required argument 'hostname' was not provided."
+
+    * **At least one of several** (``require_one=True``, the default when a
+      list/tuple of names is passed) - the user must supply at least one of
+      the listed arguments::
+
+        CortexMissingArgError(['endpoint_id', 'endpoint_ip', 'endpoint_hostname'])
+        # "At least one of the following arguments must be provided:
+        #  'endpoint_id', 'endpoint_ip', 'endpoint_hostname'."
+
+    * **All of several required** (``require_one=False``) - every listed
+      argument is mandatory::
+
+        CortexMissingArgError(['user_id', 'token'], require_one=False)
+        # "The following required arguments were not provided: 'user_id', 'token'."
+
+    :type arg_name: ``str`` or ``list``
+    :param arg_name: Name of the missing argument, or a list of argument names.
+
+    :type override_message: ``str``
+    :param override_message: Optional custom message that overrides the
+        auto-built one (for backward compatibility). Auto-generated if omitted.
+
+    :type require_one: ``bool``
+    :param require_one: When a list of names is provided, whether only *one* of
+        them is required (``True``, default) or *all* of them (``False``).
+        Ignored when a single argument name is provided.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.MISSING_ARGUMENT
+    retry_guidance = RetryGuidance.RETRY_AFTER_FIX
+
+    def __init__(self, arg_name, override_message=None, require_one=True):
+        # Normalize to a list internally while remembering whether the caller
+        # passed a single name or several.
+        if isinstance(arg_name, (list, tuple, set)):
+            self.arg_names = [str(a) for a in arg_name]
+            self._is_multi = True
+        else:
+            self.arg_names = [str(arg_name)]
+            self._is_multi = False
+        self.arg_name = self.arg_names[0] if not self._is_multi else None
+        self.require_one = require_one
+
+        details = {"arguments": self.arg_names}  # type: dict
+        if not self._is_multi:
+            details["argument"] = self.arg_names[0]
+        else:
+            details["require_one"] = require_one
+
+        super(CortexMissingArgError, self).__init__(override_message, details=details)
+
+    def _quoted_args(self):
+        return ', '.join("'{}'".format(a) for a in self.arg_names)
+
+    def _base_message(self):
+        if not self._is_multi:
+            return "Required argument '{}' was not provided.".format(self.arg_names[0])
+        if self.require_one:
+            return "At least one of the following arguments must be provided: {}.".format(self._quoted_args())
+        return "The following required arguments were not provided: {}.".format(self._quoted_args())
+
+
+class CortexInvalidArgError(CortexError):
+    """Raised when an argument has an invalid value.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | An argument WAS provided but its value is unacceptable - wrong       |
+    | format, out of range, or not an allowed value (e.g. a non-numeric    |
+    | "limit", an unknown enum option, a malformed date).                  |
+    | DO NOT use for: a missing argument (CortexMissingArgError),          |
+    | contradicting arguments (CortexConflictingArgsError), or a parsing   |
+    | failure of API response data (CortexParseError).                     |
+    +======================================================================+
+
+    :type arg_name: ``str``
+    :param arg_name: Name of the invalid argument.
+
+    :type value: ``any``
+    :param value: The invalid value that was provided.
+
+    :type reason: ``str``
+    :param reason: Explanation of why the value is invalid.
+
+    :type allowed_values: ``list``
+    :param allowed_values: List of acceptable values, if applicable.
+
+    :type override_message: ``str``
+    :param override_message: Optional custom message that overrides the
+        auto-built one (for backward compatibility). Auto-generated if omitted.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.INVALID_ARGUMENT
+    retry_guidance = RetryGuidance.RETRY_AFTER_FIX
+
+    def __init__(self, arg_name, value=None, reason=None, allowed_values=None, override_message=None):
+        self.arg_name = arg_name
+        self.value = value
+        self.reason = reason
+        self.allowed_values = allowed_values
+
+        details = {"argument": arg_name}
+        if value is not None:
+            details["value"] = str(value)
+        if allowed_values:
+            details["allowed_values"] = [str(v) for v in allowed_values]
+
+        super(CortexInvalidArgError, self).__init__(override_message, details=details)
+
+    def _base_message(self):
+        parts = ["Invalid value for argument '{}'".format(self.arg_name)]
+        if self.value is not None:
+            parts.append(": got '{}'".format(self.value))
+        if self.reason:
+            parts.append(". {}".format(self.reason))
+        if self.allowed_values:
+            parts.append(". Allowed values: {}".format(', '.join(str(v) for v in self.allowed_values)))
+        return "".join(parts)
+
+
+class CortexConflictingArgsError(CortexError):
+    """Raised when arguments contradict each other.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | Two or more individually-valid arguments cannot be used together     |
+    | (mutually exclusive), or the combination is contradictory (e.g. both |
+    | ip and hostname given when only one is allowed, or start_time later  |
+    | than end_time).                                                      |
+    | DO NOT use for: a single bad value (CortexInvalidArgError) or a      |
+    | missing argument (CortexMissingArgError).                            |
+    +======================================================================+
+
+    Builds a smart, actionable message that explains *which* arguments
+    conflict, *why* they conflict, and *what* a valid combination looks like.
+
+    There are two common conflict shapes, selected automatically:
+
+    * **Mutually exclusive** (``mutually_exclusive=True`` - the default when
+      ``arguments`` are given): only one of the listed arguments may be
+      provided at a time.  The message tells the user to pick exactly one.
+    * **Free-form**: when ``reason`` / ``resolution`` are supplied (or a custom
+      ``message`` is passed), those are used to describe the conflict and the
+      valid path forward.
+
+    :type arguments: ``list``
+    :param arguments: Names of the conflicting arguments that were supplied together.
+
+    :type override_message: ``str``
+    :param override_message: Optional fully-custom message that overrides the
+        auto-built one (for backward compatibility).
+
+    :type reason: ``str``
+    :param reason: Optional explanation of *why* the arguments conflict.
+
+    :type resolution: ``str``
+    :param resolution: Optional explanation of *what* would be a valid combination.
+        When omitted and the conflict is mutually exclusive, a sensible
+        "provide only one of ..." resolution is generated automatically.
+
+    :type mutually_exclusive: ``bool``
+    :param mutually_exclusive: Whether the listed arguments are mutually
+        exclusive. Defaults to ``True`` when ``arguments`` are provided.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.CONFLICTING_ARGUMENTS
+    retry_guidance = RetryGuidance.RETRY_AFTER_FIX
+
+    def __init__(self, override_message=None, arguments=None, reason=None, resolution=None, mutually_exclusive=None):
+        self.arguments = list(arguments or [])
+        self.reason = reason
+        self.resolution = resolution
+        # Default to mutual exclusivity when a list of arguments is provided
+        # and the caller did not explicitly say otherwise.
+        self.mutually_exclusive = bool(self.arguments) if mutually_exclusive is None else mutually_exclusive
+
+        details = {"arguments": self.arguments}  # type: dict
+        if reason:
+            details["reason"] = reason
+        if resolution:
+            details["resolution"] = resolution
+
+        super(CortexConflictingArgsError, self).__init__(override_message, details=details)
+
+    def _quoted_args(self):
+        return ', '.join("'{}'".format(a) for a in self.arguments)
+
+    def _base_message(self):
+        parts = []
+        # 1. What conflicts.
+        if self.arguments:
+            parts.append("Conflicting arguments: {}.".format(self._quoted_args()))
+        else:
+            parts.append("Conflicting arguments were provided.")
+
+        # 2. Why they conflict.
+        if self.reason:
+            parts.append(self.reason)
+        elif self.mutually_exclusive and self.arguments:
+            parts.append("These arguments are mutually exclusive and cannot be used together.")
+
+        # 3. What would be valid.
+        if self.resolution:
+            parts.append(self.resolution)
+        elif self.mutually_exclusive and self.arguments:
+            parts.append("Provide only one of: {}.".format(self._quoted_args()))
+
+        return ' '.join(parts)
+
+
+class CortexResourceNotFoundError(CortexError):
+    """Raised when a requested resource is not found.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | A specific entity the user asked for does not exist on the remote    |
+    | system (e.g. an incident/ticket/endpoint/user ID returns 404 or an   |
+    | empty result). The identifier was syntactically valid - it just has  |
+    | no match.                                                            |
+    | DO NOT use for: a malformed identifier value (CortexInvalidArgError) |
+    | or a generic non-2xx API failure (CortexExternalApiError).           |
+    +======================================================================+
+
+    :type resource_type: ``str``
+    :param resource_type: Type of resource (e.g. "endpoint", "incident").
+
+    :type identifier: ``any``
+    :param identifier: The identifier that was looked up.
+
+    :type override_message: ``str``
+    :param override_message: Optional custom message that overrides the
+        auto-built one (for backward compatibility). Auto-generated if omitted.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.RESOURCE_NOT_FOUND
+    retry_guidance = RetryGuidance.RETRY_AFTER_FIX
+
+    def __init__(self, resource_type, identifier=None, override_message=None):
+        self.resource_type = resource_type
+        self.identifier = identifier
+        super(CortexResourceNotFoundError, self).__init__(override_message, details={
+            "resource_type": resource_type,
+            "identifier": str(identifier) if identifier else None,
+        })
+
+    def _base_message(self):
+        if self.identifier:
+            return "{} '{}' not found".format(self.resource_type, self.identifier)
+        return "{} not found".format(self.resource_type)
+
+
+class CortexExternalApiError(CortexError):
+    """Raised when an external API returns an error.
+
+    +========================================================================+
+    | WHEN TO USE                                                            |
+    | A request to the third-party/external service failed with a non-2xx    |
+    | HTTP status (or an equivalent transport error) and no more specific    |
+    | subclass applies. Pass status_code so the error is auto-classified     |
+    | (auth / quota / service) and retry guidance is set correctly.          |
+    | PREFER a specific subclass when it fits: CortexAuthError (401/403),    |
+    | CortexRateLimitError (429), CortexTimeoutError, CortexConnectionError. |
+    | DO NOT use for: a valid response whose BODY cannot be parsed           |
+    | (CortexParseError) or a 404 for a specific entity                      |
+    | (CortexResourceNotFoundError).                                         |
+    +========================================================================+
+
+    Automatically classifies by HTTP status code when ``api_error_type``
+    is not provided:
+
+    - 401/403 -> ``AUTH_ERROR``
+    - 429 -> ``QUOTA_ERROR``
+    - 5xx -> ``SERVICE_ERROR``
+
+    :type override_message: ``str``
+    :param override_message: Optional custom message that overrides the
+        auto-built one (for backward compatibility). Auto-generated if omitted.
+
+    :type status_code: ``int``
+    :param status_code: HTTP status code from the API response.
+
+    :type api_error_type: ``str``
+    :param api_error_type: A :class:`CortexErrorCode` value for explicit
+        classification (e.g. ``CortexErrorCode.SERVICE_ERROR``). When provided,
+        it becomes the error's ``error_code`` directly.
+
+    :type response_body: ``str`` or ``bytes``
+    :param response_body: The original API error body (truncated to 500 chars,
+        bytes are decoded). It is appended to the built/auto message
+        (``... Original API error: <body>``) so the raw API error travels
+        together with the unified, human-readable message.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.API_ERROR
+    # API/network errors are commonly transient, so default to "retry later".
+    # Auth-related status codes (401/403) override this to NOT_RETRYABLE below.
+    retry_guidance = RetryGuidance.RETRY_LATER
+
+    # Default, auto-generated message used when no explicit message is supplied.
+    _default_message = "An error occurred while communicating with the external API."
+
+    def __init__(self, override_message=None, status_code=None, api_error_type=None, response_body=None):
+        self.status_code = status_code
+        # Original error body returned by the API. It is appended to the built
+        # (auto) message rather than exposed as a separate field, so the raw API
+        # error travels together with the unified, human-readable message.
+        if response_body:
+            # Decode bytes cleanly so the original API error reads as text
+            # (avoids leaking a b'...' repr into the message).
+            if isinstance(response_body, bytes):
+                response_body = response_body.decode("utf-8", errors="replace")
+            response_body = str(response_body)[:MAX_API_RESPONSE_BODY_LENGTH]
+        self.response_body = response_body
+        details = {}  # type: dict
+        if status_code:
+            details["status_code"] = status_code
+
+        # When the caller passes an explicit api_error_type (a CortexErrorCode
+        # value) it becomes the error_code directly.
+        if api_error_type:
+            self.error_code = api_error_type
+            details["api_error_type"] = api_error_type
+        # Otherwise auto-classify based on the HTTP status code.
+        elif status_code:
+            if status_code in (401, 403):
+                self.error_code = CortexErrorCode.AUTH_ERROR
+                details["api_error_type"] = CortexErrorCode.AUTH_ERROR
+                # Auth failures won't be fixed by retrying as-is.
+                self.retry_guidance = RetryGuidance.NOT_RETRYABLE
+            elif status_code == 429:
+                self.error_code = CortexErrorCode.QUOTA_ERROR
+                details["api_error_type"] = CortexErrorCode.QUOTA_ERROR
+            elif status_code >= 500:
+                self.error_code = CortexErrorCode.SERVICE_ERROR
+                details["api_error_type"] = CortexErrorCode.SERVICE_ERROR
+
+        super(CortexExternalApiError, self).__init__(override_message, details=details)
+
+    def _base_message(self):
+        message = self._default_message
+        if self.status_code:
+            message = "{} (HTTP {})".format(message, self.status_code)
+        # Append the original API error body (when available) so the raw API
+        # error is conveyed within the message itself.
+        if self.response_body:
+            message = "{} Original API error: {}".format(message, self.response_body)
+        return message
+
+
+class CortexAuthError(CortexExternalApiError):
+    """Raised when authentication fails (401/403).
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | The external service rejected the request due to authentication      |
+    | problems - invalid/expired credentials, API key, or token.           |
+    | Marked not-retryable (retrying as-is won't help).                    |
+    +======================================================================+
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.AUTH_ERROR
+    retry_guidance = RetryGuidance.NOT_RETRYABLE
+    _default_message = "Authentication failed. Check your credentials or API key."
+
+    def __init__(self, override_message=None, **kwargs):
+        super(CortexAuthError, self).__init__(override_message, api_error_type=CortexErrorCode.AUTH_ERROR, **kwargs)
+
+
+class CortexRateLimitError(CortexExternalApiError):
+    """Raised when API rate limit is exceeded (429).
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | The external service throttled the request (rate/quota limit).       |
+    | Marked retryable-later; pass retry_after when the service indicates  |
+    | how long to wait.                                                    |
+    +======================================================================+
+
+    :type retry_after: ``int``
+    :param retry_after: Seconds to wait before retrying, if known.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.QUOTA_ERROR
+    retry_guidance = RetryGuidance.RETRY_LATER
+    _default_message = "API rate limit exceeded. Please retry later."
+
+    def __init__(self, override_message=None, retry_after=None, **kwargs):
+        self.retry_after = retry_after
+        super(CortexRateLimitError, self).__init__(override_message, api_error_type=CortexErrorCode.QUOTA_ERROR, **kwargs)
+        if retry_after:
+            self.details["retry_after_seconds"] = retry_after
+
+    def _base_message(self):
+        if self.retry_after:
+            return "{} Retry after {} seconds.".format(self._default_message, self.retry_after)
+        return self._default_message
+
+
+class CortexTimeoutError(CortexExternalApiError):
+    """Raised when an API request times out.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | The request was sent but the external service did not respond within |
+    | the allotted time (read/connect timeout). Marked retryable-later.    |
+    +======================================================================+
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.TIMEOUT_ERROR
+    retry_guidance = RetryGuidance.RETRY_LATER
+    _default_message = "The request timed out. Please try again."
+
+    def __init__(self, override_message=None, **kwargs):
+        super(CortexTimeoutError, self).__init__(override_message, api_error_type=CortexErrorCode.TIMEOUT_ERROR, **kwargs)
+
+
+class CortexConnectionError(CortexExternalApiError):
+    """Raised when unable to connect to the service.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | The connection to the external service could not be established at   |
+    | all (DNS failure, connection refused/reset, network unreachable) -   |
+    | i.e. there was no HTTP response. Marked retryable-later.             |
+    | DO NOT use for: a connection that succeeded but returned an error    |
+    | status - use CortexExternalApiError (or a more specific subclass).   |
+    +======================================================================+
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.CONNECTION_ERROR
+    retry_guidance = RetryGuidance.RETRY_LATER
+    _default_message = "Unable to connect to the service. Check network connectivity."
+
+    def __init__(self, override_message=None, **kwargs):
+        super(CortexConnectionError, self).__init__(override_message, api_error_type=CortexErrorCode.CONNECTION_ERROR, **kwargs)
+
+
+class CortexParseError(CortexError):
+    """Raised when data returned by the external API/service cannot be parsed.
+
+    +=======================================================================+
+    | WHEN TO USE                                                           |
+    | A RESPONSE received from the external service could not be decoded or |
+    | interpreted (invalid JSON/XML, unexpected schema, missing fields).    |
+    | The call itself succeeded - the problem is the payload.               |
+    | Marked not-retryable.                                                 |
+    | DO NOT use for: invalid user input (CortexInvalidArgError) or a       |
+    | non-2xx API status (CortexExternalApiError).                          |
+    +=======================================================================+
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.API_RESPONSE_PARSE_ERROR
+    retry_guidance = RetryGuidance.NOT_RETRYABLE
+    _default_message = "Failed to parse the response received from the API."
+
+
+class CortexPermissionError(CortexError):
+    """Raised when the user lacks required permissions.
+
+    +======================================================================+
+    | WHEN TO USE                                                          |
+    | The action is understood and authenticated, but the user/account is  |
+    | not authorized to perform it (authorization, not authentication).    |
+    | Marked not-retryable.                                                |
+    | DO NOT use for: failed authentication/credentials (CortexAuthError). |
+    +======================================================================+
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.PERMISSION_ERROR
+    retry_guidance = RetryGuidance.NOT_RETRYABLE
+    _default_message = "Permission denied. You do not have the required permissions to perform this action."
+
+
+class CortexExecutionError(CortexError):
+    """Raised when a command or script execution fails.
+
+    +=======================================================================+
+    | WHEN TO USE                                                           |
+    | A command/script failed during its own logic for a reason not covered |
+    | by the other categories (e.g. a sub-command returned an error, a      |
+    | business rule could not be satisfied, an internal step failed).       |
+    | Retry guidance is left unset (retryability depends on the case).      |
+    | DO NOT use for: input validation, external API failures, or parsing   |
+    | problems - prefer the dedicated subclasses for those.                 |
+    +=======================================================================+
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    error_code = CortexErrorCode.EXECUTION_ERROR
+    _default_message = "The command or script execution failed."
 
 
 class GetRemoteDataArgs:
@@ -10145,12 +12449,13 @@ class IndicatorsSearcher:
                  value='',
                  limit=None,
                  sort=None,
+                 search_after=None
                  ):
         # searchAfter is available in searchIndicators from version 6.1.0
         self._can_use_search_after = True
         # populateFields merged in https://github.com/demisto/server/pull/18398
         self._can_use_filter_fields = True
-        self._search_after_param = None
+        self._search_after_param = search_after
         self._page = page
         self._filter_fields = filter_fields
         self._total = None
@@ -10339,7 +12644,7 @@ def set_last_mirror_run(last_mirror_run):  # type: (Dict[Any, Any]) -> None
                 raise TypeError("non-dictionary passed to set_last_mirror_run")
             demisto.debug(
                 "encountered JSONDecodeError from server during setLastMirrorRun. As long as the value passed can be converted to json, this error can be ignored.")
-            demisto.debug(e)
+            demisto.debug(str(e))
     else:
         raise DemistoException("You cannot use setLastMirrorRun as your version is below 6.6.0")
 
@@ -10357,12 +12662,16 @@ def get_last_mirror_run():  # type: () -> Optional[Dict[Any, Any]]
     raise DemistoException("You cannot use getLastMirrorRun as your version is below 6.6.0")
 
 
-def support_multithreading():   # pragma: no cover
+def support_multithreading():  # pragma: no cover
     """Adds lock on the calls to the Cortex XSOAR server from the Demisto object to support integration which use multithreading.
 
     :return: No data returned
     :rtype: ``None``
     """
+    global HAVE_SUPPORT_MULTITHREADING_CALLED_ONCE
+    if HAVE_SUPPORT_MULTITHREADING_CALLED_ONCE:
+        return
+    HAVE_SUPPORT_MULTITHREADING_CALLED_ONCE = True
     global demisto
     prev_do = demisto._Demisto__do  # type: ignore[attr-defined]
     demisto.lock = Lock()  # type: ignore[attr-defined]
@@ -10446,9 +12755,9 @@ def get_message_threads_dump(_sig, _frame):
             if line:
                 code.append("  %s" % (line.strip()))
 
-    ret_value = '\n\n--- Start Threads Dump ---\n'\
-        + '\n'.join(code)\
-        + '\n\n--- End Threads Dump ---\n'
+    ret_value = '\n\n--- Start Threads Dump ---\n' \
+                + '\n'.join(code) \
+                + '\n\n--- End Threads Dump ---\n'
     return ret_value
 
 
@@ -10708,7 +13017,8 @@ def signal_handler_profiling_dump(_sig, _frame):
     LOG.print_log()
 
 
-def register_signal_handler_profiling_dump(signal_type=None, profiling_dump_rows_limit=PROFILING_DUMP_ROWS_LIMIT):  # pragma: no cover
+def register_signal_handler_profiling_dump(signal_type=None,
+                                           profiling_dump_rows_limit=PROFILING_DUMP_ROWS_LIMIT):  # pragma: no cover
     """
     Function that registers the threads and memory dump signal listener
 
@@ -10807,7 +13117,7 @@ class PollResult:
 
 
 def polling_function(name, interval=30, timeout=600, poll_message='Fetching Results:', polling_arg_name="polling",
-                     requires_polling_arg=True):    # pragma: no cover
+                     requires_polling_arg=True):  # pragma: no cover
     """
     To use on a function that should rerun itself
     Commands that use this decorator must have a Polling argument, polling: true in yaml,
@@ -10819,7 +13129,7 @@ def polling_function(name, interval=30, timeout=600, poll_message='Fetching Resu
     :param name: The name of the command
 
     :type interval: ``int``
-    :param interval: How many seconds until the next run
+    :param interval: How many seconds until the next run. Recommended range: 30-60 seconds.
 
     :type timeout: ``int``
     :param timeout: How long
@@ -10842,6 +13152,10 @@ def polling_function(name, interval=30, timeout=600, poll_message='Fetching Resu
                 *arguments: any additional arguments to the command function.
                 **kwargs: additional keyword arguments to the command function.
             """
+            if not isinstance(args, dict):
+                demisto.debug("Detected args of type {args_type}. Casting to dict.".format(args_type=type(args)))
+                args = dict(args or {})
+
             if not requires_polling_arg or argToBoolean(args.get(polling_arg_name, False)):
                 ScheduledCommand.raise_error_if_not_supported()
                 poll_result = func(args, *arguments, **kwargs)
@@ -10867,95 +13181,20 @@ def polling_function(name, interval=30, timeout=600, poll_message='Fetching Resu
     return dec
 
 
-def get_pack_version(pack_name=''):
+def get_pack_version():
     """
-    Get a pack version.
-    The version can be retrieved either by a pack name or by the calling script/integration in which
-    script/integration is part of.
+    Get the pack version.
+    The version can be retrieved only for the pack that contains the running script or integration.
 
-    To get the version of the pack in which the calling script/integration is part of,
-    just call the function without pack_name.
-
-    :type pack_name: ``str``
-    :param pack_name: the pack name as mentioned in the pack metadata file to query its version.
-            use only if querying by a pack name.
-
-    :return: The pack version in which the integration/script is part of / the version of the requested pack name in
-        case provided. in case not found returns empty string.
+    :return: The pack version in which the integration/script is part of, in case not found returns empty string.
     :rtype: ``str``
     """
-    def _get_packs_by_query(_body_request):
-        packs_body_response = demisto.internalHttpRequest(
-            'POST', uri='/contentpacks/marketplace/search', body=json.dumps(body_request)
-        )
-        return _load_response(_response=packs_body_response.get('body')).get('packs') or []
-
-    def _load_response(_response):
-        try:
-            return json.loads(_response)
-        except json.JSONDecodeError:  # type: ignore[attr-defined]
-            demisto.debug('Unable to load response {response}'.format(response=_response))
-            return {}
-
-    def _extract_current_pack_version(_packs, _query_type, _entity_name):
-        # in case we have more than 1 pack returned from the search, need to make sure to retrieve the correct pack
-        if query_type == 'automation' or query_type == 'integration':
-            for pack in _packs:
-                for content_entity in (pack.get('contentItems') or {}).get(_query_type) or []:
-                    if (content_entity.get('name') or '') == _entity_name:
-                        return pack.get('currentVersion') or ''
-        else:
-            for pack in _packs:
-                if pack.get('name') == _entity_name:
-                    return pack.get('currentVersion') or ''
-        return ''
-
-    def _extract_integration_display_name(_integration_brand):
-        integrations_body_response = demisto.internalHttpRequest(
-            'POST', uri='/settings/integration/search', body=json.dumps({})
-        )
-        integrations_body_response = _load_response(_response=integrations_body_response.get('body'))
-        integrations = integrations_body_response.get('configurations') or []
-
-        for integration in integrations:
-            integration_display_name = integration.get('display')
-            if integration.get('id') == _integration_brand and integration_display_name:
-                return integration_display_name
-        return ''
-    # query by pack name
-    if pack_name:
-        entity_name = pack_name
-        body_request = {'packsQuery': entity_name}
-        query_type = 'pack'
-    # query by integration name
-    elif demisto.callingContext.get('integration'):  # True means its integration, False means its script/automation.
-        entity_name = (demisto.callingContext.get('context') or {}).get('IntegrationBrand') or ''
-        body_request = {'integrationsQuery': entity_name}
-        query_type = 'integration'
-    # query by script/automation name
+    global_name = "CONSTANT_PACK_VERSION"
+    global_vars = globals()
+    if global_name in global_vars:
+        return global_vars[global_name]
     else:
-        entity_name = (demisto.callingContext.get('context') or {}).get('ScriptName') or ''
-        body_request = {'automationQuery': entity_name}
-        query_type = 'automation'
-
-    pack_version = _extract_current_pack_version(
-        _packs=_get_packs_by_query(_body_request=body_request),
-        _query_type=query_type,
-        _entity_name=entity_name
-    )
-    if not pack_version and query_type == 'integration':
-        # handle the case where the display name of the integration is not the same as the integration brand
-        integration_display = _extract_integration_display_name(_integration_brand=entity_name)
-        if integration_display and integration_display != entity_name:
-            body_request['integrationsQuery'] = integration_display
-
-            return _extract_current_pack_version(
-                _packs=_get_packs_by_query(_body_request=body_request),
-                _query_type=query_type,
-                _entity_name=integration_display
-            )
         return ''
-    return pack_version
 
 
 def create_indicator_result_with_dbotscore_unknown(indicator, indicator_type, reliability=None,
@@ -11169,13 +13408,15 @@ def filter_incidents_by_duplicates_and_limit(incidents_res, last_run, fetch_limi
     incidents = []
 
     demisto.debug('lb: Number of incidents before filtering: {}, their ids: {}'.format(len(incidents_res),
-                                                                                       [incident_res[id_field] for incident_res in incidents_res]))
+                                                                                       [incident_res[id_field] for incident_res in
+                                                                                        incidents_res]))
     for incident in incidents_res:
         if incident[id_field] not in found_incidents:
             incidents.append(incident)
 
     demisto.debug('lb: Number of incidents after filtering: {}, their ids: {}'.format(len(incidents),
-                                                                                      [incident[id_field] for incident in incidents]))
+                                                                                      [incident[id_field] for incident in
+                                                                                       incidents]))
     return incidents[:fetch_limit]
 
 
@@ -11200,10 +13441,10 @@ def get_latest_incident_created_time(incidents, created_time_field, date_format=
     :rtype: ``str``
     """
     demisto.debug('lb: Getting latest incident created time')
-    latest_incident_time = datetime.strptime(incidents[0][created_time_field], date_format)
+    latest_incident_time = safe_strptime(incidents[0][created_time_field], date_format)
 
     for incident in incidents:
-        incident_time = datetime.strptime(incident[created_time_field], date_format)
+        incident_time = safe_strptime(incident[created_time_field], date_format)
         if incident_time > latest_incident_time:
             latest_incident_time = incident_time
 
@@ -11235,9 +13476,15 @@ def remove_old_incidents_ids(found_incidents_ids, current_time, look_back):
     deletion_threshold_in_seconds = look_back_in_seconds * 2
 
     new_found_incidents_ids = {}
+    latest_incident_time = max(found_incidents_ids.values() or [current_time])
+    demisto.debug('lb: latest_incident_time is {}'.format(latest_incident_time))
+
     for inc_id, addition_time in found_incidents_ids.items():
 
-        if current_time - addition_time <= deletion_threshold_in_seconds:
+        if (
+            current_time - addition_time <= deletion_threshold_in_seconds
+            or addition_time == latest_incident_time  # The latest IDs must be kept to avoid duplicate incidents
+        ):
             new_found_incidents_ids[inc_id] = addition_time
             demisto.debug('lb: Adding incident id: {}, its addition time: {}, deletion_threshold_in_seconds: {}'.format(
                 inc_id, addition_time, deletion_threshold_in_seconds))
@@ -11246,6 +13493,7 @@ def remove_old_incidents_ids(found_incidents_ids, current_time, look_back):
                 inc_id, addition_time, deletion_threshold_in_seconds))
     demisto.debug('lb: Number of new found ids: {}, their ids: {}'.format(
         len(new_found_incidents_ids), new_found_incidents_ids.keys()))
+
     return new_found_incidents_ids
 
 
@@ -11282,7 +13530,8 @@ def get_found_incident_ids(last_run, incidents, look_back, id_field, remove_inci
 
 
 def create_updated_last_run_object(last_run, incidents, fetch_limit, look_back, start_fetch_time, end_fetch_time,
-                                   created_time_field, date_format='%Y-%m-%dT%H:%M:%S', increase_last_run_time=False, new_offset=None):
+                                   created_time_field, date_format='%Y-%m-%dT%H:%M:%S', increase_last_run_time=False,
+                                   new_offset=None):
     """
     Calculates the next fetch time and limit depending the incidents result and creates an updated LastRun object
     with the new time and limit.
@@ -11321,7 +13570,8 @@ def create_updated_last_run_object(last_run, incidents, fetch_limit, look_back, 
     :rtype: ``Dict``
     """
     demisto.debug("lb: Create updated last run object, len(incidents) is {},"
-                  "look_back is {}, fetch_limit is {}, new_offset is {}".format(len(incidents), look_back, fetch_limit, new_offset))
+                  "look_back is {}, fetch_limit is {}, new_offset is {}".format(len(incidents), look_back, fetch_limit,
+                                                                                new_offset))
     remove_incident_ids = True
     new_limit = len(last_run.get('found_incident_ids', [])) + len(incidents) + fetch_limit
     if new_offset:
@@ -11332,7 +13582,7 @@ def create_updated_last_run_object(last_run, incidents, fetch_limit, look_back, 
     elif len(incidents) == 0:
         new_last_run = {
             'time': end_fetch_time,
-            'limit': fetch_limit,
+            'limit': new_limit if look_back > 0 else fetch_limit,
         }
     else:
         latest_incident_fetched_time = get_latest_incident_created_time(incidents, created_time_field, date_format,
@@ -11355,7 +13605,8 @@ def create_updated_last_run_object(last_run, incidents, fetch_limit, look_back, 
 
 
 def update_last_run_object(last_run, incidents, fetch_limit, start_fetch_time, end_fetch_time, look_back,
-                           created_time_field, id_field, date_format='%Y-%m-%dT%H:%M:%S', increase_last_run_time=False, new_offset=None):
+                           created_time_field, id_field, date_format='%Y-%m-%dT%H:%M:%S', increase_last_run_time=False,
+                           new_offset=None):
     """
     Updates the LastRun object with the next fetch time and limit and with the new fetched incident IDs.
 
@@ -11561,7 +13812,7 @@ def xsiam_api_call_with_retries(
     error_msg='',
     is_json_response=False,
     data_type=EVENTS
-):    # pragma: no cover
+):  # pragma: no cover
     """
     Send the fetched events or assests into the XDR data-collector private api.
 
@@ -11647,8 +13898,14 @@ def split_data_to_chunks(data, target_chunk_size):
             yield chunk
             chunk = []
             chunk_size = 0
+        data_part_size = sys.getsizeof(data_part)
+        if data_part_size >= MAX_ALLOWED_ENTRY_SIZE:
+            demisto.error(
+                "entry size {} is larger than the maximum allowed entry size {}, skipping this entry".format(data_part_size,
+                                                                                                             MAX_ALLOWED_ENTRY_SIZE))
+            continue
         chunk.append(data_part)
-        chunk_size += sys.getsizeof(data_part)
+        chunk_size += data_part_size
     if chunk_size != 0:
         demisto.debug("sending the remaining chunk with size: {size}".format(size=chunk_size))
         yield chunk
@@ -11656,7 +13913,8 @@ def split_data_to_chunks(data, target_chunk_size):
 
 def send_events_to_xsiam(events, vendor, product, data_format=None, url_key='url', num_of_attempts=3,
                          chunk_size=XSIAM_EVENT_CHUNK_SIZE, should_update_health_module=True,
-                         add_proxy_to_request=False):
+                         add_proxy_to_request=False, multiple_threads=False, client_class=None,
+                         use_streaming_send=False):
     """
     Send the fetched events into the XDR data-collector private api.
 
@@ -11690,10 +13948,30 @@ def send_events_to_xsiam(events, vendor, product, data_format=None, url_key='url
     :type add_proxy_to_request :``bool``
     :param add_proxy_to_request: whether to add proxy to the send evnets request.
 
-    :return: None
-    :rtype: ``None``
+    :type multiple_threads: ``bool``
+    :param multiple_threads: whether to use multiple threads to send the events to xsiam or not.
+        Note that when set to True, should_update_health_module is ignored and the updateModuleHealth should be done
+        from the integration itself, after awaiting the returned futures.
+
+    :type client_class: ``BaseClient``
+    :param client_class: The client class to use for the request.
+
+    :type use_streaming_send: ``bool``
+    :param use_streaming_send: Feature flag (default False). When True, serializes and gzips the data one item at a time
+        (streaming) instead of building full copies of the whole batch, keeping peak memory ~flat; the bytes sent to
+        XSIAM are equivalent to the legacy path. When combined with multiple_threads=True, each finished compressed
+        chunk is POSTed on a bounded thread pool so uploads overlap while chunk building stays streaming.
+        Ignored when data is already a raw string.
+
+    :return: Either None if running in a single thread or a list of future objects if running in multiple threads.
+    In case of running with multiple threads, the list of futures will hold the number of events sent and can be accessed by:
+    for future in concurrent.futures.as_completed(futures):
+        data_size += future.result()
+    On a mid-stream failure (streaming + multiple_threads), the raised exception carries the already-submitted
+    futures on a ``submitted_futures`` attribute so the caller can still count events already sent.
+    :rtype: ``List[Future]`` or ``None``
     """
-    send_data_to_xsiam(
+    return send_data_to_xsiam(
         events,
         vendor,
         product,
@@ -11704,6 +13982,9 @@ def send_events_to_xsiam(events, vendor, product, data_format=None, url_key='url
         data_type="events",
         should_update_health_module=should_update_health_module,
         add_proxy_to_request=add_proxy_to_request,
+        multiple_threads=multiple_threads,
+        client_class=client_class if client_class else BaseClient,
+        use_streaming_send=use_streaming_send,
     )
 
 
@@ -11742,6 +14023,7 @@ def retry(
     :return: Any
     :rtype: ``Any``
     """
+
     def _retry(func):
         func_name = func.__name__
 
@@ -11815,7 +14097,8 @@ def has_passed_time_threshold(timestamp_str, seconds_threshold):
 
 def send_data_to_xsiam(data, vendor, product, data_format=None, url_key='url', num_of_attempts=3,
                        chunk_size=XSIAM_EVENT_CHUNK_SIZE, data_type=EVENTS, should_update_health_module=True,
-                       add_proxy_to_request=False, snapshot_id='', items_count=None):
+                       add_proxy_to_request=False, snapshot_id='', items_count=None, multiple_threads=False,
+                       client_class=None, use_streaming_send=False):
     """
     Send the supported fetched data types into the XDR data-collector private api.
 
@@ -11859,8 +14142,28 @@ def send_data_to_xsiam(data, vendor, product, data_format=None, url_key='url', n
     :type items_count: ``str``
     :param items_count: the asset snapshot items count.
 
-    :return: None
-    :rtype: ``None``
+    :type multiple_threads: ``bool``
+    :param multiple_threads: whether to use multiple threads to send the events to xsiam or not.
+        Note that when set to True, should_update_health_module is ignored and the updateModuleHealth should be done
+        from the integration itself, after awaiting the returned futures.
+
+    :type client_class: ``BaseClient``
+    :param client_class: The client class to use for the request.
+
+    :type use_streaming_send: ``bool``
+    :param use_streaming_send: Feature flag (default False). When True, serializes and gzips the data one item at a time
+        (streaming) instead of building full copies of the whole batch, keeping peak memory ~flat; the bytes sent to
+        XSIAM are equivalent to the legacy path. When combined with multiple_threads=True, each finished compressed
+        chunk is POSTed on a bounded thread pool so uploads overlap while chunk building stays streaming.
+        Ignored when data is already a raw string.
+
+    :return: Either None if running in a single thread or a list of future objects if running in multiple threads.
+    In case of running with multiple threads, the list of futures will hold the number of events sent and can be accessed by:
+    for future in concurrent.futures.as_completed(futures):
+        data_size += future.result()
+    On a mid-stream failure (streaming + multiple_threads), the raised exception carries the already-submitted
+    futures on a ``submitted_futures`` attribute so the caller can still count events already sent.
+    :rtype: ``List[Future]`` or ``None```
     """
     data_size = 0
     params = demisto.params()
@@ -11880,10 +14183,20 @@ def send_data_to_xsiam(data, vendor, product, data_format=None, url_key='url', n
         demisto.updateModuleHealth({'{data_type}Pulled'.format(data_type=data_type): data_size})
         return
 
+    # Stream-serialize one item at a time; honored for both single-thread and multi-thread list sends.
+    streaming_send = bool(use_streaming_send) and isinstance(data, list)
+    # Decide JSON-encoding once on the first item, like the legacy list path, so the payload is identical.
+    streaming_items_are_json = streaming_send and bool(data) and isinstance(data[0], dict)
+    if streaming_items_are_json:
+        data_format = 'json'
+
     # only in case we have data to send to XSIAM we continue with this flow.
     # Correspond to case 1: List of strings or dicts where each string or dict represents an one event or asset or snapshot.
-    if isinstance(data, list):
+    if streaming_send:
+        demisto.debug("Sending {size} {data_type} to XSIAM (streaming send)".format(size=len(data), data_type=data_type))
+    elif isinstance(data, list):
         # In case we have list of dicts we set the data_format to json and parse each dict to a stringify each dict.
+        demisto.debug("Sending {size} {data_type} to XSIAM".format(size=len(data), data_type=data_type))
         if isinstance(data[0], dict):
             data = [json.dumps(item) for item in data]
             data_format = 'json'
@@ -11912,7 +14225,10 @@ def send_data_to_xsiam(data, vendor, product, data_format=None, url_key='url', n
     if data_type == ASSETS:
         if not snapshot_id:
             snapshot_id = str(round(time.time() * 1000))
-        headers['snapshot-id'] = instance_name + snapshot_id
+
+        # We are setting a time stamp ahead of the instance name since snapshot-ids must be configured in ascending
+        # alphabetical order such that first_snapshot < second_snapshot etc.
+        headers['snapshot-id'] = snapshot_id + instance_name
         headers['total-items-count'] = str(items_count)
 
     header_msg = 'Error sending new {data_type} into XSIAM.\n'.format(data_type=data_type)
@@ -11924,9 +14240,9 @@ def send_data_to_xsiam(data, vendor, product, data_format=None, url_key='url', n
         try:
             response = res.json()
             error = res.reason
-            if response.get('error').lower() == 'false':
-                xsiam_server_err_msg = response.get('error')
-                error += ": " + xsiam_server_err_msg
+            xsiam_server_err_msg = response.get('error')
+            if xsiam_server_err_msg and str(xsiam_server_err_msg).lower() != 'false':
+                error += ": " + str(xsiam_server_err_msg)
 
         except ValueError:
             if res.text:
@@ -11944,20 +14260,334 @@ def send_data_to_xsiam(data, vendor, product, data_format=None, url_key='url', n
 
         demisto.error(header_msg + api_call_info)
         raise DemistoException(header_msg + error, DemistoException)
+    if client_class is None:
+        client_class = BaseClient
+    client = client_class(base_url=xsiam_url, proxy=add_proxy_to_request)
 
-    client = BaseClient(base_url=xsiam_url, proxy=add_proxy_to_request)
+    if streaming_send:
+        # Streaming path: serialize+gzip one event at a time, freeing each as we go, so peak
+        # memory stays ~flat. At the target chunk size we close the stream, POST it, and open a fresh one.
+        target_chunk_size = min(chunk_size, XSIAM_EVENT_CHUNK_SIZE_LIMIT)
+
+        def _send_and_count(zipped_data, item_count):  # type: (bytes, int) -> int
+            """POST one gzipped chunk and return the number of items it held (for the health count)."""
+            xsiam_api_call_with_retries(client=client, events_error_handler=data_error_handler,
+                                        error_msg=header_msg, headers=headers,
+                                        num_of_attempts=num_of_attempts, xsiam_url=xsiam_url,
+                                        zipped_data=zipped_data, is_json_response=True, data_type=data_type)
+            return item_count
+
+        # When multiple_threads is requested, POST each finished compressed chunk on a bounded thread pool so
+        # uploads overlap while chunk building stays streaming; at most MAX_INFLIGHT_CHUNKS chunks in flight.
+        executor = None
+        all_futures = []  # type: list  # every submitted future - returned to the caller to tally counts
+        inflight = set()  # type: set  # subset not yet collected (bounds peak memory)
+        mode_desc = "multiple threads" if multiple_threads else "a single thread"
+        demisto.info("Sending events to xsiam with {} (streaming, free-as-you-go).".format(mode_desc))
+        if multiple_threads:
+            support_multithreading()
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=NUM_OF_WORKERS)
+
+        def _dispatch(zipped_data, item_count):  # type: (bytes, int) -> int
+            """Send one compressed chunk: inline when single-thread, or submit to the bounded pool when threaded."""
+            if executor is None:
+                return _send_and_count(zipped_data, item_count)
+            # Block once the in-flight set is full so we never hold more than MAX_INFLIGHT_CHUNKS chunks;
+            # completed futures stay in all_futures (payload already sent) for the caller's count.
+            while len(inflight) >= MAX_INFLIGHT_CHUNKS:
+                done, _ = concurrent.futures.wait(inflight, return_when=concurrent.futures.FIRST_COMPLETED)
+                for finished in done:
+                    finished.result()  # surface any send error early
+                    inflight.discard(finished)
+            future = executor.submit(_send_and_count, zipped_data, item_count)
+            all_futures.append(future)
+            inflight.add(future)
+            return 0  # threaded: the caller tallies the count from the returned futures
+
+        try:
+            buf = _io.BytesIO()
+            gz = gzip.GzipFile(fileobj=buf, mode='wb')
+            chunk_uncompressed = 0  # uncompressed bytes written into the current gzip stream
+            chunk_items = 0         # items written into the current gzip stream
+
+            for index in range(len(data)):
+                serialized = json.dumps(data[index]) if streaming_items_are_json else data[index]
+                data[index] = None  # free the source item as soon as it is serialized (keeps peak ~one event)
+
+                # Match legacy split_data_to_chunks: skip and log any single entry larger than the allowed size,
+                # measuring with sys.getsizeof on the serialized string exactly as the legacy path does.
+                entry_size = sys.getsizeof(serialized)
+                if entry_size >= MAX_ALLOWED_ENTRY_SIZE:
+                    demisto.error("entry size {size} is larger than the maximum allowed entry size {max_size}, "
+                                  "skipping this entry".format(size=entry_size, max_size=MAX_ALLOWED_ENTRY_SIZE))
+                    continue
+
+                line = serialized.encode('utf-8')
+                gz.write((b'\n' if chunk_items else b'') + line)  # newline-separate items, like legacy '\n'.join(...)
+                chunk_uncompressed += len(line) + (1 if chunk_items else 0)
+                chunk_items += 1
+
+                if chunk_uncompressed >= target_chunk_size:
+                    gz.close()
+                    data_size += _dispatch(buf.getvalue(), chunk_items)
+                    buf = _io.BytesIO()
+                    gz = gzip.GzipFile(fileobj=buf, mode='wb')
+                    chunk_uncompressed = 0
+                    chunk_items = 0
+
+            # flush the final (partial) chunk
+            gz.close()
+            if chunk_items:
+                data_size += _dispatch(buf.getvalue(), chunk_items)
+        except Exception as exc:
+            # shutdown(wait=False) alone does not cancel queued tasks; cancel_futures does (Python 3.9+).
+            if executor is not None:
+                try:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                except TypeError:  # Python < 3.9
+                    executor.shutdown(wait=False)
+                # Expose already-submitted futures so the caller can still count chunks already sent to XSIAM.
+                exc.submitted_futures = all_futures  # type: ignore[attr-defined]
+            raise
+
+        if multiple_threads:
+            # Preserve the multiple_threads contract: hand the caller the futures (each resolves to the number
+            # of events its chunk sent) and let the caller await them + call updateModuleHealth itself.
+            demisto.info('Finished submitting {} Futures.'.format(len(all_futures)))
+            return all_futures
+
+        if should_update_health_module:
+            demisto.updateModuleHealth({'{data_type}Pulled'.format(data_type=data_type): data_size})
+        return
+
     data_chunks = split_data_to_chunks(data, chunk_size)
-    for data_chunk in data_chunks:
-        data_size += len(data_chunk)
+
+    def send_events(data_chunk):
+        chunk_size = len(data_chunk)
         data_chunk = '\n'.join(data_chunk)
         zipped_data = gzip.compress(data_chunk.encode('utf-8'))  # type: ignore[AttributeError,attr-defined]
         xsiam_api_call_with_retries(client=client, events_error_handler=data_error_handler,
                                     error_msg=header_msg, headers=headers,
                                     num_of_attempts=num_of_attempts, xsiam_url=xsiam_url,
                                     zipped_data=zipped_data, is_json_response=True, data_type=data_type)
+        return chunk_size
 
-    if should_update_health_module:
-        demisto.updateModuleHealth({'{data_type}Pulled'.format(data_type=data_type): data_size})
+    if multiple_threads:
+        demisto.info("Sending events to xsiam with multiple threads.")
+        all_chunks = [chunk for chunk in data_chunks]
+        demisto.info("Finished appending all data_chunks to a list.")
+        support_multithreading()
+        futures = []
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=NUM_OF_WORKERS)
+        for chunk in all_chunks:
+            future = executor.submit(send_events, chunk)
+            futures.append(future)
+
+        demisto.info('Finished submiting {} Futures.'.format(len(futures)))
+        return futures
+    else:
+        demisto.info("Sending events to xsiam with a single thread.")
+        for chunk in data_chunks:
+            data_size += send_events(chunk)
+
+        if should_update_health_module:
+            demisto.updateModuleHealth({'{data_type}Pulled'.format(data_type=data_type): data_size})
+    return
+
+
+def send_assets_and_vulnerabilities_to_xsiam(data,  # type: Union[str, list]
+                                             vendor,  # type: str
+                                             product,  # type: str
+                                             data_format=None,  # type: Optional[str]
+                                             url_key='url',  # type: str
+                                             num_of_attempts=3,  # type: int
+                                             chunk_size=XSIAM_EVENT_CHUNK_SIZE,  # type: int
+                                             should_update_health_module=True,  # type: bool
+                                             add_proxy_to_request=False,  # type: bool
+                                             snapshot_id='',  # type: str
+                                             items_count=None,  # type: Optional[str]
+                                             multiple_threads=False,  # type: bool
+                                             client_class=None,  # type: Optional[Any]
+                                             use_streaming_send=True,  # type: bool
+                                             ):
+    # type: (...) -> Optional[list]
+    """
+    Send fetched assets and/or vulnerabilities into the XDR data-collector private api.
+
+    This is the assets/vulnerabilities analog of ``send_events_to_xsiam``. It delegates to
+    ``send_data_to_xsiam`` with ``data_type="assets"`` so the snapshot headers (``snapshot-id`` and
+    ``total-items-count``) and sealing behavior are preserved (vulnerabilities are sent as an assets-type
+    snapshot as well). To reduce peak memory in the ``fetch-assets`` flow, this function defaults
+    ``use_streaming_send`` to ``True`` (serialize+gzip one item at a time, freeing each as it goes). The
+    bytes sent to XSIAM are equivalent to the legacy (non-streaming) path.
+
+    :type data: ``Union[str, list]``
+    :param data: The assets or vulnerabilities to send to XSIAM server. Should be of the following:
+        1. List of strings or dicts where each string or dict represents an asset or vulnerability.
+        2. String containing raw records separated by a new line.
+
+    :type vendor: ``str``
+    :param vendor: The vendor corresponding to the integration that originated the data.
+
+    :type product: ``str``
+    :param product: The product corresponding to the integration that originated the data.
+
+    :type data_format: ``str``
+    :param data_format: Should only be filled in case the 'data' parameter contains a string of raw
+        records in the format of 'leef' or 'cef'. In other cases the data_format will be set automatically.
+
+    :type url_key: ``str``
+    :param url_key: The param dict key where the integration url is located at. the default is 'url'.
+
+    :type num_of_attempts: ``int``
+    :param num_of_attempts: The num of attempts to do in case there is an api limit (429 error codes)
+
+    :type chunk_size: ``int``
+    :param chunk_size: Advanced - The maximal size of each chunk size we send to API. Limit of 9 MB will be inforced.
+
+    :type should_update_health_module: ``bool``
+    :param should_update_health_module: whether to trigger the health module showing how many assets were sent to xsiam.
+
+    :type add_proxy_to_request: ``bool``
+    :param add_proxy_to_request: whether to add proxy to the send assets request.
+
+    :type snapshot_id: ``str``
+    :param snapshot_id: the snapshot id.
+
+    :type items_count: ``str``
+    :param items_count: the asset snapshot items count.
+
+    :type multiple_threads: ``bool``
+    :param multiple_threads: whether to use multiple threads to send the assets to xsiam or not.
+        Note that when set to True, should_update_health_module is ignored and the updateModuleHealth should be done
+        from the integration itself, after awaiting the returned futures.
+
+    :type client_class: ``BaseClient``
+    :param client_class: The client class to use for the request.
+
+    :type use_streaming_send: ``bool``
+    :param use_streaming_send: Feature flag (default True for assets). When True, serializes and gzips the data
+        one item at a time (streaming) instead of building full copies of the whole batch, keeping peak memory
+        ~flat; the bytes sent to XSIAM are equivalent to the legacy path. When combined with multiple_threads=True,
+        each finished compressed chunk is POSTed on a bounded thread pool. Ignored when data is already a raw string.
+
+    :return: Either None if running in a single thread or a list of future objects if running in multiple threads.
+    In case of running with multiple threads, the list of futures will hold the number of assets sent and can be accessed by:
+    for future in concurrent.futures.as_completed(futures):
+        data_size += future.result()
+    :rtype: ``List[Future]`` or ``None``
+    """
+    return send_data_to_xsiam(
+        data,
+        vendor,
+        product,
+        data_format,
+        url_key,
+        num_of_attempts,
+        chunk_size,
+        data_type=ASSETS,
+        should_update_health_module=should_update_health_module,
+        add_proxy_to_request=add_proxy_to_request,
+        snapshot_id=snapshot_id,
+        items_count=items_count,
+        multiple_threads=multiple_threads,
+        client_class=client_class if client_class else BaseClient,
+        use_streaming_send=use_streaming_send,
+    )
+
+
+def stream_json_items(source, items_prefix='item'):
+    # type: (Any, str) -> Iterator[Any]
+    """
+    Stream-parse a JSON array/response one record at a time using ``ijson``, yielding a single record on
+    each iteration. This keeps peak memory ~flat compared to loading the entire body with ``json.loads``,
+    which is especially useful for large ``fetch-assets`` / ``fetch`` responses.
+
+    Note: ``ijson`` must be available in the integration's docker image. It is imported lazily so that
+    integrations that do not use this helper are unaffected.
+
+    Usage example (with a streamed HTTP response)::
+
+        res = client._http_request('GET', url_suffix='/assets', resp_type='response', stream=True)
+        res.raw.decode_content = True
+        for asset in stream_json_items(res.raw, items_prefix='data.item'):
+            process(asset)
+
+    :type source: ``Any``
+    :param source: The JSON source to parse. Can be a bytes/str object, a file-like object, or a
+        readable stream such as ``requests.Response.raw`` (when the request was made with ``stream=True``).
+
+    :type items_prefix: ``str``
+    :param items_prefix: The ijson prefix identifying the repeated items to yield. For a top-level JSON
+        array use ``'item'`` (the default). For items nested under a key, use e.g. ``'data.item'`` for
+        ``{"data": [ ... ]}``. See the ijson documentation for the prefix syntax.
+
+    :return: A generator yielding one parsed record (usually a ``dict``) at a time.
+    :rtype: ``Iterator[Any]``
+    """
+    try:
+        import ijson  # noqa
+    except ImportError:
+        raise DemistoException(
+            'stream_json_items requires the "ijson" package, which is not available in the current docker image. '
+            'Add "ijson" to the integration requirements / docker image to use streaming JSON parsing.'
+        )
+
+    for item in ijson.items(source, items_prefix):
+        yield item
+
+
+def stream_xml_elements(source, tags):
+    # type: (Any, Union[str, Iterable[str]]) -> Iterator[Tuple[str, Any]]
+    """
+    Stream-parse an XML response one element at a time using ``xml.etree.ElementTree.iterparse``, yielding
+    each matching element and then clearing it (``elem.clear()``) so memory does not grow with the size of
+    the document. This is the XML analog of ``stream_json_items`` and keeps peak memory ~flat for large
+    ``fetch-assets`` responses.
+
+    Multiple tags can be matched in a single pass over the stream, and a ``(local_tag_name, element)`` tuple
+    is yielded for each match so the caller can distinguish which tag matched. This lets callers extract
+    several different elements (for example a data element plus an error/pagination marker) in one
+    low-memory pass over the same stream - useful because a streamed HTTP response can only be read once.
+
+    Usage example (with a streamed HTTP response)::
+
+        res = client._http_request('GET', url_suffix='/assets.xml', resp_type='response', stream=True)
+        res.raw.decode_content = True
+        for local_tag, elem in stream_xml_elements(res.raw, tags=['HOST', 'CODE', 'URL']):
+            if local_tag == 'HOST':
+                process_host(elem)
+            elif local_tag == 'CODE':
+                handle_error(elem)
+            elif local_tag == 'URL':
+                next_url = elem.text
+
+    :type source: ``Any``
+    :param source: The XML source to parse. Can be a filename, a file-like object, or a readable stream such
+        as ``requests.Response.raw`` (when the request was made with ``stream=True``).
+
+    :type tags: ``Iterable[str]``
+    :param tags: The element tags to yield. Matching is namespace-agnostic - the local tag name is compared.
+        A single tag may also be passed as a string.
+
+    :return: A generator yielding ``(local_tag_name, element)`` tuples, one at a time. Each yielded element is
+        cleared after it is consumed by the caller (i.e. on the next iteration), so callers must extract any
+        needed data before advancing the generator.
+    :rtype: ``Iterator[tuple]``
+    """
+    def _local_name(elem_tag):
+        # Strip an optional '{namespace}' prefix so callers can match on the local tag name.
+        return elem_tag.rsplit('}', 1)[-1] if isinstance(elem_tag, str) else elem_tag
+
+    wanted_tags = {tags} if isinstance(tags, str) else set(tags)
+
+    context = ET.iterparse(source, events=('end',))
+    for _event, elem in context:
+        local_tag = _local_name(elem.tag)
+        if local_tag in wanted_tags:
+            yield local_tag, elem
+            # Free the element (and its children) as soon as the caller is done with it, keeping peak memory ~flat.
+            elem.clear()
 
 
 def comma_separated_mapping_to_dict(raw_text):
@@ -12065,11 +14695,1282 @@ def get_server_config():
     return server_config
 
 
-from DemistoClassApiModule import *     # type:ignore [no-redef]  # noqa:E402
+def content_profiler(func):
+    """
+    A decorator for profiling the execution time and performance of a function.
 
+    This decorator is useful for identifying performance bottlenecks and understanding the time complexity of your code.
+    It collects and displays detailed profiling information, including the total execution time, the number of calls,
+    and the average time per call.
+    When to use it:
+        - When you need to debug and optimize the performance of your functions or methods.
+        - When you want to identify slow or inefficient parts of your code.
+        - During the development and testing phases to ensure that your code meets performance requirements.
+
+    To use, decorate the function that calls the function you want to profile with @content_profiler.
+    Example: I want to profile the function_to_profile() function:
+            ```
+            @content_profiler
+            function_to_profile():
+                # some code
+            ```
+    Analyze the Profiling Data with SnakeViz:
+        Download the <automation_name>.prof from the war room and run:
+            pip install snakeviz; snakveiz <automation_name>.prof
+
+    **Tested with Python 3.10**
+
+    :type func: ``function``
+    :param func: The function to be profiled.
+    :return: The profiled function.
+    :rtype: ``any``
+    """
+    import cProfile
+    import threading
+
+    def profiler_wrapper(*args, **kwargs):
+        """
+        A wrapper function that profiles the execution of the decorated function.
+        :param args: The positional arguments to be passed to the decorated function.
+        :param kwargs: The keyword arguments to be passed to the decorated function.
+        :return: The result of the decorated function.
+        """
+
+        def profiler_function(signal_event, profiler):
+            """
+            A helper function that runs the profiled function. When the profiled function is finished
+             a signal is received and the profiling data is dumped to a temporary file.
+             Otherwise, the function will stop when reaching to timeout.
+            :param signal_event: A signal that will be set when the profiled function is finished.
+            :param profiler: The Profile object to use for profiling.
+            """
+
+            def dump_result():
+                """
+                Helper function to dump the profiling results to a file and return the file.
+                """
+                import tempfile
+                # Create a temporary file to store profiling data
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    profiler.dump_stats(temp_file.name)
+                    temp_file_path = temp_file.name
+
+                # Read the profiling data from the temporary file
+                with open(temp_file_path, 'rb') as f:
+                    profiling_results = f.read()
+
+                # Delete the temporary file
+                os.remove(temp_file_path)
+                context = demisto.callingContext
+                executed_commands = context.get("context", {}).get("ExecutedCommands", {})
+                automation_name = context.get("command") or executed_commands[0].get("name",
+                                                                                     "stats") if executed_commands else "stats"
+                # Use Demisto's fileResult to create a file from the profiling stats
+                demisto.results(fileResult('{}.prof'.format(automation_name), profiling_results))
+
+            # 5 minutes in nanoseconds
+            default_timeout = 60 * 5 * 1e9
+
+            # The system timeout configuration.
+            timeout_nanoseconds = demisto.callingContext["context"].get("TimeoutDuration") or default_timeout
+            timeout_seconds = timeout_nanoseconds / 1e9
+            event_set = signal_event.wait(timeout_seconds - 5)
+            profiler.disable()
+            dump_result()
+            demisto.debug("Profiler finished.")
+            if not event_set:
+                return_error("The profiled function '{}' failed due to a timeout.".format(func.__name__))
+
+        def function_runner(func, profiler, signal_event,
+                            results, *args, **kwargs):
+            """
+            A wrapper function that runs the targeted profiled function and captures the results in the results list.
+            :param func: The function to be profiled.
+            :param profiler: The Profile object to use for profiling.
+            :param signal_event: The event to signal when profiling is complete.
+            :param results: A shared object to store the results of the profiled function.
+            :param args: The positional arguments to be passed to the profiled function.
+            :param kwargs: The keyword arguments
+            """
+            profiler.enable()
+            demisto.debug("Profiler started.")
+            try:
+                results["function_results"] = func(*args, **kwargs)
+            finally:
+                # Signal the profiling thread that the command has completed.
+                signal_event.set()
+
+        support_multithreading()
+        results = {}
+        profiler = cProfile.Profile()
+        signal_event = threading.Event()
+        function_thread = threading.Thread(target=function_runner, args=(func, profiler, signal_event, results) + args,
+                                           kwargs=kwargs)
+        function_thread.start()
+        profiler_function(signal_event, profiler)
+        return results.get("function_results")
+
+    return profiler_wrapper
+
+
+def find_and_remove_sensitive_text(text, pattern):
+    r"""
+    Finds all appearances of sensitive information in a string using regex and adds the sensitive
+    information to the list of strings that should not appear in any logs.
+    The regex pattern can be used to search for a specific word, or a pattern such as a word after a given word.
+        Examples:
+    >>> text = "first secret is ID123 and the second secret is id321 and the token: ABC"
+    >>> pattern = r'(token:\s*)(\S+)'  # Capturing groups: (token:\s*) and (\S+)
+    >>> find_and_remove_sensitive_text(text, pattern)
+    Sensitive text added to be masked in the logs: ABC
+    >>> pattern = r'\bid\w*\b'  # Match words starting with "id", case insensitive
+    >>> find_and_remove_sensitive_text(text, pattern)
+    Sensitive text added to be masked in the logs: ID123 and id321
+    :param text: The input text containing the sensitive information.
+    :type text: str
+    :param pattern: The regex pattern to match the sensitive information.
+    :type pattern: str
+    :return: None
+    :rtype: ``None``
+    """
+
+    sensitive_pattern = re.compile(pattern)
+    matches = sensitive_pattern.findall(text)
+    if not matches:
+        return
+
+    for match in matches:
+        # in case the regex serches for a group pattern
+        if isinstance(match, tuple):
+            sensitive_text = match[1]
+        else:
+            # in case the regex serches for a specific word
+            sensitive_text = match
+        add_sensitive_log_strs(sensitive_text)
+    return
+
+
+def execute_polling_command(
+    command_name,
+    args,
+    using_brand=None,
+    polling_interval_arg_name="interval_in_seconds",
+    default_polling_interval=30,
+    polling_timeout_arg_name="timeout_in_seconds",
+    default_polling_timeout=600,
+):
+    r"""
+    ###########################################
+    DO NOT USE THIS UNLESS ABOLUTLY NECESSERY!
+    ###########################################
+    This is intended only for special cases where polling is not supported.
+    Continuously executes a specified command and sleeps until the command indicates polling is done or a
+    timeout is reached.
+    :param command_name: The name of the initial Demisto command to execute.
+    :type command_name: ``str``
+    :param args: A dictionary of arguments to pass to the command.
+    :type args: ``dict``
+    :param using_brand: The optional ID of the integration to use.
+    :type using_brand: ``str``
+    :param polling_interval_arg_name: The name of the argument in 'args' that specifies the polling interval in seconds.
+    :type polling_interval_arg_name: ``str``
+    :param default_polling_interval: The default polling interval in seconds if not specified in 'args'.
+    :type default_polling_interval: ``int``
+    :param polling_timeout_arg_name: The name of the argument in 'args' that specifies the polling timeout in seconds.
+    :type polling_timeout_arg_name: ``str``
+    :param default_polling_timeout: The default polling timeout in seconds if not specified in 'args'.
+    :type default_polling_timeout: ``int``
+    :return: A list of CommandResults objects containing the human-readable output and context outputs from each
+             successful command execution. If an error occurs, a single CommandResults object with an error entry type is returned.
+    :rtype: ``list[CommandResults]`` or ``CommandResults``
+    :raises DemistoException: If no command result entry is received, or if the polling times out.
+    """
+    polling_interval = arg_to_number(args.get(polling_interval_arg_name)) or default_polling_interval
+    polling_timeout = arg_to_number(args.get(polling_timeout_arg_name)) or default_polling_timeout
+
+    if using_brand:
+        args["using-brand"] = using_brand
+
+    command_results = []
+    times_ran = 0
+    start_time = time.time()
+
+    demisto.debug("Executing command: {command_name} with polling interval: {polling_interval} and timeout: {polling_timeout}.".format(
+        command_name=command_name, polling_interval=polling_interval, polling_timeout=polling_timeout))
+
+    while time.time() - start_time < polling_timeout:
+        execution_results = demisto.executeCommand(command_name, args)
+        times_ran += 1
+        demisto.debug("Executed {times_ran} command {command_name} with args: {args}. Got results: {execution_results}.".format(
+            command_name=command_name, args=args, times_ran=times_ran, execution_results=execution_results))
+
+        if not execution_results:
+            raise DemistoException("Got no command result entry for command: {command_name} with args: {args}.".format(
+                command_name=command_name, args=args))
+
+        execution_result = execution_results[0]
+        if is_error(execution_result):
+            error_message = get_error(execution_result)
+            demisto.debug("Failed to run command: {command_name} with args: {args}. Error: {error_message}.".format(
+                command_name=command_name, args=args, error_message=error_message))
+            return CommandResults(readable_output=error_message, entry_type=EntryType.ERROR)
+
+        context_output = execution_result.get("EntryContext")
+        human_readable = execution_result.get("HumanReadable", "")
+        if context_output or human_readable:
+            demisto.debug("Appending command results with context: {context_output} and human-readable: {human_readable}.".format(
+                context_output=context_output, human_readable=human_readable))
+            command_results.append(CommandResults(readable_output=human_readable, outputs=context_output))
+
+        metadata = execution_result.get("Metadata", {})
+        demisto.debug("Command: {command_name} has entry metadata: {metadata}.".format(
+            command_name=command_name, metadata=metadata))
+        if not metadata.get("polling"):
+            demisto.debug("Finished running command: {command_name} with args: {args}. Returning results to war room.".format(
+                command_name=command_name, args=args))
+            return command_results
+
+        command_name = metadata.get("pollingCommand", command_name)
+        args = metadata.get("pollingArgs", {})
+        if using_brand:
+            args["using-brand"] = using_brand
+
+        demisto.debug("Sleeping {polling_interval} seconds before next command execution.".format(
+            polling_interval=polling_interval))
+        time.sleep(polling_interval)  # pylint: disable=E9003
+
+    raise DemistoException("Timed out waiting for command: {command_name}.".format(command_name=command_name))
+
+
+class SignalTimeoutError(Exception):
+    """
+    Custom exception raised when the execution timeout is reached.
+
+    :return: None
+    :rtype: ``None``
+    """
+    pass
+
+
+class ExecutionTimeout(object):
+    """
+    Context manager to limit the execution time of a code block.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+    def __init__(self, seconds):
+        """
+        Initializes the ExecutionTimeout context manager.
+
+        :param seconds: The maximum execution time in seconds.
+        :type seconds: int or float
+        :return: None
+        :rtype: ``None``
+        """
+        self.seconds = int(seconds)
+
+    def _timeout_handler(self, signum, frame):
+        """
+        Signal handler that raises a `SignalTimeoutError`.
+
+        :param signum: The number of the signal received.
+        :type signum: int
+        :param frame: The current stack frame.
+        :type frame: frame object
+        :return: None
+        :rtype: ``None``
+        """
+        raise SignalTimeoutError
+
+    def __enter__(self):
+        """
+        Enters the context manager by setting up the signal handler for
+        SIGALRM and starting the timer.
+
+        :return: None
+        :rtype: ``None``
+        """
+        demisto.debug("Running with execution timeout: {seconds}.".format(seconds=self.seconds))
+        signal.signal(signal.SIGALRM, self._timeout_handler)  # Set handler for SIGALRM
+        signal.alarm(self.seconds)  # start countdown for SIGALRM to be raised
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exits the context manager by canceling the SIGALARM and
+        suppressing the `SignalTimeoutError`.
+
+        :param exc_type: The type of the exception that occurred, if any.
+        :param exc_val: The instance of the exception that occurred, if any.
+        :param exc_tb: A traceback object showing where the exception occurred, if any.
+        :return: True if the `SignalTimeoutError` was raised and suppressed, False otherwise.
+        :rtype: bool
+        """
+        demisto.debug("Resetting timed signal")
+        signal.alarm(0)  # Cancel SIGALRM if it's scheduled
+        return exc_type is SignalTimeoutError  # True if a timeout is reacched, False otherwise
+
+    @classmethod
+    def limit_time(cls, seconds, default_return_value=None):
+        """
+        Decorator method to limit the execution time of a function.
+
+        :param seconds: The maximum execution time in seconds.
+        :type seconds: int or float
+        :param default_return_value: The value to return if the function times out.
+        :return: Any
+        :rtype: ``any``
+        """
+        def wrapper(func):
+            @wraps(func)
+            def wrapped(*args, **kwargs):
+                return_value = default_return_value
+                with cls(seconds):
+                    return_value = func(*args, **kwargs)
+                    demisto.debug("The function: '{func_name}' finished in time.".format(func_name=func.__name__))
+                return return_value
+            return wrapped
+        return wrapper
+
+
+class ISOEncoder(json.JSONEncoder):
+    """
+    A custom JSONEncoder that converts datetime objects to ISO 8601 strings.
+
+    :return: The ISOEncoder object
+    :rtype: ``ISOEncoder``
+    """
+
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        # Let the base class handle other objects
+        return json.JSONEncoder.default(self, obj)
+    
+###########################################
+#     UCP Functions     #
+###########################################
+
+_UCP_AUTH_PARAMS_INJECTED = False
+
+# Seconds before token expiry to consider the cache stale and re-fetch.
+_UCP_REFRESH_THRESHOLD_SECONDS = 30
+
+# In-process TTL cache for UCP credentials, keyed by method_unique_id.
+_ucp_creds_cache = {}  # type: Dict[str, Dict[str, Any]]
+
+# Command-to-capability mapping.  Default: 'automation-and-remediation'.
+_UCP_DEFAULT_CAPABILITY = 'automation-and-remediation'
+_UCP_COMMAND_CAPABILITIES = {
+    'fetch-incidents': 'fetch-issues',
+    'fetch-events': 'log-collection',
+    'fetch-credentials': 'fetch-secrets',
+    'fetch-indicators': 'threat-intelligence-and-enrichment',
+    'fetch-assets': 'fetch-assets-and-vulnerabilities',
+}
+
+# Canonical credential-envelope schema per profile type.
+#
+# ``api_key`` and ``plain`` profiles have FIXED envelope schemas: the secret
+# always lives under a known key inside ``creds[creds["type"]]`` regardless of
+# what ``interpolation_mapping`` left-hand id (``field_id``) the manifest emits.
+# The common scripts therefore OWN this knowledge and resolve those values from
+# the canonical location, rather than trusting the generator-emitted field_id.
+#
+# Each entry maps the mapping's left-hand ``field_id`` (which equals the field's
+# ``metadata.auth.parameter``) to the actual key inside the flattened envelope.
+# Note the api_key alias: ``auth.parameter`` is ``api_key`` (per the connection
+# schema / OPA contract) but the runtime envelope stores the value under ``key``.
+#
+# ``passthrough`` is the free-form escape hatch and intentionally has NO entry:
+# its values are looked up generically by field_id.
+_UCP_CANONICAL_FIELD_KEYS = {
+    'api_key': {'api_key': 'key'},
+    'plain': {'username': 'username', 'password': 'password'},
+}
+
+
+# -- UCP helper: interpolate connector field values into demisto.params() --
+
+def _place_by_path(target, path, value):
+    # type: (dict, str, Any) -> None
+    """Place ``value`` into ``target`` at the dotted ``path``, creating
+    intermediate dicts as needed.
+
+    The destination string is split on ``.``; each segment except the last
+    becomes (or reuses) a nested dict, and the final segment receives the
+    value. Two paths that share a parent therefore merge into a single nested
+    dict -- this is how multiple connector fields fold into one structured param
+    (e.g. ``credentials.identifier`` + ``credentials.password`` ->
+    ``{"credentials": {"identifier": ..., "password": ...}}``).
+
+    A single-segment path (e.g. ``"url"``) places a flat scalar.
+
+    :type target: ``dict``
+    :param target: The destination params dict (mutated in place).
+
+    :type path: ``str``
+    :param path: A non-empty dotted destination path (e.g. ``"a.b.c"``).
+
+    :type value: ``Any``
+    :param value: The value to set at the leaf of ``path``.
+
+    :return: ``None``
+    :rtype: ``None``
+    """
+    segments = [seg for seg in path.split('.') if seg != '']
+    if not segments:
+        return
+    cursor = target
+    for segment in segments[:-1]:
+        existing = cursor.get(segment)
+        if not isinstance(existing, dict):
+            existing = {}
+            cursor[segment] = existing
+        cursor = existing
+    cursor[segments[-1]] = value
+
+
+def _parse_param_map(param_map):
+    # type: (Any) -> list
+    """Parse a UCP ``param_map`` into a list of ``(field_id, destination)`` pairs.
+
+    The canonical form is a **single comma-separated string** of
+    ``field_id:dotted.destination`` entries, e.g.::
+
+        "username:credentials.identifier,password:credentials.password,server_url:server_url"
+
+    Empty/invalid entries are skipped.
+
+    :type param_map: ``Any``
+    :param param_map: The raw ``param_map`` value from the profile (a
+        comma-separated string).
+
+    :return: List of ``(field_id, destination)`` tuples (order preserved).
+    :rtype: ``list``
+    """
+    pairs = []  # type: list
+    if not param_map:
+        return pairs
+    items = []
+    for entry in str(param_map).split(','):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ':' not in entry:
+            demisto.error(
+                "[UCP][CommonServerPython.py] _parse_param_map: malformed entry '{}' (no ':'); skipping.".format(entry)
+            )
+            continue
+        field_id, destination = entry.split(':', 1)
+        items.append((field_id, destination))
+    for field_id, destination in items:
+        field_id = (field_id or '').strip()
+        destination = (destination or '').strip()
+        if not field_id or not destination:
+            demisto.debug(
+                "[UCP][CommonServerPython.py] _parse_param_map: empty field id or destination "
+                "('{}' -> '{}'); skipping.".format(field_id, destination)
+            )
+            continue
+        pairs.append((field_id, destination))
+    return pairs
+
+
+def _select_ucp_profiles(profiles, capability):
+    # type: (list, str) -> list
+    """Select ALL connection profiles in scope for the current command.
+
+    Interpolation is **metadata-first and capability-scoped**: starting from the
+    connector metadata's ``connectionProfiles``, it keeps **every** profile whose
+    ``capability`` matches ``capability``. More than one profile may be active at
+    a time, so this returns a list (not a single profile). When no profile matches
+    ``capability``, falls back to the first profile that has an
+    ``interpolation_mapping``.
+
+    :type profiles: ``list``
+    :param profiles: The ``connectionProfiles`` from the connector metadata.
+
+    :type capability: ``str``
+    :param capability: The resolved capability for the current command.
+
+    :return: List of matching profile dicts (possibly empty).
+    :rtype: ``list``
+    """
+    if not profiles:
+        demisto.debug('[UCP][CommonServerPython.py] _select_ucp_profiles: no connectionProfiles in metadata.')
+        return []
+
+    matched = [p for p in profiles if p.get('capability') == capability]
+    demisto.debug('[UCP][CommonServerPython.py] _select_ucp_profiles: found {} profile(s) with capability {}.'.format(
+        len(matched), capability))
+    if matched:
+        return matched
+
+    for p in profiles:
+        if ((p.get('metadata') or {}).get('xsoar') or {}).get('interpolation_mapping'):
+            demisto.debug('[UCP][CommonServerPython.py] _select_ucp_profiles: no capability match; '
+                          'falling back to first profile with an interpolation_mapping.')
+            return [p]
+    return matched
+
+
+def build_ucp_params(connector_metadata, capability=None):
+    # type: (Optional[dict], Optional[str]) -> dict
+    """Build the reshaped params dict from UCP connector metadata.
+
+    Pure, side-effect-free core of UCP param interpolation. It is
+    **metadata-first**: it scans ``connectionProfiles`` to find every profile in
+    scope for the current capability/sub_capability, then for each such profile
+    reads its ``param_map`` (a mapping of connector field id -> dotted destination
+    path) together with the platform-supplied field values, and *interpolates*
+    them into the nested shape integrations expect -- most importantly folding
+    flat fields (e.g. ``username`` / ``password``) into a single structured param
+    (e.g. a ``credentials`` dict, the classic XSOAR ``type 9`` shape).
+
+    **Multiple profiles may be active at once.** Each matching profile that
+    carries a ``param_map`` contributes its values; results are merged into one
+    params dict (**last-wins** when two profiles target the same destination
+    path, in ``connectionProfiles`` order).
+
+    This function does NOT touch ``demisto`` state, so it can be reused from
+    either ``interpolate_ucp_params()`` (the CommonServerPython applier) or a
+    Demisto class ``params()`` override.
+
+    Expected metadata shape (from ``demisto.unifiedConnectorMetadata()``)::
+
+        {
+            "connectionProfiles": [
+                {
+                    "method_unique_id": "...",
+                    "capability": "automation-and-remediation",
+                    "sub_capabilities": ["salesforce-iam"],
+                    "type": "oauth2",
+                    "param_map": {"username": "credentials.identifier", ...},
+                    "fields": {"username": "alice", "password": "s3cr3t", ...}
+                }
+            ]
+        }
+
+    :type connector_metadata: ``Optional[dict]``
+    :param connector_metadata: The connector metadata, as returned by
+        ``demisto.unifiedConnectorMetadata()``. When falsy, an empty dict is
+        returned.
+
+    :type capability: ``Optional[str]``
+    :param capability: The resolved capability for the current command. When
+        ``None``, resolved automatically via ``resolve_ucp_capability()``.
+
+    :return: A new params dict containing the interpolated values from all
+        matching profiles, merged in ``connectionProfiles`` order
+        (**last-wins** on conflicting destination paths). Returns ``{}`` when
+        ``connector_metadata`` is falsy or when nothing is interpolated.
+    :rtype: ``dict``
+    """
+    result = {}  # type: Dict[str, Any]
+    if not connector_metadata:
+        return result
+
+    if capability is None:
+        capability = resolve_ucp_capability()
+
+    profiles = connector_metadata.get('connectionProfiles') or []
+
+    selected = _select_ucp_profiles(profiles, capability)
+    demisto.debug('[UCP][CommonServerPython.py] build_ucp_params: capability={!r}, selected {} of {} profile(s).'.format(
+        capability, len(selected), len(profiles)))
+
+    for profile in selected:
+        method_unique_id = profile.get('method_unique_id')
+        # The interpolation mapping lives under the profile's module-namespaced
+        # metadata: profile['metadata']['xsoar']['interpolation_mapping'].
+        interpolation_mapping = ((profile.get('metadata') or {}).get('xsoar') or {}).get('interpolation_mapping')
+        demisto.debug('[UCP][CommonServerPython.py] build_ucp_params: profile id {} interpolation_mapping={!r}'.format(
+            method_unique_id, interpolation_mapping))
+        pairs = _parse_param_map(interpolation_mapping)
+        if not pairs:
+            demisto.debug('[UCP][CommonServerPython.py] build_ucp_params: no interpolation pairs for profile id {}; skipping.'.format(method_unique_id))
+            continue
+        credentials = get_ucp_credentials(method_unique_id)
+        # The credentials envelope is nested under a type key, e.g.
+        # {"type": "plain", "plain": {"username": "...", "password": "..."}}.
+        # Flatten: look up the field inside creds[creds["type"]], with a
+        # top-level fallback for already-flat envelopes.
+        cred_values = {}  # type: Dict[str, Any]
+        if isinstance(credentials, dict):
+            cred_type = credentials.get('type')
+            type_data = credentials.get(cred_type) if cred_type else None
+            if isinstance(type_data, dict):
+                cred_values = type_data
+            else:
+                cred_values = credentials
+            # Some envelope types (e.g. passthrough) wrap the actual field
+            # values one level deeper under a "parameters" sub-dict:
+            #   {"type": "passthrough", "passthrough": {"parameters": {...}}}
+            # while others (e.g. plain) place them directly under the type key.
+            # Descend into "parameters" when present.
+            inner_params = cred_values.get('parameters') if isinstance(cred_values, dict) else None
+            if isinstance(inner_params, dict):
+                cred_values = inner_params
+        cred_type = credentials.get('type') if isinstance(credentials, dict) else None
+        # Field names only (never values) to keep credential material out of logs.
+        demisto.debug('[UCP][CommonServerPython.py] build_ucp_params: cred_type={!r}, flattened cred keys={}.'.format(
+            cred_type, sorted(cred_values.keys())))
+        # For fixed-schema types (api_key, plain) resolve the value from the
+        # canonical envelope key, aliasing the mapping's field_id as needed
+        # (e.g. api_key -> "key"). Free-form types (passthrough) fall back to a
+        # generic field_id lookup.
+        canonical_keys = _UCP_CANONICAL_FIELD_KEYS.get(cred_type, {})
+        for field_id, destination in pairs:
+            lookup_key = canonical_keys.get(field_id, field_id)
+            field_value = cred_values.get(lookup_key)
+            if field_value is None:
+                demisto.debug('[UCP][CommonServerPython.py] build_ucp_params: missing value for field {} for profile id {}.'.format(field_id, method_unique_id))
+                continue
+            _place_by_path(result, destination, field_value)
+
+    demisto.debug('[UCP][CommonServerPython.py] build_ucp_params: interpolated {} top-level param(s).'.format(len(result)))
+    return result
+
+
+def _deep_merge_dicts(target, source):
+    # type: (dict, dict) -> dict
+    """Recursively merge ``source`` into ``target`` in place.
+
+    For every key in ``source``:
+
+    * If both the existing value in ``target`` and the incoming value in
+      ``source`` are dicts, the two are merged recursively (deep-merge).
+    * Otherwise the incoming value overwrites the existing one (this includes
+      the cases where types differ, e.g. a dict overwrites a scalar or a scalar
+      overwrites a dict).
+
+    Keys present only in ``target`` are preserved; keys present only in
+    ``source`` are added. ``target`` is mutated in place (its object identity,
+    and the identity of any nested dicts that are recursed into, is preserved)
+    and returned.
+
+    :type target: ``dict``
+    :param target: The dict to merge into (mutated in place).
+
+    :type source: ``dict``
+    :param source: The dict whose values take precedence on conflicts.
+
+    :return: The same ``target`` dict, mutated in place.
+    :rtype: ``dict``
+    """
+    for key, source_value in source.items():
+        target_value = target.get(key)
+        if isinstance(target_value, dict) and isinstance(source_value, dict):
+            _deep_merge_dicts(target_value, source_value)
+        else:
+            target[key] = source_value
+    return target
+
+
+def interpolate_ucp_params(connector_metadata=None):
+    # type: (Optional[dict]) -> bool
+    """Interpolate UCP connector field values into ``demisto.params()``.
+
+    Thin CommonServerPython-side applier around the pure
+    :func:`build_ucp_params`. Fetches the connector metadata (if not provided),
+    builds the reshaped params, and merges them into
+    ``demisto.callingContext['params']`` so that subsequent ``demisto.params()``
+    calls observe them. When no ``param_map`` is present the function is a no-op
+    and the legacy params are left untouched.
+
+    On success the module-level ``_UCP_AUTH_PARAMS_INJECTED`` flag is set to
+    ``True`` so that ``should_use_ucp_auth()`` knows credentials have already
+    been pre-injected.
+
+    :type connector_metadata: ``Optional[dict]``
+    :param connector_metadata: The connector metadata. If ``None``, fetched via
+        ``demisto.unifiedConnectorMetadata()``.
+
+    :return: ``True`` if any params were interpolated, ``False`` otherwise.
+    :rtype: ``bool``
+    """
+    global _UCP_AUTH_PARAMS_INJECTED
+    try:
+        if connector_metadata is None:
+            connector_metadata = demisto.unifiedConnectorMetadata()
+            if connector_metadata is None:# we arent in ucpland
+                return False
+    except AttributeError:
+        demisto.debug("[UCP][CommonServerPython.py] interpolate_ucp_params: unifiedConnectorMetadata() not available.")
+        return False
+    except Exception as e:
+        demisto.error("[UCP][CommonServerPython.py] interpolate_ucp_params: unifiedConnectorMetadata() error: {}".format(e))
+        return False
+
+    # Capability-scoped, multi-profile: resolve the capability for the current
+    # command and interpolate every active profile that carries a param_map.
+    capability = None
+    try:
+        capability = resolve_ucp_capability()
+    except Exception as e:
+        demisto.debug(
+            "[UCP][CommonServerPython.py] interpolate_ucp_params: could not resolve capability ({}).".format(e)
+        )
+
+    interpolated = build_ucp_params(connector_metadata, capability=capability)
+    if not interpolated:
+        return False
+
+    params = demisto.callingContext.setdefault('params', {})
+    _deep_merge_dicts(params, interpolated)
+    _UCP_AUTH_PARAMS_INJECTED = True
+    demisto.debug(
+        "[UCP][CommonServerPython.py] interpolate_ucp_params: interpolated {} top-level param(s) "
+        "for capability={}.".format(len(interpolated), capability)
+    )
+    return True
+
+
+# -- UCP helper: extract expiry from credentials response --
+
+def _extract_ucp_expiry(creds):
+    # type: (dict) -> Optional[float]
+    """Extract expiry as a Unix epoch float from a UCP credential dict.
+
+    Looks up ``expires_at`` (ISO-8601) at the top level first, then inside
+    ``creds[creds['type']]``.  Falls back to ``time.time() + 300`` on parse
+    errors.  Returns ``None`` when no ``expires_at`` exists.
+
+    :type creds: ``dict``
+    :param creds: Credential dict from ``demisto.getUCPCredentials()``.
+        Example::
+
+            {"type": "oauth2", "oauth2": {"access_token": "...", "expires_at": "2026-04-19T18:00:00+00:00"}}
+
+    :return: Unix epoch expiry, or ``None`` if absent.
+    :rtype: ``Optional[float]``
+    """
+    cred_type = creds.get('type', '')
+    type_data = creds.get(cred_type, {}) if cred_type else {}
+    expires_at_str = creds.get('expires_at') or (
+        type_data.get('expires_at') if isinstance(type_data, dict) else None
+    )
+    if not expires_at_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(expires_at_str.replace('Z', '+00:00'))
+        return dt.timestamp()
+    except (ValueError, AttributeError):
+        demisto.error("[UCP][CommonServerPython.py] _extract_ucp_expiry: Failed to parse UCP credentials expiry time. Defaulting to 5 minutes from now.")
+        # Unparseable -- fall back to 5 minutes from now.
+        # If this happens, it means there is an error in the response of demisto.getCredentials(). Reach out to XSOAR Backend
+        return time.time() + 300
+
+
+# -- Public UCP functions --
+
+def is_ucp_enabled():
+    # type: () -> bool
+    """Check whether this integration instance is running in UCP (ConnectUs) mode.
+
+    UCP mode is active when ``demisto.unifiedConnectorMetadata()`` returns a
+    non-empty connector descriptor.  The backend caches this value, so repeated
+    calls are cheap. This assumes that demisto.unifiedConnectorMetadata will never raise an exception.
+
+    :return: ``True`` if UCP metadata is present, ``False`` otherwise.
+    :rtype: ``bool``
+    """
+    try:
+        connector_info = demisto.unifiedConnectorMetadata()
+        if connector_info:
+            return True
+        return False
+    except AttributeError:
+        demisto.debug("demisto.unifiedConnectorMetadata() is not available in this version of the server.")
+        return False
+    except Exception as e:
+        demisto.error("demisto.unifiedConnectorMetadata() has returned an error: {}".format(e))
+        return False
+
+
+def _ucp_auth_is_passthrough():
+    # type: () -> bool
+    """Check whether the integration -- not ``BaseClient`` -- applies the credential.
+
+    ``BaseClient._apply_ucp_credentials()`` dispatches on three credential
+    families only (``oauth2*``, ``api_key``, ``plain``); a ``passthrough``
+    profile matches none of them and would reach its bare ``raise
+    UcpException()``. Such a profile is therefore always self-managed: either
+    the integration applies the credential itself, or it needs no credential at
+    all (e.g. licence-derived auth), so the dispatcher must stay out of the way.
+
+    Note this deliberately does not consider ``interpolation_mapping``: a
+    profile that carries one has already interpolated, which sets
+    ``_UCP_AUTH_PARAMS_INJECTED`` and is handled by that flag instead.
+
+    :return: ``True`` if the dispatcher must not apply UCP credentials.
+    :rtype: ``bool``
+    """
+    try:
+        connector_metadata = demisto.unifiedConnectorMetadata() or {}
+        profiles = _select_ucp_profiles(
+            connector_metadata.get('connectionProfiles') or [], resolve_ucp_capability())
+        return any(p.get('type') == 'passthrough' for p in profiles)
+    except Exception as e:
+        demisto.debug(
+            '[UCP][CommonServerPython.py] _ucp_auth_is_passthrough: could not resolve profiles ({}).'.format(e))
+        return False
+
+
+def should_use_ucp_auth():
+    # type: () -> bool
+    """Determine whether UCP credentials should be used for authentication.
+
+    Returns ``True`` when UCP is enabled, credentials have not already been
+    pre-injected into ``demisto.params()`` via ``interpolate_ucp_params()``,
+    **and** the selected profile is one the ``BaseClient`` dispatcher can
+    actually apply.
+
+    The last condition is what keeps a ``passthrough`` profile carrying no
+    ``interpolation_mapping`` -- an integration with no credentials, or one
+    deriving them from the licence -- from reaching a dispatcher that has no
+    branch for it and raising ``UcpException``.
+
+    :return: ``True`` if per-request UCP credential injection should be used.
+    :rtype: ``bool``
+    """
+    return is_ucp_enabled() and not _UCP_AUTH_PARAMS_INJECTED and not _ucp_auth_is_passthrough()
+
+
+def get_configured_ucp_capabilities():
+    # type: () -> List[str]
+    """Return the capabilities declared by the connector's connection profiles.
+
+    :return: Capability strings in ``connectionProfiles`` order, empty when UCP
+        metadata is unavailable or carries no profiles.
+    :rtype: ``List[str]``
+    """
+    profiles = []  # type: list
+    try:
+        connector_metadata = demisto.unifiedConnectorMetadata() or {}
+        profiles = connector_metadata.get('connectionProfiles') or []
+        return [p.get('capability') for p in profiles if p.get('capability')]
+    except Exception as e:
+        demisto.error(
+            '[UCP][CommonServerPython.py] get_configured_ucp_capabilities: could not read profiles ({}).\n'
+            'connectionProfiles: {}\n{}'.format(e, profiles, traceback.format_exc()))
+        return []
+
+
+def resolve_ucp_capability(command=None):
+    # type: (Optional[str]) -> str
+    """Resolve the UCP capability for the current (or given) command.
+
+    The command is mapped through ``_UCP_COMMAND_CAPABILITIES``, falling back to
+    ``_UCP_DEFAULT_CAPABILITY`` (``'automation-and-remediation'``). The result is
+    then reconciled against the capabilities the connector actually declares: a
+    capability no connection profile provides cannot select a profile, which
+    would leave capability-scoped lookups (profile selection, passthrough
+    detection) silently empty. When the mapped capability is unavailable, the
+    automation capability is preferred if the connector declares it, otherwise
+    the first profile's capability is used -- matching the first-profile
+    fallback in ``get_ucp_method_unique_id``.
+
+    Reconciliation applies to an explicitly supplied *command* as well, since a
+    command absent from the mapping resolves to the default capability whether
+    or not the caller passed it in.
+
+    Integrations can override this function if they need custom mapping logic.
+
+    :type command: ``str`` or ``None``
+    :param command: The command name.  Defaults to ``demisto.command()``.
+
+    :return: The capability string (e.g. ``'automation-and-remediation'``).
+    :rtype: ``str``
+    """
+    if command is None:
+        command = demisto.command()
+    resolved = _UCP_COMMAND_CAPABILITIES.get(command, _UCP_DEFAULT_CAPABILITY)
+
+    available = get_configured_ucp_capabilities()
+    if not available or resolved in available:
+        return resolved
+
+    demisto.debug(
+        '[UCP][CommonServerPython.py] resolve_ucp_capability: {!r} is not declared by any connection '
+        'profile {}; reconciling.'.format(resolved, available))
+
+    if _UCP_DEFAULT_CAPABILITY in available:
+        return _UCP_DEFAULT_CAPABILITY
+    return available[0]
+
+
+# -- Profile matching building blocks --
+
+def _get_ucp_profiles():
+    # type: () -> list
+    """Return the list of connection profiles from UCP metadata.
+
+    :return: List of profile dicts from ``unifiedConnectorMetadata()``.
+    :rtype: ``list``
+    :raises UcpException: If UCP is not enabled or no profiles exist.
+    """
+    connector_info = demisto.unifiedConnectorMetadata()
+    if not connector_info:
+        demisto.error('[UCP][CommonServerPython.py] _get_ucp_profiles: unifiedConnectorMetadata() returned empty.')
+        raise UcpException()
+    profiles = connector_info.get('connectionProfiles', [])
+    if not profiles:
+        demisto.error("[UCP][CommonServerPython.py] _get_ucp_profiles: No connection profiles found in connector metadata.")
+        raise UcpException()
+    return profiles
+
+
+def _find_ucp_profile_by_sub_capability(profiles, sub_capability):
+    # type: (list, str) -> Optional[str]
+    """Find the ``method_unique_id`` of the first profile matching a sub-capability.
+
+    :type profiles: ``list``
+    :param profiles: List of profile dicts.
+
+    :type sub_capability: ``str``
+    :param sub_capability: The sub-capability to match against each profile's
+        ``sub_capabilities`` list.
+
+    :return: The ``method_unique_id`` of the matched profile, or ``None``.
+    :rtype: ``Optional[str]``
+    """
+    matches = [
+        p for p in profiles
+        if sub_capability in (p.get('sub_capabilities') or [])
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        demisto.info(
+            "[UCP][CommonServerPython.py] _find_ucp_profile_by_sub_capability: Multiple profiles ({}) match sub_capability='{}'. Using first.".format(len(matches), sub_capability)
+        )
+    return matches[0].get('method_unique_id')
+
+
+def _find_ucp_profile_by_capability(profiles, capability):
+    # type: (list, str) -> Optional[str]
+    """Find the ``method_unique_id`` of the first profile matching a capability.
+
+    :type profiles: ``list``
+    :param profiles: List of profile dicts.
+
+    :type capability: ``str``
+    :param capability: The capability string to match (e.g.
+        ``'automation-and-remediation'``).
+
+    :return: The ``method_unique_id`` of the matched profile, or ``None``.
+    :rtype: ``Optional[str]``
+    """
+    matches = [p for p in profiles if p.get('capability') == capability]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        demisto.debug(
+            '[UCP][CommonServerPython.py] _find_ucp_profile_by_capability: Multiple profiles ({}) match capability="{}". '
+            'Using first.'.format(len(matches), capability)
+        )
+    return matches[0].get('method_unique_id')
+
+
+def get_ucp_method_unique_id(capability=None, sub_capability=None):
+    # type: (Optional[str], Optional[str]) -> str
+    """Resolve which connection profile's ``method_unique_id`` to use.
+
+    Resolution priority:
+
+    1. Match by *sub_capability* (via ``_find_ucp_profile_by_sub_capability``).
+    2. Match by *capability* (via ``_find_ucp_profile_by_capability``).
+    3. Fall back to the first profile in the list.
+
+    :type capability: ``str`` or ``None``
+    :param capability:
+        The capability to match.  If ``None``, resolved via
+        ``resolve_ucp_capability()``.
+
+    :type sub_capability: ``str`` or ``None``
+    :param sub_capability:
+        Optional sub-capability to match (e.g. ``'salesforce-iam'``).
+
+    :return: The ``method_unique_id`` string from the matched profile.
+    :rtype: ``str``
+
+    :raises DemistoException: If no connector metadata or no profiles exist.
+    """
+
+    profiles = _get_ucp_profiles()
+    
+    # Priority 1: match by sub_capability
+    if sub_capability:
+        method_id = _find_ucp_profile_by_sub_capability(profiles, sub_capability)
+        if method_id:
+            return method_id
+
+    # Priority 2: match by capability
+    if not capability:
+        capability = resolve_ucp_capability()
+        
+    method_id = _find_ucp_profile_by_capability(profiles, capability)
+    if method_id:
+        return method_id
+
+    # Priority 3: fallback to first profile
+    return profiles[0].get('method_unique_id', '')
+
+
+# -- Credential fetching with in-process TTL cache --
+
+
+def get_ucp_credentials(method_unique_id=None, body=None):
+    # type: (Optional[str], Optional[dict]) -> dict
+    """Fetch UCP credentials for a connection profile, with in-process TTL caching.
+
+    Results are cached keyed by ``method_unique_id``.  The TTL is derived from
+    the ``expiresAt`` field in the response via ``_extract_ucp_expiry``.  A
+    refresh is triggered ``_UCP_REFRESH_THRESHOLD_SECONDS`` before expiry.
+
+    Use ``invalidate_ucp_credentials(method_unique_id)`` to force a fresh
+    fetch on the next call.
+
+    Credentials whose response contains no ``expires_at`` field are cached
+    indefinitely within the process lifetime.
+
+    :type method_unique_id: ``Optional[str]``
+    :param method_unique_id: The profile's ``method_unique_id``. If ``None``,
+        resolves automatically via ``get_ucp_method_unique_id()``.
+
+    :type body: ``Optional[dict]``
+    :param body: Optional request body passed through to
+        ``demisto.getUCPCredentials``. Use this to forward credential-fetch
+        parameters (e.g., a specific grant type or scopes) required by the
+        backend for this profile. When ``None``, no body is sent and the
+        backend uses its profile defaults.
+
+    :return: Credential dict from the backend (may be served from cache).
+        Example::
+
+            {
+                "type": "oauth2",
+                "oauth2": {
+                    "access_token": "eyJhbGci...",
+                    "expires_at": "2026-04-19T18:00:00+00:00"
+                }
+            }
+
+    :rtype: ``dict``
+    """
+    if not method_unique_id:
+        method_unique_id = get_ucp_method_unique_id()
+
+    now = time.time()
+    entry = _ucp_creds_cache.get(method_unique_id)
+    if entry is not None:
+        expiry = entry.get('expiry')
+        if expiry is None or now < (expiry - _UCP_REFRESH_THRESHOLD_SECONDS):
+            return entry.get('result')
+        # Stale -- fall through to re-fetch
+
+    creds = demisto.getUCPCredentials(method_unique_id, from_cache=False, body=body)
+    demisto.debug("[UCP][CommonServerPython.py] Fetched fresh credentials for method_unique_id={}".format(method_unique_id))
+
+    expiry = _extract_ucp_expiry(creds)
+    _ucp_creds_cache[method_unique_id] = {'result': creds, 'expiry': expiry}
+    return creds
+
+def invalidate_ucp_credentials(method_unique_id):
+    # type: (str) -> None
+    """Remove a specific entry from the UCP credentials cache.
+
+    Public helper that any integration (or ``BaseClient``) can call when an
+    HTTP request returns an authentication error (e.g., 401 Unauthorized) to
+    force ``get_ucp_credentials()`` to fetch fresh credentials on its next
+    invocation.
+
+    :type method_unique_id: ``str``
+    :param method_unique_id: The cache key to invalidate. Must match the
+        ``method_unique_id`` used when the credentials were originally fetched.
+    """
+    _ucp_creds_cache.pop(method_unique_id, None)
+    demisto.debug("[UCP][CommonServerPython.py] Invalidated cached credentials for method_unique_id={}".format(method_unique_id))
+
+
+# -- Auto-run interpolation at import time --
+# Placed at the end of the UCP section so every UCP helper it depends on
+# (get_ucp_method_unique_id -> resolve_ucp_capability, profile matching) is
+# already defined. When the integration is not running under UCP, this is a
+# cheap no-op (unifiedConnectorMetadata() is empty / unavailable).
+try:
+    interpolate_ucp_params()
+except Exception as _ucp_import_err:
+    # Import-time safety net: never let interpolation break module import.
+    demisto.error(
+        "[UCP][CommonServerPython.py] import-time interpolate_ucp_params() swallowed error: {}".format(_ucp_import_err)
+    )
+
+
+###########################################
+#     End of UCP Functions     #
+###########################################
+
+
+###########################################
+#   Safe Pickle Loading     #
+###########################################
+# Two-layer defense against insecure deserialization (RCE via malicious pickle payloads).
+# Layer 1 RestrictedUnpickler: allowlist of safe (module, class) pairs + safe module prefixes.
+# Layer 2 Opcode validator: blocks legacy/rare pickle opcodes that legitimate models never use.
+
+# Common (module, class) pairs shared by all ML-model loading sites.
+# Each script extends this base with its own site-specific entries via set union.
+BASE_PICKLE_ALLOWED_CLASSES = {
+    # Numpy
+    ("numpy.core.multiarray", "_reconstruct"),
+    ("numpy", "ndarray"),
+    ("numpy", "dtype"),
+    ("numpy.core.multiarray", "scalar"),
+    # Pandas
+    ("pandas.core.frame", "DataFrame"),
+    ("pandas.core.series", "Series"),
+    ("pandas.core.indexes.base", "Index"),
+    ("pandas.core.indexes.range", "RangeIndex"),
+    # Python builtins
+    ("builtins", "dict"),
+    ("builtins", "list"),
+    ("builtins", "tuple"),
+    ("builtins", "set"),
+    ("builtins", "frozenset"),
+    ("builtins", "str"),
+    ("builtins", "int"),
+    ("builtins", "float"),
+    ("builtins", "bool"),
+    ("builtins", "bytes"),
+    ("builtins", "bytearray"),
+    ("builtins", "complex"),
+    ("builtins", "slice"),
+    ("builtins", "range"),
+    # Python internals used by pickle protocol
+    ("collections", "OrderedDict"),
+    ("_codecs", "encode"),
+    ("copyreg", "_reconstructor"),
+}
+
+
+class UnsafePickleError(Exception):
+    """Raised when a pickle payload contains unsafe opcodes or classes.
+
+    :return: None
+    :rtype: ``None``
+    """
+
+
+# Legacy/rare opcodes that legitimate ML models never use.
+_BLOCKED_PICKLE_OPCODES = {
+    "INST", "OBJ", "NEWOBJ_EX",
+    "EXT1", "EXT2", "EXT4",
+    "PERSID", "BINPERSID",
+}
+
+
+def validate_pickle_opcodes(payload):
+    # type: (bytes) -> None
+    """
+    Layer 2 defense-in-depth: reject pickle payloads containing
+    legacy/rare opcodes that legitimate ML models never use.
+
+    :type payload: ``bytes``
+    :param payload: Raw pickle byte stream to validate.
+
+    :raises UnsafePickleError: If a blocked opcode is found or the payload is malformed.
+
+    :return: None
+    :rtype: ``None``
+    """
+    try:
+        for opcode, _arg, pos in pickletools.genops(payload):
+            if opcode.name in _BLOCKED_PICKLE_OPCODES:
+                raise UnsafePickleError(
+                    "Blocked unsafe pickle opcode {!r} at byte {}".format(opcode.name, pos)
+                )
+    except (UnsafePickleError, Exception) as e:
+        if isinstance(e, UnsafePickleError):
+            raise
+        raise UnsafePickleError("Invalid or malformed pickle payload: {}".format(e))
+
+
+def _make_restricted_unpickler(allowed_classes, safe_module_prefixes):
+    # type: (set, set) -> type
+    """
+    Factory that creates a RestrictedUnpickler class with the given allowlists.
+
+    :type allowed_classes: ``set``
+    :param allowed_classes: Set of ``(module, name)`` tuples for exact class matches.
+
+    :type safe_module_prefixes: ``set``
+    :param safe_module_prefixes: Set of top-level module names (e.g. ``"sklearn"``, ``"numpy"``)
+        whose submodules are all considered safe data-science code.
+
+    :rtype: ``type``
+    :return: A subclass of ``pickle.Unpickler`` with restricted ``find_class``.
+    """
+
+    class RestrictedUnpickler(_pickle.Unpickler):
+        """Strict whitelist-based unpickler (Layer 1 primary defense)."""
+
+        def find_class(self, module, name):
+            # type: (str, str) -> type
+            if (module, name) in allowed_classes:
+                return _pickle.Unpickler.find_class(self, module, name)
+            top_module = module.split(".")[0]
+            if top_module in safe_module_prefixes:
+                return _pickle.Unpickler.find_class(self, module, name)
+            raise _pickle.UnpicklingError(
+                "Blocked unauthorized class: '{}.{}'".format(module, name)
+            )
+
+    return RestrictedUnpickler
+
+
+def safe_pickle_loads(data, allowed_classes, safe_module_prefixes):
+    # type: (bytes, set, set) -> object
+    """
+    Drop-in replacement for ``pickle.loads()`` / ``dill.loads()`` with two-layer security.
+
+    Layer 1 (primary): ``RestrictedUnpickler`` only allows classes in *allowed_classes*
+    or from modules whose top-level name is in *safe_module_prefixes*.
+
+    Layer 2 (defense-in-depth): opcode validator blocks legacy/rare pickle opcodes
+    that legitimate ML models never use.
+
+    :type data: ``bytes``
+    :param data: The raw pickle payload to deserialize.
+
+    :type allowed_classes: ``set``
+    :param allowed_classes: Set of ``(module, name)`` tuples for exact class matches
+        (e.g. ``{("builtins", "dict"), ("__main__", "MyModel")}``).
+
+    :type safe_module_prefixes: ``set``
+    :param safe_module_prefixes: Set of top-level module names whose submodules are
+        all considered safe (e.g. ``{"sklearn", "numpy", "pandas"}``).
+
+    :rtype: ``object``
+    :return: The deserialized Python object.
+
+    :raises UnsafePickleError: If the payload contains blocked opcodes or is malformed.
+    :raises pickle.UnpicklingError: If the payload references an unauthorized class.
+    """
+    validate_pickle_opcodes(data)
+    unpickler_cls = _make_restricted_unpickler(allowed_classes, safe_module_prefixes)
+    return unpickler_cls(_io.BytesIO(data)).load()
+
+
+
+from DemistoClassApiModule import *  # type:ignore [no-redef]  # noqa:E402
 
 ###########################################
 #     DO NOT ADD LINES AFTER THIS ONE     #
 ###########################################
 register_module_line('CommonServerPython', 'end', __line__())
 register_module_line('CustomScriptIntegration', 'start', __line__())
+

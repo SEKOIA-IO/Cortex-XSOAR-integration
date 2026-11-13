@@ -8,12 +8,15 @@
     "filter": {
       "AND": [
         {
-            "SEARCH_FIELD": "alert_name",
-            "SEARCH_TYPE": "EQ",
-            "SEARCH_VALUE": "WildFire Malware"
+          "SEARCH_FIELD": "alert_name",
+          "SEARCH_TYPE": "EQ",
+          "SEARCH_VALUE": "WildFire Malware"
         }
       ]
     }
-  }
+  },
+  "supportedModules": [
+    "xsiam",
+    "agentix"
+  ]
 }
-

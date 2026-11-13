@@ -5,6 +5,7 @@ from CommonServerPython import *  # noqa: F401
 import os
 import re
 import json
+import traceback
 from pan_cortex_data_lake import Credentials, exceptions, QueryService
 import time
 import base64
@@ -17,17 +18,39 @@ from datetime import timedelta
 
 # disable insecure warnings
 import urllib3
+from urllib.parse import urlparse
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-''' GLOBAL CONSTS '''
-ACCESS_TOKEN_CONST = 'access_token'  # guardrails-disable-line
-EXPIRES_IN = 'expires_in'
-INSTANCE_ID_CONST = 'instance_id'
-API_URL_CONST = 'api_url'
-FIRST_FAILURE_TIME_CONST = 'first_failure_time'
-LAST_FAILURE_TIME_CONST = 'last_failure_time'
-DEFAULT_API_URL = 'https://api.us.cdl.paloaltonetworks.com'
+""" GLOBAL CONSTS """
+# Integration context fields
+ACCESS_TOKEN_CONST = "access_token"  # guardrails-disable-line
+EXPIRES_IN = "expires_in"
+SCM_EXPIRATION_CONST = "expiration"
+INSTANCE_ID_CONST = "instance_id"
+API_URL_CONST = "api_url"
+FIRST_FAILURE_TIME_CONST = "first_failure_time"
+LAST_FAILURE_TIME_CONST = "last_failure_time"
+REFRESH_TOKEN_CONST = "refresh_token"
+IS_FEDRAMP_CONST = "is_fedramp"
+AUTH_MODE_CONST = "auth_mode"
+
+# Authentication modes
+AUTH_MODE_OPROXY = "oproxy"
+AUTH_MODE_SCM = "scm"
+
+FEDRAMP_HOSTNAME_SUFFIX = "federal.paloaltonetworks.com"
+DEFAULT_API_URL = "https://api.us.cdl.paloaltonetworks.com"
+LEGACY_COMMERCIAL_TOKEN_URL = "https://oproxy.demisto.ninja"  # guardrails-disable-line
+LEGACY_FEDRAMP_TOKEN_URL = (
+    "https://cortex-gateway-federal.paloaltonetworks.com/api/xdr_gateway/external_services/cdl"  # guardrails-disable-line
+)
+
+# SCM (Cortex GW) gateway base URLs and path suffix
+SCM_GATEWAY_URL = "https://cortex-gateway.paloaltonetworks.com"  # guardrails-disable-line
+SCM_GATEWAY_FEDERAL_URL = "https://cortex-gateway-federal.paloaltonetworks.com"  # guardrails-disable-line
+SCM_TOKEN_PATH = "/api/xdr_gateway/external_services/scm/get_access_token"
+
 MINUTES_60 = 60 * 60
 SECONDS_30 = 30
 FETCH_TABLE_HR_NAME = {
@@ -43,9 +66,91 @@ FETCH_TABLE_HR_NAME = {
     "firewall.url": "Cortex Firewall URL",
     "firewall.userid": "Cortex Firewall UserID",
     "log.system": "Cortex Common System",
-    "log.config": "Cortex Common Config"
+    "log.config": "Cortex Common Config",
 }
-BAD_REQUEST_REGEX = r'^Error in API call \[400\].*'
+BAD_REQUEST_REGEX = r"^Error in API call \[400\].*"
+
+# Strata Logging Service (SLS) migration mapping.
+# Following the SLS migration, the oproxy may return a pre-migration URL that is no longer reachable.
+# If the URL returned by oproxy is unreachable, we fall back to the migrated URL using this table,
+# which maps the exact pre-migration URL (as returned by oproxy) to its migrated URL (whole URL to whole URL).
+# Only the URLs listed here are mapped; any other URL is left unchanged.
+MIGRATED_SLS_URL_BY_ORIGINAL_URL = {
+    # americas
+    "https://api.us.cdl.paloaltonetworks.com": "https://read-api.us1.prd.strata.logging.paloaltonetworks.com",
+    # europe
+    "https://api.nl.cdl.paloaltonetworks.com": "https://read-api.eu1.prd.strata.logging.paloaltonetworks.com",
+    # au
+    "https://api.au1.se1.cdl.paloaltonetworks.com": "https://read-api.au1.prd.strata.logging.paloaltonetworks.com",
+    # ca
+    "https://api.ca1.ne1.cdl.paloaltonetworks.com": "https://read-api.ca1.prd.strata.logging.paloaltonetworks.com",
+    # de
+    "https://api.de1.ew3.cdl.paloaltonetworks.com": "https://read-api.de1.prd.strata.logging.paloaltonetworks.com",
+    # fr
+    "https://api.fr1.ew9.cdl.paloaltonetworks.com": "https://read-api.fr1.prd.strata.logging.paloaltonetworks.com",
+    # jp
+    "https://api.jp1.ne1.cdl.paloaltonetworks.com": "https://read-api.jp1.prd.strata.logging.paloaltonetworks.com",
+    # in
+    "https://api.in1.as1.cdl.paloaltonetworks.com": "https://read-api.in1.prd.strata.logging.paloaltonetworks.com",
+    # id
+    "https://api.id1.se2.cdl.paloaltonetworks.com": "https://read-api.id1.prd.strata.logging.paloaltonetworks.com",
+    # sg
+    "https://api.sg1.se1.cdl.paloaltonetworks.com": "https://read-api.sg1.prd.strata.logging.paloaltonetworks.com",
+    # uk
+    "https://api.uk.cdl.paloaltonetworks.com": "https://read-api.uk1.prd.strata.logging.paloaltonetworks.com",
+    # es
+    "https://api.es1.sw1.cdl.paloaltonetworks.com": "https://read-api.es1.prd.strata.logging.paloaltonetworks.com",
+    # pl
+    "https://api.pl1.ec2.cdl.paloaltonetworks.com": "https://read-api.pl1.prd.strata.logging.paloaltonetworks.com",
+    # kr
+    "https://api.kr1.ne3.cdl.paloaltonetworks.com": "https://read-api.kr1.prd.strata.logging.paloaltonetworks.com",
+    # it
+    "https://api.it1.ew8.cdl.paloaltonetworks.com": "https://read-api.it1.prd.strata.logging.paloaltonetworks.com",
+    # il
+    "https://api.il1.mw1.cdl.paloaltonetworks.com": "https://read-api.il1.prd.strata.logging.paloaltonetworks.com",
+    # qa
+    "https://api.qa1.mc1.cdl.paloaltonetworks.com": "https://read-api.qa1.prd.strata.logging.paloaltonetworks.com",
+    # ch
+    "https://api.ch1.ew6.cdl.paloaltonetworks.com": "https://read-api.ch1.prd.strata.logging.paloaltonetworks.com",
+    # sa
+    "https://api.sa1.mc2.cdl.paloaltonetworks.com": "https://read-api.sa1.prd.strata.logging.paloaltonetworks.com",
+    # tw
+    "https://api.tw1.ae1.cdl.paloaltonetworks.com": "https://read-api.tw1.prd.strata.logging.paloaltonetworks.com",
+    # za
+    "https://api.za1.as1.cdl.paloaltonetworks.com": "https://read-api.za1.prd.strata.logging.paloaltonetworks.com",
+}
+URL_REACHABILITY_TIMEOUT = 10
+
+
+def build_scm_signature(encryption_key_b64: str, client_secret: Optional[str], timestamp: int) -> str:
+    """Builds the base64 AES-GCM signature required by the SCM gateway.
+
+    Args:
+        encryption_key_b64: The base64-encoded 32-byte AES-GCM encryption key.
+        client_secret: The SCM client secret.
+        timestamp: Unix epoch seconds; must match the outer request timestamp.
+
+    Returns:
+        The base64-encoded (gcm_nonce + ciphertext) signature.
+    """
+    try:
+        encryption_key = base64.b64decode(encryption_key_b64)
+    except Exception as e:
+        raise DemistoException("Invalid Encryption Key: must be a valid base64 string.") from e
+    if len(encryption_key) != 32:
+        raise DemistoException("Invalid Encryption Key: the key must be the base64 value of exactly 32 raw bytes.")
+    nonce = base64.b64encode(os.urandom(16)).decode("ascii")
+    plaintext = json.dumps({"nonce": nonce, "timestamp": timestamp, "client_secret": client_secret}).encode("utf-8")
+    gcm_nonce = os.urandom(12)
+    ciphertext = AESGCM(encryption_key).encrypt(gcm_nonce, plaintext, None)
+    return base64.b64encode(gcm_nonce + ciphertext).decode("ascii")
+
+
+def build_scm_request_body(registration_id: str, encryption_key_b64: str, client_secret: Optional[str]) -> dict:
+    """Builds the SCM get_access_token request body with a bound inner/outer timestamp."""
+    timestamp = int(time.time())
+    signature = build_scm_signature(encryption_key_b64, client_secret, timestamp)
+    return {"registration_id": registration_id, "timestamp": timestamp, "signature": signature}
 
 
 class Client(BaseClient):
@@ -54,14 +159,29 @@ class Client(BaseClient):
     Should only do requests and return data.
     """
 
-    def __init__(self, token_retrieval_url, registration_id, use_ssl, proxy, refresh_token, enc_key):
+    def __init__(
+        self,
+        token_retrieval_url,
+        registration_id,
+        use_ssl,
+        proxy,
+        refresh_token,
+        enc_key,
+        client_secret: Optional[str] = None,
+        auth_mode: str = AUTH_MODE_OPROXY,
+    ):
+        self.auth_mode = auth_mode
         headers = get_x_content_info_headers()
-        headers['Authorization'] = registration_id
-        headers['Accept'] = 'application/json'
+        if self.auth_mode == AUTH_MODE_OPROXY:
+            headers["Authorization"] = registration_id
+        headers["Accept"] = "application/json"
         super().__init__(base_url=token_retrieval_url, headers=headers, verify=use_ssl, proxy=proxy)
         self.refresh_token = refresh_token
         self.enc_key = enc_key
         self.use_ssl = use_ssl
+        self.use_fr_token_headers = bool(FEDRAMP_HOSTNAME_SUFFIX in token_retrieval_url)
+        self.registration_id = registration_id
+        self.client_secret = client_secret
         # Trust environment settings for proxy configuration
         self.trust_env = proxy
         self._set_access_token()
@@ -76,43 +196,189 @@ class Client(BaseClient):
         integration_context = demisto.getIntegrationContext()
         access_token = integration_context.get(ACCESS_TOKEN_CONST)
         valid_until = integration_context.get(EXPIRES_IN)
-        if access_token and valid_until and int(time.time()) < valid_until:
+        stored_auth_mode = (
+            integration_context.get(AUTH_MODE_CONST) or AUTH_MODE_OPROXY
+        )  # default to oproxy, since this field wasn't written before
+        auth_mode_matches = stored_auth_mode == self.auth_mode
+        demisto.debug(
+            f"Stored auth-mode is '{integration_context.get(AUTH_MODE_CONST)}' (defaulting to oproxy if NONE), current auth mode is '{self.auth_mode}'."  # noqa: E501
+        )
+        if access_token and valid_until and int(time.time()) < valid_until and auth_mode_matches:
             self.access_token = access_token
             self.api_url = integration_context.get(API_URL_CONST, DEFAULT_API_URL)
             self.instance_id = integration_context.get(INSTANCE_ID_CONST)
+            demisto.debug(f"access token time: {valid_until} still valid. Reusing.")
             return
-        demisto.debug(f'access token time: {valid_until} expired/none. Will call oproxy')
-        access_token, api_url, instance_id, refresh_token, expires_in = self._oproxy_authorize()
-        updated_integration_context = {
-            ACCESS_TOKEN_CONST: access_token,
-            EXPIRES_IN: int(time.time()) + expires_in - SECONDS_30,
-            API_URL_CONST: api_url,
-            INSTANCE_ID_CONST: instance_id
-        }
+        demisto.debug(f"access token time: {valid_until} expired/none (auth_mode={self.auth_mode}). Refreshing.")
+        access_token, api_url, instance_id, refresh_token, expires_in = (
+            self._scm_authorize() if self.auth_mode == AUTH_MODE_SCM else self._oproxy_authorize()
+        )
+        integration_context.update(
+            {
+                ACCESS_TOKEN_CONST: access_token,
+                EXPIRES_IN: int(time.time()) + expires_in - SECONDS_30,
+                API_URL_CONST: api_url,
+                INSTANCE_ID_CONST: instance_id,
+                AUTH_MODE_CONST: self.auth_mode,
+            }
+        )
         if refresh_token:
-            updated_integration_context.update({'refresh_token': refresh_token})
-        demisto.setIntegrationContext(updated_integration_context)
+            integration_context.update({REFRESH_TOKEN_CONST: refresh_token})
+        demisto.setIntegrationContext(integration_context)
         self.access_token = access_token
         self.api_url = api_url
         self.instance_id = instance_id
 
+    def _scm_authorize(self) -> tuple[Any, Any, Any, Any, int]:
+        """Authorizes against the SCM (Cortex GW) gateway and returns the same shape as _oproxy_authorize."""
+        body = build_scm_request_body(self.registration_id, self.enc_key, self.client_secret)
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+
+        demisto.debug("[_scm_authorize] CDL: authenticating via SCM (Cortex GW) auth mode")
+
+        try:
+            demisto.debug(f"[_scm_authorize] Attempting authorization against '{urljoin(self._base_url, SCM_TOKEN_PATH)}'.")
+            raw_response = self._http_request(
+                method="POST",
+                url_suffix=SCM_TOKEN_PATH,
+                json_data=body,
+                headers=headers,
+                timeout=(60 * 3, 60 * 3),
+                resp_type="response",
+            )
+        except DemistoException as e:
+            status_code = e.res.status_code if e.res is not None else None
+            demisto.debug(f"[_scm_authorize] CDL SCM request failed with status_code={status_code}")
+            if status_code == 429:
+                raise DemistoException(
+                    "SCM rate limit exceeded (60 requests/min per registration_id) - try again shortly."
+                ) from e
+            if status_code == 401:
+                raise DemistoException(
+                    "SCM authentication failed (check Registration ID, Encryption Key, and Client Secret)."
+                ) from e
+            raise
+
+        raw_text = raw_response.text or ""
+        if not raw_text.strip():
+            raise DemistoException(
+                f"SCM returned an empty response body (status={raw_response.status_code}, "
+                f"content_type={raw_response.headers.get('Content-Type')!r}). "
+                "Expected a JSON body with an access_token. Check the SCM token URL, redirects, and proxy settings."
+            )
+
+        try:
+            response = raw_response.json()
+        except ValueError as e:
+            # A non-JSON body here is an error body from the gateway
+            raise DemistoException(
+                f"SCM returned a non-JSON response (status={raw_response.status_code}): {raw_text[:200]!r}"
+            ) from e
+
+        access_token = response.get(ACCESS_TOKEN_CONST)
+        if not access_token:
+            demisto.debug(
+                "[_scm_authorize] Got a response from SCM auth, but the access token (used for query/v2/jobs requests) is missing!"  # noqa: E501
+            )
+            raise DemistoException("Missing access_token in SCM response.")
+        # The SCM gateway supplies the data-plane address and instance to query, alongside the token.
+        # It reports the TTL as "expiration"; fall back to "expires_in" and then to a default.
+        expires_in = int(response.get(SCM_EXPIRATION_CONST) or response.get(EXPIRES_IN) or 0)
+        api_url = response.get("url") or DEFAULT_API_URL
+        instance_id = response.get(INSTANCE_ID_CONST) or ""
+        # NOTE: refresh token is used only for oproxy, scm does not return it
+        refresh_token = None
+        if not response.get("url"):
+            demisto.debug(
+                f"[_scm_authorize] CDL: SCM response has no 'url'; falling back to the default API URL {DEFAULT_API_URL}."
+            )
+        if not instance_id:
+            demisto.debug("[_scm_authorize] CDL: SCM response has no 'instance_id'; queries will not be scoped to an instance.")
+        demisto.debug(
+            f"[_scm_authorize] CDL: SCM auth succeeded (expires_in={expires_in}, api_url={api_url}, instance_id={instance_id})"
+        )
+        return access_token, api_url, instance_id, refresh_token, expires_in
+
     def _oproxy_authorize(self) -> tuple[Any, Any, Any, Any, int]:
+        """LEGACY OProxy authentication (DEPRECATED).
+
+        Implements the legacy OProxy-based access-token retrieval.
+        """
         oproxy_response = self._get_access_token_with_backoff_strategy()
         access_token = oproxy_response.get(ACCESS_TOKEN_CONST)
-        api_url = oproxy_response.get('url')
-        refresh_token = oproxy_response.get('refresh_token')
+        api_url = oproxy_response.get("url")
+        refresh_token = oproxy_response.get(REFRESH_TOKEN_CONST)
         instance_id = oproxy_response.get(INSTANCE_ID_CONST)
         # In case the response has EXPIRES_IN key with empty string as value, we need to make sure we don't try to cast
         # an empty string to an int.
         expires_in = int(oproxy_response.get(EXPIRES_IN, MINUTES_60) or 0)
         if not access_token or not api_url or not instance_id:
-            raise DemistoException(f'Missing attribute in response: access_token, instance_id or api are missing.\n'
-                                   f'Oproxy response: {oproxy_response}')
+            raise DemistoException(
+                f"Missing attribute in response: access_token, instance_id or api are missing.\n"
+                f"Oproxy response: {oproxy_response}"
+            )
+        # Following the SLS migration, the URL returned by oproxy may point to a pre-migration (unreachable) host.
+        # Probe it and, if unreachable, fall back to the migrated URL from the mapping table before it is persisted.
+        api_url = self._resolve_reachable_api_url(api_url, access_token)
         return access_token, api_url, instance_id, refresh_token, expires_in
 
+    def _resolve_reachable_api_url(self, api_url: str, access_token: str) -> str:
+        """Returns a reachable SLS API URL.
+
+        Probes the URL returned by oproxy; if it is unreachable (timeout / connection error / any error),
+        attempts to map it to its migrated equivalent via the whole-URL mapping table. If no mapping
+        exists, the original URL is returned unchanged.
+
+        Args:
+            api_url: The API URL as returned by oproxy.
+            access_token: The freshly obtained access token used to authenticate the probe.
+
+        Returns:
+            The reachable (or best-effort) API URL to use and persist.
+        """
+        if self._is_url_reachable(api_url, access_token):
+            demisto.debug(f"CDL - oproxy api_url is reachable, using it as-is: {api_url}")
+            return api_url
+
+        demisto.info(f"CDL - oproxy api_url is unreachable: {api_url}. Attempting to map to the migrated SLS URL.")
+        mapped_url = map_to_migrated_url(api_url)
+        if mapped_url != api_url:
+            demisto.info(f"CDL - Using migrated SLS api_url: {mapped_url}")
+        return mapped_url
+
+    def _is_url_reachable(self, url: str, access_token: str) -> bool:
+        """Probes the URL with an authenticated query, treating only a non-error HTTP status as reachable.
+
+        Uses the query service against the given candidate URL. A decommissioned host answers the query endpoint
+        with an error status while a live host answers < 400, so status_code is the signal.
+        Any error status or transport failure is treated as not reachable.
+
+        Args:
+            url: The URL to probe.
+            access_token: The access token used to authenticate the probe request.
+
+        Returns:
+            True if the host responded with status_code < 400, otherwise False.
+        """
+        try:
+            query_service = self.initial_query_service(url=url, access_token=access_token)
+            query_data = {"query": build_connectivity_test_query(), "language": "csql"}
+            response = query_service.create_query(query_params=query_data, enforce_json=False, raise_for_status=False)
+            if response.status_code < requests.codes.bad_request:
+                demisto.debug(f"CDL - URL reachable: {url} ({response.status_code=})")
+                return True
+            demisto.info(f"CDL - URL not reachable: {url} responded with error {response.status_code=}.")
+            return False
+        except Exception as e:
+            demisto.info(f"CDL - URL not reachable: {url}. Error: {e}")
+            demisto.debug(f"CDL - URL reachability probe traceback for {url}:\n{traceback.format_exc()}")
+            return False
+
     def _get_access_token_with_backoff_strategy(self) -> dict:
-        """ Implements a backoff strategy for retrieving an access token.
-        Raises an exception if the call is within one of the time windows, otherwise fetches the access token
+        """LEGACY OProxy authentication (DEPRECATED).
+
+        Implements a backoff strategy for retrieving an access token.
+        Raises an exception if the call is within one of the time windows, otherwise fetches the access token.
 
         Returns: The oproxy response or raising a DemistoException
 
@@ -122,7 +388,7 @@ class Client(BaseClient):
 
     @staticmethod
     def _backoff_strategy(integration_context: dict):
-        """ Implements a backoff strategy for retrieving an access token. Logic as follows:
+        """Implements a backoff strategy for retrieving an access token. Logic as follows:
         - First 60 minutes check for access token once every 1 minute max.
         - Next 47 hours check for access token once every 10 minute max.
         - After 48 hours check for access token once every 60 minutes max.
@@ -131,17 +397,19 @@ class Client(BaseClient):
             integration_context: The integration context
 
         """
-        err_msg = 'We have found out that your recent attempts to authenticate against the CDL server have failed. ' \
-                  'Therefore we have limited the number of calls that the CDL integration performs. ' \
-                  'If you wish to try authenticating again, please run the `cdl-reset-authentication-timeout` ' \
-                  'command and retry. If you choose not to reset the authentication timeout, the next attempt can be ' \
-                  'done in {} {}.'
+        err_msg = (
+            "We have found out that your recent attempts to authenticate against the CDL server have failed. "
+            "Therefore we have limited the number of calls that the CDL integration performs. "
+            "If you wish to try authenticating again, please run the `cdl-reset-authentication-timeout` "
+            "command and retry. If you choose not to reset the authentication timeout, the next attempt can be "
+            "done in {} {}."
+        )
         first_failure_time = integration_context.get(FIRST_FAILURE_TIME_CONST)
         last_failure_time = integration_context.get(LAST_FAILURE_TIME_CONST)
         now_datetime = datetime.utcnow()
-        demisto.debug(f'CDL - First failure time: {first_failure_time}')
-        demisto.debug(f'CDL - Last failure time: {last_failure_time}')
-        demisto.debug(f'CDL - Current time: {last_failure_time}')
+        demisto.debug(f"CDL - First failure time: {first_failure_time}")
+        demisto.debug(f"CDL - Last failure time: {last_failure_time}")
+        demisto.debug(f"CDL - Current time: {last_failure_time}")
 
         if first_failure_time and last_failure_time:
             first_failure_datetime = datetime.fromisoformat(first_failure_time)
@@ -152,35 +420,46 @@ class Client(BaseClient):
             if time_from_first_failure < timedelta(hours=1):
                 window = timedelta(minutes=1)
                 if time_from_last_failure < window:
-                    raise DemistoException(err_msg.format(window - time_from_last_failure, 'seconds'))
+                    raise DemistoException(err_msg.format(window - time_from_last_failure, "seconds"))
             elif time_from_first_failure < timedelta(hours=48):
                 window = timedelta(minutes=10)
                 if time_from_last_failure < window:
-                    raise DemistoException(err_msg.format(window - time_from_last_failure, 'minutes'))
+                    raise DemistoException(err_msg.format(window - time_from_last_failure, "minutes"))
             else:
                 window = timedelta(minutes=60)
                 if time_from_last_failure < window:
-                    raise DemistoException(err_msg.format(window - time_from_last_failure, 'minutes'))
+                    raise DemistoException(err_msg.format(window - time_from_last_failure, "minutes"))
 
     def _get_access_token(self) -> dict:
-        """ Performs an http request to oproxy-cdl access token endpoint
-        In case of failure, handles the error, otherwise reset the failure counters and return the response
+        """LEGACY OProxy authentication (DEPRECATED).
+
+        Performs an http request to oproxy-cdl access token endpoint.
+        In case of failure, handles the error, otherwise reset the failure counters and return the response.
 
         Returns: The oproxy response or raising a DemistoException
 
         """
-        demisto.debug('CDL - Fetching access token')
+        demisto.debug("CDL - Fetching access token")
         try:
-            oproxy_response = self._http_request('POST',
-                                                 '/cdl-token',
-                                                 json_data={'token': get_encrypted(self.refresh_token, self.enc_key)},
-                                                 timeout=(60 * 3, 60 * 3),
-                                                 retries=3,
-                                                 backoff_factor=10,
-                                                 status_list_to_retry=[400])
+            token = get_encrypted(self.refresh_token, self.enc_key)
+            if self.use_fr_token_headers:
+                demisto.debug("Using FedRAMP resource token request headers.")
+                data = {"encrypted_token": token, "registration_id": self.registration_id}
+            else:
+                demisto.debug("Using standard resource token request headers.")
+                data = {"token": token}
+            oproxy_response = self._http_request(
+                "POST",
+                "/cdl-token",
+                json_data=data,
+                timeout=(60 * 3, 60 * 3),
+                retries=3,
+                backoff_factor=10,
+                status_list_to_retry=[400],
+            )
         except DemistoException as e:
             if re.match(BAD_REQUEST_REGEX, str(e)):
-                demisto.error('The request to retrieve the access token has failed with 400 status code.')
+                demisto.error("The request to retrieve the access token has failed with 400 status code.")
                 demisto.setIntegrationContext(self._cache_failure_times(demisto.getIntegrationContext()))
             raise e
 
@@ -189,7 +468,7 @@ class Client(BaseClient):
 
     @staticmethod
     def _cache_failure_times(integration_context: dict) -> dict:
-        """ Updates the failure times in case of an error with 400 status code.
+        """Updates the failure times in case of an error with 400 status code.
 
         Args:
             integration_context: The integration context
@@ -208,9 +487,7 @@ class Client(BaseClient):
 
     @staticmethod
     def reset_failure_times():
-        """ Resets the time failure counters: FIRST_FAILURE_TIME_CONST & LAST_FAILURE_TIME_CONST
-
-        """
+        """Resets the time failure counters: FIRST_FAILURE_TIME_CONST & LAST_FAILURE_TIME_CONST"""
         integration_context = demisto.getIntegrationContext()
 
         for failure_time_key in (FIRST_FAILURE_TIME_CONST, LAST_FAILURE_TIME_CONST):
@@ -219,11 +496,11 @@ class Client(BaseClient):
 
         demisto.setIntegrationContext(integration_context)
 
-    def query_loggings(self, query: str, page_number: Optional[str] = None, page_size: Optional[str] = None) \
-            -> tuple[list[dict], list]:
+    def query_loggings(
+        self, query: str, page_number: Optional[str] = None, page_size: Optional[str] = None
+    ) -> tuple[list[dict], list]:
         """
-        This function handles all the querying of Cortex Logging service
-
+        This function handles all the querying of Strata Logging Service
         Args:
             query: The sql string query.
             page_number: The page number to query.
@@ -232,11 +509,24 @@ class Client(BaseClient):
         Returns:
             A list of records according to the query
         """
-        query_data = {'query': self.add_instance_id_to_query(query),
-                      'language': 'csql'}
-        demisto.debug(f'Query being executed in CDL: {str(query_data)}')
+        query_data = {"query": self.add_instance_id_to_query(query), "language": "csql"}
+        demisto.debug(f"Query being executed in SLS: {str(query_data)}")
         query_service = self.initial_query_service()
-        response = query_service.create_query(query_params=query_data, enforce_json=True)
+        try:
+            response = query_service.create_query(query_params=query_data, enforce_json=True)
+        except exceptions.HTTPError as e:
+            # Transport-level failure (connection/timeout/TLS/DNS).
+            demisto.debug("CDL - create_query transport error")
+            raise DemistoException("Failed to reach Strata Logging Service. Please verify connectivity.", e) from e
+        except exceptions.PartialCredentialsError as e:
+            demisto.debug("CDL - create_query incomplete credentials")
+            raise DemistoException("Incomplete credentials for Strata Logging Service.", e) from e
+        except exceptions.CortexError as e:
+            # Non-JSON error body (enforce_json=True) - typically an auth failure.
+            demisto.debug("CDL - create_query returned a non-JSON body (likely auth failure)")
+            raise DemistoException(
+                "Failed to authenticate to Strata Logging Service. Please verify the integration credentials.", e
+            ) from e
         query_result = response.json()
 
         if not response.ok:
@@ -244,20 +534,21 @@ class Client(BaseClient):
             try:
                 # For some error responses the messages are in 'query_result['errors'] and for some they are simply
                 # in 'query_result
-                errors = query_result.get('errors', query_result)
-                error_message = ''.join([message.get('message') for message in errors])
+                errors = query_result.get("errors", query_result)
+                error_message = "".join([message.get("message") for message in errors])
             except AttributeError:
                 error_message = query_result
 
-            raise DemistoException(f'Error in query to Cortex Data Lake XSOAR Connector [{status_code}] - {error_message}')
+            raise DemistoException(f"Error in query to Strata Logging Service XSOAR Connector [{status_code}] - {error_message}")
         raw_results = []
         try:
-            for r in query_service.iter_job_results(job_id=query_result.get(
-                    'jobId'),
-                    page_number=arg_to_number(page_number),
-                    page_size=arg_to_number(page_size) or 50 if page_number else None,
-                    max_wait=2000,
-                    result_format='valuesDictionary'):
+            for r in query_service.iter_job_results(
+                job_id=query_result.get("jobId"),
+                page_number=arg_to_number(page_number),
+                page_size=arg_to_number(page_size) or 50 if page_number else None,
+                max_wait=2000,
+                result_format="valuesDictionary",
+            ):
                 raw_results.append(r.json())
 
         # There is a known issue in iter_job_results where pageCursor and pageNumber are not handled as expected after the first
@@ -266,29 +557,36 @@ class Client(BaseClient):
         # field directly, which can lead to an error. This workaround helps to address the situation.
 
         except KeyError as e:
-            if not e.args[0] == 'state':
-                raise DemistoException(f'Received error {str(e)} when querying logs.')
+            if not e.args[0] == "state":
+                raise DemistoException(f"Received error {str(e)} when querying logs.")
         except exceptions.HTTPError as e:
-            raise DemistoException(f'Received error {str(e)} when querying logs.')
+            raise DemistoException(f"Received error {str(e)} when querying logs.")
 
         extended_results: list[dict] = []
         for result in raw_results:
-            page = result.get('page', {})
-            data = page.get('result', {}).get('data', [])
+            page = result.get("page", {})
+            data = page.get("result", {}).get("data", [])
             if data:
                 extended_results.extend(data)
 
         return extended_results, raw_results
 
-    def initial_query_service(self) -> QueryService:
-        credentials = Credentials(
-            access_token=self.access_token,
-            verify=self.use_ssl
-        )
+    def initial_query_service(self, url: Optional[str] = None, access_token: Optional[str] = None) -> QueryService:
+        """Builds a QueryService for querying the SLS API.
+
+        Args:
+            url: The API URL to query. Defaults to self.api_url, but can be overridden.
+            access_token: The access token to authenticate with. Defaults to self.access_token, but can be overridden.
+
+        Returns:
+            A configured QueryService.
+        """
+        credentials = Credentials(access_token=access_token or self.access_token, verify=self.use_ssl)
+        # `verify` has to be handed to the QueryService explicitly: passing it to Credentials only
+        # affects the SDK's own token-refresh call, leaving the data-plane session verifying against
+        # the default CA bundle. Without this the "Trust any certificate" parameter is ignored for queries.
         query_service = QueryService(
-            url=self.api_url,
-            credentials=credentials,
-            trust_env=self.trust_env
+            url=url or self.api_url, credentials=credentials, trust_env=self.trust_env, verify=self.use_ssl
         )
         return query_service
 
@@ -303,12 +601,49 @@ class Client(BaseClient):
         Returns:
             A query with instance_id
         """
-        FIND_FROM_STATEMENT_REGEX_PATTERN = r'(?i)FROM `'
-        query = re.sub(FIND_FROM_STATEMENT_REGEX_PATTERN, f'FROM `{self.instance_id}.', query)
+        FIND_FROM_STATEMENT_REGEX_PATTERN = r"(?i)FROM `"
+        query = re.sub(FIND_FROM_STATEMENT_REGEX_PATTERN, f"FROM `{self.instance_id}.", query)
         return query
 
 
-''' HELPER FUNCTIONS '''
+""" HELPER FUNCTIONS """
+
+
+def build_connectivity_test_query() -> str:
+    """Builds a cheap, time-bounded query used to verify connectivity to Strata Logging Service.
+
+    Returns:
+        A CSQL query string.
+    """
+    start_time, _ = parse_date_range("1 hour")
+    start_time = start_time.replace(microsecond=0)
+    return (
+        "SELECT * FROM `firewall.traffic` "  # noqa: S608
+        f'WHERE time_generated BETWEEN TIMESTAMP("{start_time}") AND CURRENT_TIMESTAMP LIMIT 1'
+    )
+
+
+def map_to_migrated_url(original_url: str) -> str:
+    """Maps a pre-migration SLS URL to its migrated equivalent by exact whole-URL lookup.
+
+    Looks up the exact URL returned by oproxy in the migration mapping table. If the URL
+    is present, the migrated URL is returned. If it is not in the table, the original URL
+    is returned unchanged.
+
+    Args:
+        original_url: The API URL as returned by oproxy.
+
+    Returns:
+        The migrated URL if the URL is mapped, otherwise the original URL.
+    """
+    migrated_url = MIGRATED_SLS_URL_BY_ORIGINAL_URL.get(original_url)
+
+    if not migrated_url:
+        demisto.info(f"CDL - URL '{original_url}' is not in the migration table. Using the original URL unchanged.")
+        return original_url
+
+    demisto.debug(f"CDL - Mapped URL '{original_url}' to migrated URL: {migrated_url}")
+    return migrated_url
 
 
 def human_readable_time_from_epoch_time(epoch_time: int, utc_time: bool = False):
@@ -324,7 +659,7 @@ def human_readable_time_from_epoch_time(epoch_time: int, utc_time: bool = False)
     """
     result = datetime.fromtimestamp(epoch_time / 1e6).isoformat() if epoch_time else None
     if result:
-        result += 'Z' if utc_time else ''
+        result += "Z" if utc_time else ""
     return result
 
 
@@ -349,39 +684,39 @@ def epoch_to_timestamp_and_add_milli(epoch_time: int):
         human readable time in the format of '1970-01-01T02:00:00.000Z'
     """
     epoch_time = add_milliseconds_to_epoch_time(epoch_time)
-    epoch_time_str = datetime.fromtimestamp(epoch_time).isoformat(timespec='milliseconds') + "Z"
+    epoch_time_str = datetime.fromtimestamp(epoch_time).isoformat(timespec="milliseconds") + "Z"
     return epoch_time_str
 
 
 def common_context_transformer(row_content):
     """
-        This function retrieves data from a row of raw data into context path locations
+    This function retrieves data from a row of raw data into context path locations
 
-        Args:
-            row_content: a dict representing raw data of a row
+    Args:
+        row_content: a dict representing raw data of a row
 
-        Returns:
-            a dict with context paths and their corresponding value
-        """
+    Returns:
+        a dict with context paths and their corresponding value
+    """
     return {
-        'Action': row_content.get('action', {}).get('value'),
-        'App': row_content.get('app'),
-        'Protocol': row_content.get('protocol', {}).get('value'),
-        'DestinationIP': row_content.get('dest_ip', {}).get('value'),
-        'RuleMatched': row_content.get('rule_matched'),
-        'CharacteristicOfApp': row_content.get('characteristics_of_app'),
-        'LogSourceName': row_content.get('log_source_name'),
-        'IsNat': row_content.get('is_nat'),
-        'NatDestinationPort': row_content.get('nat_dest_port'),
-        'NatDestination': row_content.get('nat_dest', {}).get('value'),
-        'NatSource': row_content.get('nat_source', {}).get('value'),
-        'SourceIP': row_content.get('source_ip', {}).get('value'),
-        'AppCategory': row_content.get('app_category'),
-        'SourceLocation': row_content.get('source_location'),
-        'DestinationLocation': row_content.get('dest_location'),
-        'FileSHA256': row_content.get('file_sha_256'),
-        'FileName': row_content.get('file_name'),
-        'TimeGenerated': human_readable_time_from_epoch_time(row_content.get('time_generated', 0))
+        "Action": row_content.get("action", {}).get("value"),
+        "App": row_content.get("app"),
+        "Protocol": row_content.get("protocol", {}).get("value"),
+        "DestinationIP": row_content.get("dest_ip", {}).get("value"),
+        "RuleMatched": row_content.get("rule_matched"),
+        "CharacteristicOfApp": row_content.get("characteristics_of_app"),
+        "LogSourceName": row_content.get("log_source_name"),
+        "IsNat": row_content.get("is_nat"),
+        "NatDestinationPort": row_content.get("nat_dest_port"),
+        "NatDestination": row_content.get("nat_dest", {}).get("value"),
+        "NatSource": row_content.get("nat_source", {}).get("value"),
+        "SourceIP": row_content.get("source_ip", {}).get("value"),
+        "AppCategory": row_content.get("app_category"),
+        "SourceLocation": row_content.get("source_location"),
+        "DestinationLocation": row_content.get("dest_location"),
+        "FileSHA256": row_content.get("file_sha_256"),
+        "FileName": row_content.get("file_name"),
+        "TimeGenerated": human_readable_time_from_epoch_time(row_content.get("time_generated", 0)),
     }
 
 
@@ -394,12 +729,12 @@ def system_log_context_transformer(row_content):
         a dict with context paths and their corresponding value
     """
     return {
-        'EventName': row_content.get('event_name'),
-        'EventDescription': row_content.get('event_description'),
-        'VendorSeverity': row_content.get('severity', ""),
-        'LogTime': human_readable_time_from_epoch_time(row_content.get('log_time', 0)),
-        'LogType': row_content.get('log_type', {}).get('value'),
-        'LogSourceName': row_content.get('log_source_name')
+        "EventName": row_content.get("event_name"),
+        "EventDescription": row_content.get("event_description"),
+        "VendorSeverity": row_content.get("severity", ""),
+        "LogTime": human_readable_time_from_epoch_time(row_content.get("log_time", 0)),
+        "LogType": row_content.get("log_type", {}).get("value"),
+        "LogSourceName": row_content.get("log_source_name"),
     }
 
 
@@ -415,46 +750,46 @@ def traffic_context_transformer(row_content: dict) -> dict:
     """
 
     return {
-        'Action': row_content.get('action', {}).get('value'),
-        'RiskOfApp': row_content.get('risk_of_app'),
-        'NatSourcePort': row_content.get('nat_source_port'),
-        'SessionID': row_content.get('session_id'),
-        'Packets': row_content.get('packets_total'),
-        'CharacteristicOfApp': row_content.get('characteristics_of_app'),
-        'App': row_content.get('app'),
-        'Vsys': row_content.get('vsys'),
-        'IsNat': row_content.get('is_nat'),
-        'LogTime': human_readable_time_from_epoch_time(row_content.get('log_time', 0)),
-        'SubcategoryOfApp': row_content.get('app_sub_category'),
-        'Protocol': row_content.get('protocol', {}).get('value'),
-        'NatDestinationPort': row_content.get('nat_dest_port'),
-        'DestinationIP': row_content.get('dest_ip', {}).get('value'),
-        'NatDestination': row_content.get('nat_dest', {}).get('value'),
-        'RuleMatched': row_content.get('rule_matched'),
-        'DestinationPort': row_content.get('dest_port'),
-        'TotalTimeElapsed': row_content.get('total_time_elapsed'),
-        'LogSourceName': row_content.get('log_source_name'),
-        'Subtype': row_content.get('sub_type', {}).get('value'),
-        'Users': row_content.get('users'),
-        'TunneledApp': row_content.get('tunneled_app'),
-        'IsPhishing': row_content.get('is_phishing'),
-        'SessionEndReason': row_content.get('session_end_reason', {}).get('value'),
-        'NatSource': row_content.get('nat_source', {}).get('value'),
-        'SourceIP': row_content.get('source_ip', {}).get('value'),
-        'SessionStartIP': human_readable_time_from_epoch_time(row_content.get('session_start_time', 0)),
-        'TimeGenerated': human_readable_time_from_epoch_time(row_content.get('time_generated', 0)),
-        'AppCategory': row_content.get('app_category'),
-        'SourceLocation': row_content.get('source_location'),
-        'DestinationLocation': row_content.get('dest_location'),
-        'LogSourceID': row_content.get('log_source_id'),
-        'TotalBytes': row_content.get('bytes_total'),
-        'VsysID': row_content.get('vsys_id'),
-        'ToZone': row_content.get('to_zone'),
-        'URLCategory': row_content.get('url_category', {}).get('value'),
-        'SourcePort': row_content.get('source_port'),
-        'Tunnel': row_content.get('tunnel', {}).get('value'),
-        'SourceDeviceHost': row_content.get('source_device_host'),
-        'DestDeviceHost': row_content.get('dest_device_host')
+        "Action": row_content.get("action", {}).get("value"),
+        "RiskOfApp": row_content.get("risk_of_app"),
+        "NatSourcePort": row_content.get("nat_source_port"),
+        "SessionID": row_content.get("session_id"),
+        "Packets": row_content.get("packets_total"),
+        "CharacteristicOfApp": row_content.get("characteristics_of_app"),
+        "App": row_content.get("app"),
+        "Vsys": row_content.get("vsys"),
+        "IsNat": row_content.get("is_nat"),
+        "LogTime": human_readable_time_from_epoch_time(row_content.get("log_time", 0)),
+        "SubcategoryOfApp": row_content.get("app_sub_category"),
+        "Protocol": row_content.get("protocol", {}).get("value"),
+        "NatDestinationPort": row_content.get("nat_dest_port"),
+        "DestinationIP": row_content.get("dest_ip", {}).get("value"),
+        "NatDestination": row_content.get("nat_dest", {}).get("value"),
+        "RuleMatched": row_content.get("rule_matched"),
+        "DestinationPort": row_content.get("dest_port"),
+        "TotalTimeElapsed": row_content.get("total_time_elapsed"),
+        "LogSourceName": row_content.get("log_source_name"),
+        "Subtype": row_content.get("sub_type", {}).get("value"),
+        "Users": row_content.get("users"),
+        "TunneledApp": row_content.get("tunneled_app"),
+        "IsPhishing": row_content.get("is_phishing"),
+        "SessionEndReason": row_content.get("session_end_reason", {}).get("value"),
+        "NatSource": row_content.get("nat_source", {}).get("value"),
+        "SourceIP": row_content.get("source_ip", {}).get("value"),
+        "SessionStartIP": human_readable_time_from_epoch_time(row_content.get("session_start_time", 0)),
+        "TimeGenerated": human_readable_time_from_epoch_time(row_content.get("time_generated", 0)),
+        "AppCategory": row_content.get("app_category"),
+        "SourceLocation": row_content.get("source_location"),
+        "DestinationLocation": row_content.get("dest_location"),
+        "LogSourceID": row_content.get("log_source_id"),
+        "TotalBytes": row_content.get("bytes_total"),
+        "VsysID": row_content.get("vsys_id"),
+        "ToZone": row_content.get("to_zone"),
+        "URLCategory": row_content.get("url_category", {}).get("value"),
+        "SourcePort": row_content.get("source_port"),
+        "Tunnel": row_content.get("tunnel", {}).get("value"),
+        "SourceDeviceHost": row_content.get("source_device_host"),
+        "DestDeviceHost": row_content.get("dest_device_host"),
     }
 
 
@@ -469,51 +804,51 @@ def threat_context_transformer(row_content: dict) -> dict:
         a dict with context paths and their corresponding value
     """
     return {
-        'SessionID': row_content.get('session_id'),
-        'Action': row_content.get('action', {}).get('value'),
-        'App': row_content.get('app'),
-        'IsNat': row_content.get('is_nat'),
-        'SubcategoryOfApp': row_content.get('app_sub_category'),
-        'PcapID': row_content.get('pcap_id'),
-        'NatDestination': row_content.get('nat_dest', {}).get('value'),
-        'Flags': row_content.get('flags'),
-        'DestinationPort': row_content.get('dest_port'),
-        'ThreatID': row_content.get('threat_id'),
-        'NatSource': row_content.get('nat_source', {}).get('value'),
-        'IsURLDenied': row_content.get('is_url_denied'),
-        'Users': row_content.get('users'),
-        'TimeGenerated': human_readable_time_from_epoch_time(row_content.get('time_generated', 0)),
-        'IsPhishing': row_content.get('is_phishing'),
-        'AppCategory': row_content.get('app_category'),
-        'SourceLocation': row_content.get('source_location'),
-        'DestinationLocation': row_content.get('dest_location'),
-        'ToZone': row_content.get('to_zone'),
-        'RiskOfApp': row_content.get('risk_of_app'),
-        'NatSourcePort': row_content.get('nat_source_port'),
-        'CharacteristicOfApp': row_content.get('characteristics_of_app'),
-        'FromZone': row_content.get('from_zone'),
-        'Vsys': row_content.get('vsys'),
-        'Protocol': row_content.get('protocol', {}).get('value'),
-        'NatDestinationPort': row_content.get('nat_dest_port'),
-        'DestinationIP': row_content.get('dest_ip', {}).get('value'),
-        'SourceIP': row_content.get('source_ip', {}).get('value'),
-        'RuleMatched': row_content.get('rule_matched'),
-        'ThreatCategory': row_content.get('threat_category', {}).get('value'),
-        'ThreatName': row_content.get('threat_name'),
-        'LogSourceName': row_content.get('log_source_name'),
-        'Subtype': row_content.get('sub_type', {}).get('value'),
-        'Direction': row_content.get('direction_of_attack', {}).get('value'),
-        'FileName': row_content.get('file_name'),
-        'VendorSeverity': row_content.get('vendor_severity', {}).get('value'),
-        'LogTime': human_readable_time_from_epoch_time(row_content.get('log_time', 0)),
-        'LogSourceID': row_content.get('log_source_id'),
-        'VsysID': row_content.get('vsys_id'),
-        'URLDomain': row_content.get('url_domain'),
-        'URLCategory': row_content.get('url_category', {}).get('value'),
-        'SourcePort': row_content.get('source_port'),
-        'FileSHA256': row_content.get('file_sha_256'),
-        'SourceDeviceHost': row_content.get('source_device_host'),
-        'DestDeviceHost': row_content.get('dest_device_host')
+        "SessionID": row_content.get("session_id"),
+        "Action": row_content.get("action", {}).get("value"),
+        "App": row_content.get("app"),
+        "IsNat": row_content.get("is_nat"),
+        "SubcategoryOfApp": row_content.get("app_sub_category"),
+        "PcapID": row_content.get("pcap_id"),
+        "NatDestination": row_content.get("nat_dest", {}).get("value"),
+        "Flags": row_content.get("flags"),
+        "DestinationPort": row_content.get("dest_port"),
+        "ThreatID": row_content.get("threat_id"),
+        "NatSource": row_content.get("nat_source", {}).get("value"),
+        "IsURLDenied": row_content.get("is_url_denied"),
+        "Users": row_content.get("users"),
+        "TimeGenerated": human_readable_time_from_epoch_time(row_content.get("time_generated", 0)),
+        "IsPhishing": row_content.get("is_phishing"),
+        "AppCategory": row_content.get("app_category"),
+        "SourceLocation": row_content.get("source_location"),
+        "DestinationLocation": row_content.get("dest_location"),
+        "ToZone": row_content.get("to_zone"),
+        "RiskOfApp": row_content.get("risk_of_app"),
+        "NatSourcePort": row_content.get("nat_source_port"),
+        "CharacteristicOfApp": row_content.get("characteristics_of_app"),
+        "FromZone": row_content.get("from_zone"),
+        "Vsys": row_content.get("vsys"),
+        "Protocol": row_content.get("protocol", {}).get("value"),
+        "NatDestinationPort": row_content.get("nat_dest_port"),
+        "DestinationIP": row_content.get("dest_ip", {}).get("value"),
+        "SourceIP": row_content.get("source_ip", {}).get("value"),
+        "RuleMatched": row_content.get("rule_matched"),
+        "ThreatCategory": row_content.get("threat_category", {}).get("value"),
+        "ThreatName": row_content.get("threat_name"),
+        "LogSourceName": row_content.get("log_source_name"),
+        "Subtype": row_content.get("sub_type", {}).get("value"),
+        "Direction": row_content.get("direction_of_attack", {}).get("value"),
+        "FileName": row_content.get("file_name"),
+        "VendorSeverity": row_content.get("vendor_severity", {}).get("value"),
+        "LogTime": human_readable_time_from_epoch_time(row_content.get("log_time", 0)),
+        "LogSourceID": row_content.get("log_source_id"),
+        "VsysID": row_content.get("vsys_id"),
+        "URLDomain": row_content.get("url_domain"),
+        "URLCategory": row_content.get("url_category", {}).get("value"),
+        "SourcePort": row_content.get("source_port"),
+        "FileSHA256": row_content.get("file_sha_256"),
+        "SourceDeviceHost": row_content.get("source_device_host"),
+        "DestDeviceHost": row_content.get("dest_device_host"),
     }
 
 
@@ -529,46 +864,46 @@ def url_context_transformer(row_content: dict) -> dict:
     """
 
     return {
-        'SessionID': row_content.get('session_id'),
-        'Action': row_content.get('action', {}).get('value'),
-        'App': row_content.get('app'),
-        'PcapID': row_content.get('pcap_id'),
-        'DestinationPort': row_content.get('dest_port'),
-        'AppCategory': row_content.get('app_category'),
-        'AppSubcategory': row_content.get('app_sub_category'),
-        'SourceLocation': row_content.get('source_location'),
-        'DestinationLocation': row_content.get('dest_location'),
-        'ToZone': row_content.get('to_zone'),
-        'FromZone': row_content.get('from_zone'),
-        'Protocol': row_content.get('protocol', {}).get('value'),
-        'DestinationIP': row_content.get('dest_ip', {}).get('value'),
-        'SourceIP': row_content.get('source_ip', {}).get('value'),
-        'RuleMatched': row_content.get('rule_matched'),
-        'ThreatCategory': row_content.get('threat_category', {}).get('value'),
-        'ThreatName': row_content.get('threat_name'),
-        'Subtype': row_content.get('sub_type', {}).get('value'),
-        'LogTime': human_readable_time_from_epoch_time(row_content.get('log_time', 0)),
-        'LogSourceName': row_content.get('log_source_name'),
-        'Denied': row_content.get('is_url_denied'),
-        'Category': row_content.get('url_category', {}).get('value'),
-        'SourcePort': row_content.get('source_port'),
-        'URL': row_content.get('url_domain'),
-        'URI': row_content.get('uri'),
-        'ContentType': row_content.get('content_type'),
-        'HTTPMethod': row_content.get('http_method', {}).get('value'),
-        'Severity': row_content.get('severity'),
-        'UserAgent': row_content.get('user_agent'),
-        'RefererProtocol': row_content.get('referer_protocol', {}).get('value'),
-        'RefererPort': row_content.get('referer_port'),
-        'RefererFQDN': row_content.get('referer_fqdn'),
-        'RefererURL': row_content.get('referer_url_path'),
-        'SrcUser': row_content.get('source_user'),
-        'SrcUserInfo': row_content.get('source_user_info'),
-        'DstUser': row_content.get('dest_user'),
-        'DstUserInfo': row_content.get('dest_user_info'),
-        'TechnologyOfApp': row_content.get('technology_of_app'),
-        'SourceDeviceHost': row_content.get('source_device_host'),
-        'DestDeviceHost': row_content.get('dest_device_host')
+        "SessionID": row_content.get("session_id"),
+        "Action": row_content.get("action", {}).get("value"),
+        "App": row_content.get("app"),
+        "PcapID": row_content.get("pcap_id"),
+        "DestinationPort": row_content.get("dest_port"),
+        "AppCategory": row_content.get("app_category"),
+        "AppSubcategory": row_content.get("app_sub_category"),
+        "SourceLocation": row_content.get("source_location"),
+        "DestinationLocation": row_content.get("dest_location"),
+        "ToZone": row_content.get("to_zone"),
+        "FromZone": row_content.get("from_zone"),
+        "Protocol": row_content.get("protocol", {}).get("value"),
+        "DestinationIP": row_content.get("dest_ip", {}).get("value"),
+        "SourceIP": row_content.get("source_ip", {}).get("value"),
+        "RuleMatched": row_content.get("rule_matched"),
+        "ThreatCategory": row_content.get("threat_category", {}).get("value"),
+        "ThreatName": row_content.get("threat_name"),
+        "Subtype": row_content.get("sub_type", {}).get("value"),
+        "LogTime": human_readable_time_from_epoch_time(row_content.get("log_time", 0)),
+        "LogSourceName": row_content.get("log_source_name"),
+        "Denied": row_content.get("is_url_denied"),
+        "Category": row_content.get("url_category", {}).get("value"),
+        "SourcePort": row_content.get("source_port"),
+        "URL": row_content.get("url_domain"),
+        "URI": row_content.get("uri"),
+        "ContentType": row_content.get("content_type"),
+        "HTTPMethod": row_content.get("http_method", {}).get("value"),
+        "Severity": row_content.get("severity"),
+        "UserAgent": row_content.get("user_agent"),
+        "RefererProtocol": row_content.get("referer_protocol", {}).get("value"),
+        "RefererPort": row_content.get("referer_port"),
+        "RefererFQDN": row_content.get("referer_fqdn"),
+        "RefererURL": row_content.get("referer_url_path"),
+        "SrcUser": row_content.get("source_user"),
+        "SrcUserInfo": row_content.get("source_user_info"),
+        "DstUser": row_content.get("dest_user"),
+        "DstUserInfo": row_content.get("dest_user_info"),
+        "TechnologyOfApp": row_content.get("technology_of_app"),
+        "SourceDeviceHost": row_content.get("source_device_host"),
+        "DestDeviceHost": row_content.get("dest_device_host"),
     }
 
 
@@ -584,87 +919,149 @@ def files_context_transformer(row_content: dict) -> dict:
     """
 
     return {
-        'Action': row_content.get('action', {}).get('value'),
-        'App': row_content.get('app'),
-        'AppCategory': row_content.get('app_category'),
-        'AppSubcategory': row_content.get('app_sub_category'),
-        'CharacteristicOfApp': row_content.get('characteristics_of_app'),
-        'DestinationIP': row_content.get('dest_ip', {}).get('value'),
-        'CloudHostname': row_content.get('cloud_hostname'),
-        'CountOfRepeats': row_content.get('count_of_repeats'),
-        'CustomerID': row_content.get('customer_id'),
-        'DestinationLocation': row_content.get('dest_location'),
-        'DestinationPort': row_content.get('dest_port'),
-        'DirectionOfAttack': row_content.get('direction_of_attack', {}).get('value'),
-        'FileID': row_content.get('file_id'),
-        'FileName': row_content.get('file_name'),
-        'FileType': row_content.get('file_type'),
-        'Flags': row_content.get('flags'),
-        'FromZone': row_content.get('from_zone'),
-        'Http2Connection': row_content.get('http2_connection'),
-        'InboundIf': row_content.get('inbound_if', {}).get('value'),
-        'IngestionTime': human_readable_time_from_epoch_time(row_content.get('ingestion_time', 0)),
-        'IsCaptivePortal': row_content.get('is_captive_portal'),
-        'IsClientToServer': row_content.get('is_client_to_server'),
-        'IsContainer': row_content.get('is_container'),
-        'IsDecryptMirror': row_content.get('is_decrypt_mirror'),
-        'IsDupLog': row_content.get('is_dup_log'),
-        'IsExported': row_content.get('is_exported'),
-        'IsForwarded': row_content.get('is_forwarded'),
-        'IsMptcpOn': row_content.get('is_mptcp_on'),
-        'IsNat': row_content.get('is_nat'),
-        'IsNonStdDestPort': row_content.get('is_non_std_dest_port'),
-        'IsPacketCapture': row_content.get('is_packet_capture'),
-        'IsPhishing': row_content.get('is_phishing'),
-        'IsPrismaBranch': row_content.get('is_prisma_branch'),
-        'IsPrismaMobile': row_content.get('is_prisma_mobile'),
-        'IsProxy': row_content.get('is_proxy'),
-        'IsReconExcluded': row_content.get('is_recon_excluded'),
-        'IsSaasApp': row_content.get('is_saas_app'),
-        'IsServerToClient': row_content.get('is_server_to_client'),
-        'IsSymReturn': row_content.get('is_sym_return'),
-        'IsTransaction': row_content.get('is_transaction'),
-        'IsTunnelInspected': row_content.get('is_tunnel_inspected'),
-        'IsUrlDenied': row_content.get('is_url_denied'),
-        'LogSet': row_content.get('log_set'),
-        'LogSource': row_content.get('log_source'),
-        'LogSourceID': row_content.get('log_source_id'),
-        'LogSourceName': row_content.get('log_source_name'),
-        'LogTime': human_readable_time_from_epoch_time(row_content.get('log_time', 0)),
-        'LogType': row_content.get('log_type', {}).get('value'),
-        'NatDestination': row_content.get('nat_dest', {}).get('value'),
-        'NatSource': row_content.get('nat_source', {}).get('value'),
-        'NatDestinationPort': row_content.get('nat_dest_port'),
-        'NatSourcePort': row_content.get('nat_source_port'),
-        'OutboundIf': row_content.get('outbound_if', {}).get('value'),
-        'PcapID': row_content.get('pcap_id'),
-        'Protocol': row_content.get('protocol', {}).get('value'),
-        'RecordSize': row_content.get('record_size'),
-        'ReportID': row_content.get('report_id'),
-        'RiskOfApp': row_content.get('risk_of_app'),
-        'RuleMatched': row_content.get('rule_matched'),
-        'RuleMatchedUuid': row_content.get('rule_matched_uuid'),
-        'SanctionedStateOfApp': row_content.get('sanctioned_state_of_app'),
-        'SequenceNo': row_content.get('sequence_no'),
-        'SessionID': row_content.get('session_id'),
-        'Severity': row_content.get('severity'),
-        'SourceIP': row_content.get('source_ip', {}).get('value'),
-        'Subtype': row_content.get('sub_type', {}).get('value'),
-        'TechnologyOfApp': row_content.get('technology_of_app'),
-        'TimeGenerated': human_readable_time_from_epoch_time(row_content.get('time_generated', 0)),
-        'ToZone': row_content.get('to_zone'),
-        'Tunnel': row_content.get('tunnel', {}).get('value'),
-        'TunneledApp': row_content.get('tunneled_app'),
-        'URLCategory': row_content.get('url_category', {}).get('value'),
-        'FileSHA256': row_content.get('file_sha_256'),
-        'Vsys': row_content.get('vsys'),
-        'VsysID': row_content.get('vsys_id'),
-        'VendorName': row_content.get('vendor_name'),
-        'VendorSeverity': row_content.get('vendor_severity', {}).get('value')
+        "Action": row_content.get("action", {}).get("value"),
+        "App": row_content.get("app"),
+        "AppCategory": row_content.get("app_category"),
+        "AppSubcategory": row_content.get("app_sub_category"),
+        "CharacteristicOfApp": row_content.get("characteristics_of_app"),
+        "DestinationIP": row_content.get("dest_ip", {}).get("value"),
+        "CloudHostname": row_content.get("cloud_hostname"),
+        "CountOfRepeats": row_content.get("count_of_repeats"),
+        "CustomerID": row_content.get("customer_id"),
+        "DestinationLocation": row_content.get("dest_location"),
+        "DestinationPort": row_content.get("dest_port"),
+        "DirectionOfAttack": row_content.get("direction_of_attack", {}).get("value"),
+        "FileID": row_content.get("file_id"),
+        "FileName": row_content.get("file_name"),
+        "FileType": row_content.get("file_type"),
+        "Flags": row_content.get("flags"),
+        "FromZone": row_content.get("from_zone"),
+        "Http2Connection": row_content.get("http2_connection"),
+        "InboundIf": row_content.get("inbound_if", {}).get("value"),
+        "IngestionTime": human_readable_time_from_epoch_time(row_content.get("ingestion_time", 0)),
+        "IsCaptivePortal": row_content.get("is_captive_portal"),
+        "IsClientToServer": row_content.get("is_client_to_server"),
+        "IsContainer": row_content.get("is_container"),
+        "IsDecryptMirror": row_content.get("is_decrypt_mirror"),
+        "IsDupLog": row_content.get("is_dup_log"),
+        "IsExported": row_content.get("is_exported"),
+        "IsForwarded": row_content.get("is_forwarded"),
+        "IsMptcpOn": row_content.get("is_mptcp_on"),
+        "IsNat": row_content.get("is_nat"),
+        "IsNonStdDestPort": row_content.get("is_non_std_dest_port"),
+        "IsPacketCapture": row_content.get("is_packet_capture"),
+        "IsPhishing": row_content.get("is_phishing"),
+        "IsPrismaBranch": row_content.get("is_prisma_branch"),
+        "IsPrismaMobile": row_content.get("is_prisma_mobile"),
+        "IsProxy": row_content.get("is_proxy"),
+        "IsReconExcluded": row_content.get("is_recon_excluded"),
+        "IsSaasApp": row_content.get("is_saas_app"),
+        "IsServerToClient": row_content.get("is_server_to_client"),
+        "IsSymReturn": row_content.get("is_sym_return"),
+        "IsTransaction": row_content.get("is_transaction"),
+        "IsTunnelInspected": row_content.get("is_tunnel_inspected"),
+        "IsUrlDenied": row_content.get("is_url_denied"),
+        "LogSet": row_content.get("log_set"),
+        "LogSource": row_content.get("log_source"),
+        "LogSourceID": row_content.get("log_source_id"),
+        "LogSourceName": row_content.get("log_source_name"),
+        "LogTime": human_readable_time_from_epoch_time(row_content.get("log_time", 0)),
+        "LogType": row_content.get("log_type", {}).get("value"),
+        "NatDestination": row_content.get("nat_dest", {}).get("value"),
+        "NatSource": row_content.get("nat_source", {}).get("value"),
+        "NatDestinationPort": row_content.get("nat_dest_port"),
+        "NatSourcePort": row_content.get("nat_source_port"),
+        "OutboundIf": row_content.get("outbound_if", {}).get("value"),
+        "PcapID": row_content.get("pcap_id"),
+        "Protocol": row_content.get("protocol", {}).get("value"),
+        "RecordSize": row_content.get("record_size"),
+        "ReportID": row_content.get("report_id"),
+        "RiskOfApp": row_content.get("risk_of_app"),
+        "RuleMatched": row_content.get("rule_matched"),
+        "RuleMatchedUuid": row_content.get("rule_matched_uuid"),
+        "SanctionedStateOfApp": row_content.get("sanctioned_state_of_app"),
+        "SequenceNo": row_content.get("sequence_no"),
+        "SessionID": row_content.get("session_id"),
+        "Severity": row_content.get("severity"),
+        "SourceIP": row_content.get("source_ip", {}).get("value"),
+        "Subtype": row_content.get("sub_type", {}).get("value"),
+        "TechnologyOfApp": row_content.get("technology_of_app"),
+        "TimeGenerated": human_readable_time_from_epoch_time(row_content.get("time_generated", 0)),
+        "ToZone": row_content.get("to_zone"),
+        "Tunnel": row_content.get("tunnel", {}).get("value"),
+        "TunneledApp": row_content.get("tunneled_app"),
+        "URLCategory": row_content.get("url_category", {}).get("value"),
+        "FileSHA256": row_content.get("file_sha_256"),
+        "Vsys": row_content.get("vsys"),
+        "VsysID": row_content.get("vsys_id"),
+        "VendorName": row_content.get("vendor_name"),
+        "VendorSeverity": row_content.get("vendor_severity", {}).get("value"),
     }
 
 
-def records_to_human_readable_output(fields: str, table_name: str, results: list) -> str:
+def gp_context_transformer(row_content: dict) -> dict:
+    """
+    This function retrieves data from a row of raw data into context path locations.
+    Documentation: https://docs.paloaltonetworks.com/strata-logging-service/log-reference/network-logs/network-globalprotect-log
+
+    Args:
+        row_content: a dict representing raw data of a row
+
+    Returns:
+        a dict with context paths and their corresponding value
+    """
+    return {
+        "AttemptedGateways": row_content.get("attempted_gateways"),
+        "AuthMethod": row_content.get("auth_method"),
+        "ConnectionErrorID": row_content.get("connection_error", {}).get("id"),
+        "ConnectionErrorValue": row_content.get("connection_error", {}).get("value"),
+        "CountOfRepeats": row_content.get("count_of_repeats"),
+        "CustomerID": row_content.get("customer_id"),
+        "EndpointDeviceName": row_content.get("endpoint_device_name"),
+        "EndpointGPVersion": row_content.get("endpoint_gp_version"),
+        "EndpointOSType": row_content.get("endpoint_os_type"),
+        "EndpointOSVersion": row_content.get("endpoint_os_version"),
+        "EventID": row_content.get("event_id", {}).get("value"),
+        "Gateway": row_content.get("gateway"),
+        "GatewayPriority": row_content.get("gateway_priority", {}).get("value"),
+        "GatewaySelectionType": row_content.get("gateway_selection_type"),
+        "HostID": row_content.get("host_id"),
+        "IsDuplicateLog": row_content.get("is_dup_log"),
+        "IsExported": row_content.get("is_exported"),
+        "IsForwarded": row_content.get("is_forwarded"),
+        "IsPrismaBranch": row_content.get("is_prisma_branch"),
+        "IsPrismaMobile": row_content.get("is_prisma_mobile"),
+        "LogSource": row_content.get("log_source"),
+        "LogSourceID": row_content.get("log_source_id"),
+        "LogSourceName": row_content.get("log_source_name"),
+        "LogTime": human_readable_time_from_epoch_time(row_content.get("log_time", 0)),
+        "LogType": row_content.get("log_type", {}).get("value"),
+        "LoginDuration": row_content.get("login_duration"),
+        "Opaque": row_content.get("opaque"),
+        "PlatformType": row_content.get("platform_type"),
+        "Portal": row_content.get("portal"),
+        "PrivateIPv4": row_content.get("private_ip", {}).get("value"),
+        "PrivateIPv6": row_content.get("private_ipv6", {}).get("value"),
+        "ProjectName": row_content.get("project_name"),
+        "PublicIPv4": row_content.get("public_ip", {}).get("value"),
+        "PublicIPv6": row_content.get("public_ipv6", {}).get("value"),
+        "QuarantineReason": row_content.get("quarantine_reason"),
+        "SequenceNo": row_content.get("sequence_no"),
+        "SourceRegion": row_content.get("source_region"),
+        "SourceUser": row_content.get("source_user"),
+        "SourceUserDomain": row_content.get("source_user_info", {}).get("domain"),
+        "SourceUserName": row_content.get("source_user_info", {}).get("name"),
+        "SSLResponseTime": row_content.get("ssl_response_time"),
+        "Stage": row_content.get("stage"),
+        "EventStatus": row_content.get("status", {}).get("value"),
+        "Subtype": row_content.get("sub_type", {}).get("value"),
+        "TimeGenerated": human_readable_time_from_epoch_time(row_content.get("time_generated", 0)),
+        "TunnelType": row_content.get("tunnel"),
+        "VendorName": row_content.get("vendor_name"),
+    }
+
+
+def records_to_human_readable_output(fields: str, table_name: str, results: list, is_gp_logs_query: bool = False) -> str:
     """
     This function gets all relevant data for the human readable output of a specific table.
     By design if the user queries all fields of the table (i.e. enters '*' in the query) than the outputs
@@ -681,19 +1078,35 @@ def records_to_human_readable_output(fields: str, table_name: str, results: list
     """
     filtered_results: list = []
 
-    if fields == '*':
+    if fields == "*":
         for result in results:
             filtered_result = {
-                'Source Address': result.get('source_ip', {}).get('value'),
-                'Destination Address': result.get('dest_ip', {}).get('value'),
-                'Application': result.get('app'),
-                'Action': result.get('action', {}).get('value'),
-                'RuleMatched': result.get('rule_matched'),
-                'TimeGenerated': human_readable_time_from_epoch_time(result.get('time_generated')),
-                'FileID': result.get('file_id'),
-                'FileName': result.get('file_name'),
-                'FileType': result.get('file_type')
+                "Source Address": result.get("source_ip", {}).get("value"),
+                "Destination Address": result.get("dest_ip", {}).get("value"),
+                "Application": result.get("app"),
+                "Action": result.get("action", {}).get("value"),
+                "RuleMatched": result.get("rule_matched"),
+                "TimeGenerated": human_readable_time_from_epoch_time(result.get("time_generated")),
+                "FileID": result.get("file_id"),
+                "FileName": result.get("file_name"),
+                "FileType": result.get("file_type"),
             }
+            if is_gp_logs_query:
+                filtered_result.update(
+                    {
+                        "Public IP": result.get("public_ip", {}).get("value"),
+                        "Public IPv6": result.get("public_ipv6", {}).get("value"),
+                        "Private IP": result.get("private_ip", {}).get("value"),
+                        "Private IPv6": result.get("private_ipv6", {}).get("value"),
+                        "Stage": result.get("stage"),
+                        "Status": result.get("status", {}).get("value"),
+                        "Connection Error": result.get("connection_error").get("value"),
+                        "Source User": result.get("source_user"),
+                        "Source Region": result.get("source_region"),
+                        "Gateway": result.get("gateway"),
+                        "Portal": result.get("portal"),
+                    }
+                )
             filtered_results.append(filtered_result)
     else:
         for result in results:
@@ -703,7 +1116,7 @@ def records_to_human_readable_output(fields: str, table_name: str, results: list
                 filtered_result.update(parsed_tree)
             filtered_results.append(filtered_result)
 
-    return tableToMarkdown(f'Logs {table_name} table', filtered_results, removeNull=True)
+    return tableToMarkdown(f"Logs {table_name} table", filtered_results, removeNull=True)
 
 
 def parse_tree_by_root_to_leaf_paths(root: str, body) -> dict:
@@ -734,7 +1147,7 @@ def parse_tree_by_root_to_leaf_paths(root: str, body) -> dict:
         if isinstance(body, dict):
             for key, value in body.items():
                 # for each node we append a tuple of it's body and the path from the root to it
-                help_stack.append((root_to_node_path + '.' + key, value))
+                help_stack.append((root_to_node_path + "." + key, value))
         elif isinstance(body, list):
             for element in body:
                 help_stack.append((root_to_node_path, element))
@@ -754,81 +1167,90 @@ def build_where_clause(args: dict) -> str:
         A string represents the where part of a SQL query
     """
     args_dict = {
-        'source_ip': 'source_ip.value',
-        'dest_ip': 'dest_ip.value',
-        'rule_matched': 'rule_matched',
-        'from_zone': 'from_zone',
-        'to_zone': 'to_zone',
-        'source_port': 'source_port',
-        'dest_port': 'dest_port',
-        'action': 'action.value',
-        'file_sha_256': 'file_sha_256',
-        'file_name': 'file_name',
-        'app': 'app',
-        'app_category': 'app_category',
-        'dest_device_port': 'dest_device_port',
-        'dest_edl': 'dest_edl',
-        'dest_dynamic_address_group': 'dest_dynamic_address_group',
-        'dest_location': 'dest_location',
-        'dest_user': 'dest_user',
-        'file_type': 'file_type',
-        'is_server_to_client': 'is_server_to_client',
-        'is_url_denied': 'is_url_denied',
-        'log_type': 'log_type',
-        'nat_dest': 'nat_dest',
-        'nat_dest_port': 'nat_dest_port',
-        'nat_source': 'nat_source',
-        'nat_source_port': 'nat_source_port',
-        'rule_matched_uuid': 'rule_matched_uuid',
-        'severity': 'severity',
-        'source_device_host': 'source_device_host',
-        'source_edl': 'source_edl',
-        'source_dynamic_address_group': 'source_dynamic_address_group',
-        'source_location': 'source_location',
-        'source_user': 'source_user',
-        'sub_type': 'sub_type.value',
-        'time_generated': 'time_generated',
-        'url_category': 'url_category',
-        'url_domain': 'url_domain'
+        "source_ip": "source_ip.value",
+        "dest_ip": "dest_ip.value",
+        "rule_matched": "rule_matched",
+        "from_zone": "from_zone",
+        "to_zone": "to_zone",
+        "source_port": "source_port",
+        "dest_port": "dest_port",
+        "action": "action.value",
+        "file_sha_256": "file_sha_256",
+        "file_name": "file_name",
+        "app": "app",
+        "app_category": "app_category",
+        "dest_device_port": "dest_device_port",
+        "dest_edl": "dest_edl",
+        "dest_dynamic_address_group": "dest_dynamic_address_group",
+        "dest_location": "dest_location",
+        "dest_user": "dest_user",
+        "file_type": "file_type",
+        "is_server_to_client": "is_server_to_client",
+        "is_url_denied": "is_url_denied",
+        "log_type": "log_type",
+        "nat_dest": "nat_dest",
+        "nat_dest_port": "nat_dest_port",
+        "nat_source": "nat_source",
+        "nat_source_port": "nat_source_port",
+        "rule_matched_uuid": "rule_matched_uuid",
+        "severity": "severity",
+        "source_device_host": "source_device_host",
+        "source_edl": "source_edl",
+        "source_dynamic_address_group": "source_dynamic_address_group",
+        "source_location": "source_location",
+        "source_user": "source_user",
+        "sub_type": "sub_type.value",
+        "time_generated": "time_generated",
+        "url_category": "url_category",
+        "url_domain": "url_domain",
+        "event_name": "event_id.value",
+        "gateway": "gateway",
+        "private_ipv4": "private_ip.value",
+        "private_ipv6": "private_ipv6.value",
+        "public_ipv4": "public_ip.value",
+        "public_ipv6": "public_ipv6.value",
+        "event_status": "status.value",
+        "portal": "portal",
+        "stage": "stage",
     }
-    if args.get('ip') and (args.get('source_ip') or args.get('dest_ip')):
+    if args.get("ip") and (args.get("source_ip") or args.get("dest_ip")):
         raise DemistoException('Error: "ip" argument cannot appear with either "source_ip" nor "dest_ip"')
 
-    if args.get('port') and (args.get('source_port') or args.get('dest_port')):
+    if args.get("port") and (args.get("source_port") or args.get("dest_port")):
         raise DemistoException('Error: "port" argument cannot appear with either "source_port" nor "dest_port"')
 
-    non_string_keys = {'dest_port', 'source_port'}
-    if 'query' in args:
+    non_string_keys = {"dest_port", "source_port"}
+    if "query" in args:
         # if query arg is supplied than we just need to parse it and only it
-        return args['query'].strip()
+        return args["query"].strip()
 
-    where_clause = ''
-    if args.get('ip'):
-        ips = argToList(args.pop('ip'))
+    where_clause = ""
+    if args.get("ip"):
+        ips = argToList(args.pop("ip"))
         # Creating a query for ip argument using source ip and dest ip
-        where_clause += '(' + ' OR '.join(f'source_ip.value = "{ip}" OR dest_ip.value = "{ip}"' for ip in ips) + ')'
-        if any(args.get(key) for key in args_dict) or args.get('port') or args.get('url'):
-            where_clause += ' AND '
+        where_clause += "(" + " OR ".join(f'source_ip.value = "{ip}" OR dest_ip.value = "{ip}"' for ip in ips) + ")"
+        if any(args.get(key) for key in args_dict) or args.get("port") or args.get("url"):
+            where_clause += " AND "
 
-    if args.get('port'):
-        ports = argToList(args.pop('port'))
+    if args.get("port"):
+        ports = argToList(args.pop("port"))
         # Creating a query for port argument using source port and dest port
-        where_clause += '(' + ' OR '.join(f'source_port = {port} OR dest_port = {port}' for port in ports) + ')'
+        where_clause += "(" + " OR ".join(f"source_port = {port} OR dest_port = {port}" for port in ports) + ")"
         if any(args.get(key) for key in args_dict):
-            where_clause += ' AND '
+            where_clause += " AND "
 
-    if args.get('url'):
-        urls = argToList(args.pop('url'))
+    if args.get("url"):
+        urls = argToList(args.pop("url"))
         # Creating a query for url argument using uri and referer
-        where_clause += '(' + ' OR '.join(f'uri LIKE "%{url}%" OR referer LIKE "%{url}%"' for url in urls) + ')'
+        where_clause += "(" + " OR ".join(f'uri LIKE "%{url}%" OR referer LIKE "%{url}%"' for url in urls) + ")"
         if any(args.get(key) for key in args_dict):
-            where_clause += ' AND '
+            where_clause += " AND "
 
-    if args.get('rule'):
-        rules_list = argToList(args.pop('rule'))
-        where_clause += '(' + ' OR '.join(f'rule_matched = "{rule}"' for rule in rules_list) + ')'
+    if args.get("rule"):
+        rules_list = argToList(args.pop("rule"))
+        where_clause += "(" + " OR ".join(f'rule_matched = "{rule}"' for rule in rules_list) + ")"
         if any(args.get(key) for key in args_dict):
-            where_clause += ' AND '
+            where_clause += " AND "
 
     # We want to add only keys that are part of the query
     string_query_fields = {key: value for key, value in args.items() if key in args_dict and key not in non_string_keys}
@@ -836,19 +1258,22 @@ def build_where_clause(args: dict) -> str:
     for key, values in string_query_fields.items():
         string_values_list: list = argToList(values)
         field = args_dict[key]
-        or_statements.append(' OR '.join([f'{field} = "{value}"' for value in string_values_list]))
+        or_statements.append(" OR ".join([f'{field} = "{value}"' for value in string_values_list]))
     # ports are digested as ints and cannot be sent as strings
     non_string_query_fields = {key: value for key, value in args.items() if key in non_string_keys}
     for key, values in non_string_query_fields.items():
         non_string_values_list: list = argToList(values)
         field = args_dict[key]
-        or_statements.append(' OR '.join([f'{field} = {value}' for value in non_string_values_list]))
-    where_clause += ' AND '.join([f'({or_statement})' for or_statement in or_statements if or_statement])
+        or_statements.append(" OR ".join([f"{field} = {value}" for value in non_string_values_list]))
+    where_clause += " AND ".join([f"({or_statement})" for or_statement in or_statements if or_statement])
     return where_clause
 
 
 def get_encrypted(auth_id: str, key: str) -> str:
-    """
+    """LEGACY OProxy authentication (DEPRECATED).
+
+    Encrypts the auth_id for the legacy OProxy token request. This is part of the legacy OProxy auth
+    path, DEPRECATED in favor of the SCM (Cortex GW) auth.
 
     Args:
         auth_id (str): auth_id from oproxy
@@ -883,16 +1308,18 @@ def get_encrypted(auth_id: str, key: str) -> str:
         return base64.b64encode(nonce + ct)
 
     now = int(time.time())
-    return encrypt(f'{now}:{auth_id}', key).decode('utf-8')
+    return encrypt(f"{now}:{auth_id}", key).decode("utf-8")
 
 
-def prepare_fetch_incidents_query(fetch_timestamp: str,
-                                  fetch_severity: list,
-                                  fetch_table: str,
-                                  fetch_subtype: list,
-                                  fetch_fields: str,
-                                  fetch_limit: str,
-                                  fetch_filter: str = '') -> str:
+def prepare_fetch_incidents_query(
+    fetch_timestamp: str,
+    fetch_severity: list,
+    fetch_table: str,
+    fetch_subtype: list,
+    fetch_fields: str,
+    fetch_limit: str,
+    fetch_filter: str = "",
+) -> str:
     """
     Prepares the SQL query for fetch incidents command
     Args:
@@ -907,77 +1334,182 @@ def prepare_fetch_incidents_query(fetch_timestamp: str,
     Returns:
         SQL query that matches the arguments
     """
-    if fetch_filter and (fetch_subtype or fetch_severity):
-        raise DemistoException('Fetch Filter parameter cannot be used with Subtype/Severity parameters.')
-    query = f'SELECT {fetch_fields} FROM `{fetch_table}` '  # guardrails-disable-line # noqa: S608
-    time_filter = 'event_time' if 'log' in fetch_table else 'time_generated'
-    query += f'WHERE {time_filter} Between TIMESTAMP("{fetch_timestamp}") ' \
-             f'AND CURRENT_TIMESTAMP'
+    # "all" adds no condition to the query, so it does not conflict with a fetch filter.
+    has_subtype_restriction = bool(fetch_subtype) and "all" not in fetch_subtype
+    has_severity_restriction = bool(fetch_severity) and "all" not in fetch_severity
+    if fetch_filter and (has_subtype_restriction or has_severity_restriction):
+        raise DemistoException("Fetch Filter parameter cannot be used with Subtype/Severity parameters.")
+    query = f"SELECT {fetch_fields} FROM `{fetch_table}` "  # guardrails-disable-line # noqa: S608
+    time_filter = "event_time" if "log" in fetch_table else "time_generated"
+    query += f'WHERE {time_filter} Between TIMESTAMP("{fetch_timestamp}") AND CURRENT_TIMESTAMP'
     if fetch_filter:
-        query += f' AND {fetch_filter}'
-    if fetch_subtype and 'all' not in fetch_subtype:
+        query += f" AND {fetch_filter}"
+    if has_subtype_restriction:
         sub_types = [f'sub_type.value = "{sub_type}"' for sub_type in fetch_subtype]
         query += f' AND ({" OR ".join(sub_types)})'
-    if fetch_severity and 'all' not in fetch_severity:
+    if has_severity_restriction:
         severities = [f'vendor_severity.value = "{severity}"' for severity in fetch_severity]
         query += f' AND ({" OR ".join(severities)})'
-    query += f' ORDER BY {time_filter} ASC LIMIT {fetch_limit}'
+    query += f" ORDER BY {time_filter} ASC LIMIT {fetch_limit}"
     return query
 
 
 def convert_log_to_incident(log: dict, fetch_table: str) -> dict:
-    time_filter = 'event_time' if 'log' in fetch_table else 'time_generated'
+    time_filter = "event_time" if "log" in fetch_table else "time_generated"
     time_generated = log.get(time_filter, 0)
     occurred = human_readable_time_from_epoch_time(time_generated, utc_time=True)
-    incident = {
-        'name': FETCH_TABLE_HR_NAME[fetch_table],
-        'rawJSON': json.dumps(log, ensure_ascii=False),
-        'occurred': occurred
-    }
+    incident = {"name": FETCH_TABLE_HR_NAME[fetch_table], "rawJSON": json.dumps(log, ensure_ascii=False), "occurred": occurred}
     return incident
 
 
-''' COMMANDS FUNCTIONS '''
+def is_fedramp_tenant() -> bool:
+    """
+    Retrieves the tenant URL from the license custom field to determine if it is a FedRAMP or standard tenant.
+
+    Returns:
+        bool: True if FedRAMP tenant, False otherwise.
+    """
+    # Try to get from integration context
+    integration_context = demisto.getIntegrationContext()
+    is_fedramp = integration_context.get(IS_FEDRAMP_CONST)
+    if is_fedramp is not None:
+        demisto.debug(f"Found FedRAMP status {is_fedramp=} in integration context.")
+        return is_fedramp
+
+    # If not in integration context, get tenant URL
+    demisto.debug("FedRAMP status not in integration context. Getting tenant URL from license custom field.")
+    url = str(demisto.getLicenseCustomField("Http_Connector.url"))
+    demisto.debug(f"Got tenant {url=} from license custom field.")
+
+    # Ensure 'https' scheme in tenant URL, otherwise URL may not be parsed correctly
+    if not url.startswith("https"):
+        demisto.debug("Prepending 'https' scheme to tenant URL.")
+        url = f"https://{url}"
+
+    # Extract hostname from tenant URL
+    demisto.debug("Extracting hostname from parsed tenant URL.")
+    parsed_url = urlparse(url)
+    hostname = parsed_url.hostname
+    demisto.debug(f"Extracted {hostname=} from parsed tenant URL.")
+
+    is_fedramp = isinstance(hostname, str) and hostname.endswith(FEDRAMP_HOSTNAME_SUFFIX)
+
+    # Set in integration context for use next time
+    integration_context[IS_FEDRAMP_CONST] = is_fedramp
+    demisto.debug(f"Setting tenant FedRAMP status {is_fedramp=} in integration context.")
+    demisto.setIntegrationContext(integration_context)
+    return is_fedramp
+
+
+def extract_client_args(configured_registration_id_and_url: str, auth_mode: str) -> tuple[str, str]:
+    """
+    Extracts the API Client arguments, including token retrieval URL and the registration ID.
+
+    If the URL is provided in the "Registration ID" parameter, it extracts the registration ID and URL directly.
+    Otherwise, it infers the token retrieval URL based on the tenant FedRAMP status.
+
+    Args:
+        configured_registration_id_and_url (str): The "Registration ID" parameter; may contain a URL joined with an "@" symbol.
+        auth_mode (str): The authentication mode in use, inferred from credentials.
+
+    Returns:
+        tuple[str, str]: The token retrieval URL, registration ID
+    """
+    registration_id_and_url = configured_registration_id_and_url.split("@")
+    registration_id = registration_id_and_url[0]
+
+    # If directly supplied, take configured token URL
+    if len(registration_id_and_url) == 2:
+        demisto.debug("Getting token retrieval URL from configured Registration ID.")
+        token_retrieval_url = registration_id_and_url[1]
+        demisto.debug(f"{token_retrieval_url=}")
+        return token_retrieval_url, registration_id
+
+    # Else, infer token URL based on tenant FedRAMP status
+    is_fr = is_fedramp_tenant()
+    demisto.debug(f"Working on tenant with {is_fr=}.")
+
+    if is_fr:
+        demisto.debug("Getting inferred token retrieval URL for FedRAMP tenant.")
+        token_retrieval_url = LEGACY_FEDRAMP_TOKEN_URL if auth_mode == AUTH_MODE_OPROXY else SCM_GATEWAY_FEDERAL_URL
+
+    else:
+        demisto.debug("Getting inferred token retrieval URL for standard tenant.")
+        token_retrieval_url = LEGACY_COMMERCIAL_TOKEN_URL if auth_mode == AUTH_MODE_OPROXY else SCM_GATEWAY_URL
+
+    demisto.debug(f"{token_retrieval_url=}")
+    return token_retrieval_url, registration_id
+
+
+""" COMMANDS FUNCTIONS """
 
 
 def test_module(client: Client, fetch_table, fetch_fields, is_fetch, fetch_query, fetch_subtype, fetch_severity, first_fetch):
     if is_fetch:
         fetch_time, _ = parse_date_range(first_fetch)
         fetch_time = fetch_time.replace(microsecond=0)
-        query = prepare_fetch_incidents_query(fetch_time, fetch_severity, fetch_table,
-                                              fetch_subtype, fetch_fields, "1", fetch_query)
+        query = prepare_fetch_incidents_query(
+            fetch_time, fetch_severity, fetch_table, fetch_subtype, fetch_fields, "1", fetch_query
+        )
     else:
         # fetch params not to be tested (won't be used)
-        fetch_fields = '*'
-        fetch_table = 'firewall.traffic'
-        query = f'SELECT {fetch_fields} FROM `{fetch_table}` limit 1'  # noqa: S608
+        query = build_connectivity_test_query()
     client.query_loggings(query)
-    return_outputs('ok')
+    return_outputs("ok")
 
 
 def query_logs_command(args: dict, client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
     """
     Return the result of querying the Logging service
     """
-    query = args.get('query', '')
-    limit = args.get('limit', '')
-    transform_results = argToBoolean(args.get('transform_results', 'true'))
+    query = args.get("query", "")
+    limit = args.get("limit", "")
+    transform_results = argToBoolean(args.get("transform_results", "true"))
 
-    if not args.get('page') and 'limit' not in query.lower():
-        query += f' LIMIT {limit}'
+    if not args.get("page") and "limit" not in query.lower():
+        query += f" LIMIT {limit}"
 
-    records, raw_results = client.query_loggings(query, page_number=args.get('page'), page_size=args.get('page_size'))
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
 
     table_name = get_table_name(query)
     output_results = records
     if transform_results:
         output_results = [
-            system_log_context_transformer(record) if 'log.system' in query else common_context_transformer(record) for
-            record in records]
-    human_readable = tableToMarkdown('Logs ' + table_name + ' table', output_results, removeNull=True)
-    ec = {
-        'CDL.Logging': output_results
-    }
+            system_log_context_transformer(record) if "log.system" in query else common_context_transformer(record)
+            for record in records
+        ]
+    human_readable = tableToMarkdown("Logs " + table_name + " table", output_results, removeNull=True)
+    ec = {"CDL.Logging": output_results}
+    return human_readable, ec, raw_results
+
+
+def query_logs_sls_command(args: dict, client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
+    """
+    Table name is stored in log_type attribute of the records
+    Args:
+        query: Query string, i.e SELECT * FROM firewall.threat LIMIT 1
+
+    Returns:
+        the result of querying the Logging service
+    """
+    query = args.get("query", "")
+    limit = args.get("limit", "")
+    transform_results = argToBoolean(args.get("transform_results", "true"))
+
+    if not args.get("page") and "limit" not in query.lower():
+        query += f" LIMIT {limit}"
+
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
+
+    table_name = get_table_name(query)
+    output_results = records
+    if transform_results:
+        output_results = [
+            system_log_context_transformer(record) if "log.system" in query else common_context_transformer(record)
+            for record in records
+        ]
+    human_readable = tableToMarkdown("Logs " + table_name + " table", output_results, removeNull=True)
+    ec = {"SLS.Logging": output_results}
     return human_readable, ec, raw_results
 
 
@@ -990,7 +1522,7 @@ def get_table_name(query: str) -> str:
     Returns:
         The query's table name
     """
-    find_table_name_from_query = r'(FROM `)(\w+.\w+)(`)'
+    find_table_name_from_query = r"(FROM `)(\w+.\w+)(`)"
     search_result = re.search(find_table_name_from_query, query)
     if search_result:
         return search_result.group(2)
@@ -1001,30 +1533,50 @@ def get_critical_logs_command(args: dict, client: Client) -> tuple[str, dict[str
     """
     Queries Cortex Logging according to a pre-set query
     """
-    logs_amount = args.get('limit')
+    logs_amount = args.get("limit")
     query_start_time, query_end_time = query_timestamp(args)
     query = 'SELECT * FROM `firewall.threat` WHERE severity = "Critical" '  # guardrails-disable-line
-    query += f'AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND ' \
-             f'TIMESTAMP("{query_end_time}")'
+    query += f'AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}")'
 
-    if not args.get('page'):
-        query += f' LIMIT {logs_amount}'
+    if not args.get("page"):
+        query += f" LIMIT {logs_amount}"
 
-    records, raw_results = client.query_loggings(query, page_number=args.get('page'), page_size=args.get('page_size'))
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
 
     transformed_results = [threat_context_transformer(record) for record in records]
 
-    human_readable = tableToMarkdown('Logs threat table', transformed_results, removeNull=True)
-    ec = {
-        'CDL.Logging.Threat': transformed_results
-    }
+    human_readable = tableToMarkdown("Logs threat table", transformed_results, removeNull=True)
+    ec = {"CDL.Logging.Threat": transformed_results}
+    return human_readable, ec, raw_results
+
+
+def get_critical_logs_sls_command(args: dict, client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
+    """
+    Queries Cortex Logging according to a pre-set query
+    Returns:
+        The query's threat log critical events
+    """
+    logs_amount = args.get("limit")
+    query_start_time, query_end_time = query_timestamp(args)
+    query = 'SELECT * FROM `firewall.threat` WHERE severity = "Critical" '  # guardrails-disable-line
+    query += f'AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}")'
+
+    if not args.get("page"):
+        query += f" LIMIT {logs_amount}"
+
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
+
+    transformed_results = [threat_context_transformer(record) for record in records]
+
+    human_readable = tableToMarkdown("Logs threat table", transformed_results, removeNull=True)
+    ec = {"SLS.Logging.Threat": transformed_results}
     return human_readable, ec, raw_results
 
 
 def query_timestamp(args: dict) -> tuple[datetime, datetime]:
-    start_time = args.get('start_time', '')
-    end_time = args.get('end_time', '')
-    time_range = args.get('time_range', '')
+    start_time = args.get("start_time", "")
+    end_time = args.get("end_time", "")
+    time_range = args.get("time_range", "")
     if time_range:
         query_start_time, query_end_time = parse_date_range(time_range)
     else:
@@ -1035,26 +1587,46 @@ def query_timestamp(args: dict) -> tuple[datetime, datetime]:
     return query_start_time.replace(microsecond=0), query_end_time.replace(microsecond=0)
 
 
-def get_social_applications_command(args: dict,
-                                    client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
-    """ Queries Cortex Logging according to a pre-set query """
-    logs_amount = args.get('limit')
+def get_social_applications_command(args: dict, client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
+    """Queries Cortex Logging according to a pre-set query"""
+    logs_amount = args.get("limit")
     query_start_time, query_end_time = query_timestamp(args)
     query = 'SELECT * FROM `firewall.traffic` WHERE app_sub_category = "social-networking" '  # guardrails-disable-line
-    query += f' AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND ' \
-             f'TIMESTAMP("{query_end_time}")'
+    query += f' AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}")'
 
-    if not args.get('page'):
-        query += f' LIMIT {logs_amount}'
+    if not args.get("page"):
+        query += f" LIMIT {logs_amount}"
 
-    records, raw_results = client.query_loggings(query, page_number=args.get('page'), page_size=args.get('page_size'))
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
 
     transformed_results = [traffic_context_transformer(record) for record in records]
 
-    human_readable = tableToMarkdown('Logs traffic table', transformed_results, removeNull=True)
-    ec = {
-        'CDL.Logging.Traffic': transformed_results
-    }
+    human_readable = tableToMarkdown("Logs traffic table", transformed_results, removeNull=True)
+    ec = {"CDL.Logging.Traffic": transformed_results}
+    return human_readable, ec, raw_results
+
+
+def get_social_applications_sls_command(args: dict, client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
+    """
+    Queries Cortex Logging according to a pre-set query
+
+    Returns:
+        The traffic log app category social-networking events
+    """
+    logs_amount = args.get("limit")
+    query_start_time, query_end_time = query_timestamp(args)
+    query = 'SELECT * FROM `firewall.traffic` WHERE app_sub_category = "social-networking" '  # guardrails-disable-line
+    query += f' AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}")'
+
+    if not args.get("page"):
+        query += f" LIMIT {logs_amount}"
+
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
+
+    transformed_results = [traffic_context_transformer(record) for record in records]
+
+    human_readable = tableToMarkdown("Logs traffic table", transformed_results, removeNull=True)
+    ec = {"SLS.Logging.Traffic": transformed_results}
     return human_readable, ec, raw_results
 
 
@@ -1062,25 +1634,47 @@ def search_by_file_hash_command(args: dict, client: Client) -> tuple[str, dict[s
     """
     Queries Cortex Logging according to a pre-set query
     """
-    logs_amount = args.get('limit')
-    file_hash = args.get('SHA256')
+    logs_amount = args.get("limit")
+    file_hash = args.get("SHA256")
 
     query_start_time, query_end_time = query_timestamp(args)
     query = f'SELECT * FROM `firewall.threat` WHERE file_sha_256 = "{file_hash}" '  # guardrails-disable-line  # noqa: S608
-    query += f'AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND ' \
-             f'TIMESTAMP("{query_end_time}")'
+    query += f'AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}")'
 
-    if not args.get('page'):
-        query += f' LIMIT {logs_amount}'
+    if not args.get("page"):
+        query += f" LIMIT {logs_amount}"
 
-    records, raw_results = client.query_loggings(query, page_number=args.get('page'), page_size=args.get('page_size'))
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
 
     transformed_results = [threat_context_transformer(record) for record in records]
 
-    human_readable = tableToMarkdown('Logs threat table', transformed_results, removeNull=True)
-    ec = {
-        'CDL.Logging.Threat': transformed_results
-    }
+    human_readable = tableToMarkdown("Logs threat table", transformed_results, removeNull=True)
+    ec = {"CDL.Logging.Threat": transformed_results}
+    return human_readable, ec, raw_results
+
+
+def search_by_file_hash_sls_command(args: dict, client: Client) -> tuple[str, dict[str, list[dict]], list[dict[str, Any]]]:
+    """
+    Queries Cortex Logging according to a pre-set query
+    Returns:
+        threat logs where sha256 equals match
+    """
+    logs_amount = args.get("limit")
+    file_hash = args.get("SHA256")
+
+    query_start_time, query_end_time = query_timestamp(args)
+    query = f'SELECT * FROM `firewall.threat` WHERE file_sha_256 = "{file_hash}" '  # guardrails-disable-line  # noqa: S608
+    query += f'AND time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}")'
+
+    if not args.get("page"):
+        query += f" LIMIT {logs_amount}"
+
+    records, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
+
+    transformed_results = [threat_context_transformer(record) for record in records]
+
+    human_readable = tableToMarkdown("Logs threat table", transformed_results, removeNull=True)
+    ec = {"SLS.Logging.Threat": transformed_results}
     return human_readable, ec, raw_results
 
 
@@ -1090,9 +1684,21 @@ def query_traffic_logs_command(args: dict, client: Client) -> tuple[str, dict, l
 
         Returns: a Demisto's entry with all the parsed data
     """
-    table_name: str = 'traffic'
+    table_name: str = "traffic"
     context_transformer_function = traffic_context_transformer
-    table_context_path: str = 'CDL.Logging.Traffic'
+    table_context_path: str = "CDL.Logging.Traffic"
+    return query_table_logs(args, client, table_name, context_transformer_function, table_context_path)
+
+
+def query_traffic_logs_sls_command(args: dict, client: Client) -> tuple[str, dict, list[dict[str, Any]]]:
+    """
+    The function of the command that queries firewall.traffic table
+
+        Returns: XSOAR entry with all the parsed data
+    """
+    table_name: str = "traffic"
+    context_transformer_function = traffic_context_transformer
+    table_context_path: str = "SLS.Logging.Traffic"
     return query_table_logs(args, client, table_name, context_transformer_function, table_context_path)
 
 
@@ -1102,9 +1708,21 @@ def query_threat_logs_command(args: dict, client: Client) -> tuple[str, dict, li
 
         Returns: a Demisto's entry with all the parsed data
     """
-    query_table_name: str = 'threat'
+    query_table_name: str = "threat"
     context_transformer_function = threat_context_transformer
-    table_context_path: str = 'CDL.Logging.Threat'
+    table_context_path: str = "CDL.Logging.Threat"
+    return query_table_logs(args, client, query_table_name, context_transformer_function, table_context_path)
+
+
+def query_threat_logs_sls_command(args: dict, client: Client) -> tuple[str, dict, list[dict[str, Any]]]:
+    """
+    The function of the command that queries firewall.threat table
+
+        Returns: XSOAR entry with all the parsed data
+    """
+    query_table_name: str = "threat"
+    context_transformer_function = threat_context_transformer
+    table_context_path: str = "SLS.Logging.Threat"
     return query_table_logs(args, client, query_table_name, context_transformer_function, table_context_path)
 
 
@@ -1114,24 +1732,75 @@ def query_url_logs_command(args: dict, client: Client) -> tuple[str, dict, list[
 
         Returns: a Demisto's entry with all the parsed data
     """
-    query_table_name: str = 'url'
+    query_table_name: str = "url"
     context_transformer_function = url_context_transformer
-    table_context_path: str = 'CDL.Logging.URL'
+    table_context_path: str = "CDL.Logging.URL"
+    return query_table_logs(args, client, query_table_name, context_transformer_function, table_context_path)
+
+
+def query_url_logs_sls_command(args: dict, client: Client) -> tuple[str, dict, list[dict[str, Any]]]:
+    """
+    The function of the command that queries firewall.url table
+
+        Returns: XSOAR entry with all the parsed data
+    """
+    query_table_name: str = "url"
+    context_transformer_function = url_context_transformer
+    table_context_path: str = "SLS.Logging.URL"
     return query_table_logs(args, client, query_table_name, context_transformer_function, table_context_path)
 
 
 def query_file_data_command(args: dict, client: Client) -> tuple[str, dict, list[dict[str, Any]]]:
-    query_table_name: str = 'file_data'
+    query_table_name: str = "file_data"
     context_transformer_function = files_context_transformer
-    table_context_path: str = 'CDL.Logging.File'
+    table_context_path: str = "CDL.Logging.File"
     return query_table_logs(args, client, query_table_name, context_transformer_function, table_context_path)
 
 
-def query_table_logs(args: dict,
-                     client: Client,
-                     table_name: str,
-                     context_transformer_function: Callable[[dict], dict],
-                     table_context_path: str) -> tuple[str, dict, list[dict[str, Any]]]:
+def query_file_data_sls_command(args: dict, client: Client) -> tuple[str, dict, list[dict[str, Any]]]:
+    """
+    The function of the command that queries firewall.file_data table
+
+        Returns: XSOAR entry with all the parsed data
+    """
+    query_table_name: str = "file_data"
+    context_transformer_function = files_context_transformer
+    table_context_path: str = "SLS.Logging.File"
+    return query_table_logs(args, client, query_table_name, context_transformer_function, table_context_path)
+
+
+def query_gp_logs_command(args: dict, client: Client):
+    """
+    The function of the command that queries firewall.globalprotect table
+
+        Returns: a Demisto's entry with all the parsed data
+    """
+    table_name: str = "globalprotect"
+    context_transformer_function = gp_context_transformer
+    table_context_path: str = "CDL.Logging.GlobalProtect"
+    return query_table_logs(args, client, table_name, context_transformer_function, table_context_path, True)
+
+
+def query_gp_logs_sls_command(args: dict, client: Client):
+    """
+    The function of the command that queries firewall.globalprotect table
+
+        Returns: XSOAR entry with all the parsed data
+    """
+    table_name: str = "globalprotect"
+    context_transformer_function = gp_context_transformer
+    table_context_path: str = "SLS.Logging.GlobalProtect"
+    return query_table_logs(args, client, table_name, context_transformer_function, table_context_path, True)
+
+
+def query_table_logs(
+    args: dict,
+    client: Client,
+    table_name: str,
+    context_transformer_function: Callable[[dict], dict],
+    table_context_path: str,
+    is_gp_logs_query: bool = False,
+) -> tuple[str, dict, list[dict[str, Any]]]:
     """
     This function is a generic function that get's all the data needed for a specific table of Cortex and acts as a
     regular command function
@@ -1144,137 +1813,186 @@ def query_table_logs(args: dict,
         table_context_path: the context path where the parsed data should be located
     """
     fields, query = build_query(args, table_name)
-    results, raw_results = client.query_loggings(query, page_number=args.get('page'), page_size=args.get('page_size'))
+    results, raw_results = client.query_loggings(query, page_number=args.get("page"), page_size=args.get("page_size"))
     outputs = [context_transformer_function(record) for record in results]
-    human_readable = records_to_human_readable_output(fields, table_name, results)
+    human_readable = records_to_human_readable_output(fields, table_name, results, is_gp_logs_query)
 
     context_outputs: dict = {table_context_path: outputs}
     return human_readable, context_outputs, raw_results
 
 
 def build_query(args, table_name):
-    fields = args.get('fields', 'all')
-    fields = '*' if 'all' in fields else fields
+    fields = args.get("fields", "all")
+    fields = "*" if "all" in fields else fields
     where = build_where_clause(args)
     query_start_time, query_end_time = query_timestamp(args)
-    timestamp_limitation = f'time_generated BETWEEN TIMESTAMP("{query_start_time}") AND ' \
-                           f'TIMESTAMP("{query_end_time}") '
-    where += f' AND {timestamp_limitation}' if where else timestamp_limitation
-    query = f'SELECT {fields} FROM `firewall.{table_name}` WHERE {where}'  # noqa: S608
-    if not args.get('page'):
-        limit = args.get('limit', '5')
-        query += f' LIMIT {limit}'
+    timestamp_limitation = f'time_generated BETWEEN TIMESTAMP("{query_start_time}") AND TIMESTAMP("{query_end_time}") '
+    where += f" AND {timestamp_limitation}" if where else timestamp_limitation
+    query = f"SELECT {fields} FROM `firewall.{table_name}` WHERE {where}"  # noqa: S608
+    if not args.get("page"):
+        limit = args.get("limit", "5")
+        query += f" LIMIT {limit}"
     return fields, query
 
 
-def fetch_incidents(client: Client,
-                    first_fetch_timestamp: str,
-                    fetch_severity: list,
-                    fetch_table: str,
-                    fetch_subtype: list,
-                    fetch_fields: str,
-                    fetch_limit: str,
-                    last_run: dict,
-                    fetch_filter: str = '') -> tuple[dict[str, str], list]:
-    last_fetched_event_timestamp = last_run.get('lastRun')
-    demisto.debug("CortexDataLake - Start fetching")
-    demisto.debug(f"CortexDataLake - Last run: {json.dumps(last_run)}")
+def fetch_incidents(
+    client: Client,
+    first_fetch_timestamp: str,
+    fetch_severity: list,
+    fetch_table: str,
+    fetch_subtype: list,
+    fetch_fields: str,
+    fetch_limit: str,
+    last_run: dict,
+    fetch_filter: str = "",
+) -> tuple[dict[str, str], list]:
+    last_fetched_event_timestamp = last_run.get("lastRun")
+    demisto.debug("StrataLoggingService - Start fetching")
+    demisto.debug(f"StrataLoggingService - Last run: {json.dumps(last_run)}")
 
     if last_fetched_event_timestamp:
         last_fetched_event_timestamp = parser.parse(last_fetched_event_timestamp)
     else:
         last_fetched_event_timestamp, _ = parse_date_range(first_fetch_timestamp)
         last_fetched_event_timestamp = last_fetched_event_timestamp.replace(microsecond=0)
-    query = prepare_fetch_incidents_query(last_fetched_event_timestamp, fetch_severity, fetch_table,
-                                          fetch_subtype, fetch_fields, fetch_limit, fetch_filter)
-    demisto.debug(f"CortexDataLake - Query sent to the server: {query}")
+    query = prepare_fetch_incidents_query(
+        last_fetched_event_timestamp, fetch_severity, fetch_table, fetch_subtype, fetch_fields, fetch_limit, fetch_filter
+    )
+    demisto.debug(f"StrataLoggingService - Query sent to the server: {query}")
     records, _ = client.query_loggings(query)
     if not records:
-        return {'lastRun': str(last_fetched_event_timestamp)}, []
+        return {"lastRun": str(last_fetched_event_timestamp)}, []
 
     incidents = [convert_log_to_incident(record, fetch_table) for record in records]
-    time_filter = 'event_time' if 'log' in fetch_table else 'time_generated'
+    time_filter = "event_time" if "log" in fetch_table else "time_generated"
     max_fetched_event_timestamp = max(records, key=lambda record: record.get(time_filter, 0)).get(time_filter, 0)
 
-    next_run = {'lastRun': epoch_to_timestamp_and_add_milli(max_fetched_event_timestamp)}
-    demisto.debug(f'CortexDataLake - Next run after incidents fetching: {json.dumps(next_run)}')
-    demisto.debug(f"CortexDataLake- Number of incidents before filtering: {len(records)}")
-    demisto.debug(f"CortexDataLake - Number of incidents after filtering: {len(incidents)}")
+    next_run = {"lastRun": epoch_to_timestamp_and_add_milli(max_fetched_event_timestamp)}
+    demisto.debug(f"StrataLoggingService - Next run after incidents fetching: {json.dumps(next_run)}")
+    demisto.debug(f"StrataLoggingService- Number of incidents before filtering: {len(records)}")
+    demisto.debug(f"StrataLoggingService - Number of incidents after filtering: {len(incidents)}")
     return next_run, incidents
 
 
-''' EXECUTION CODE '''
+""" EXECUTION CODE """
 
 
 def main():
-    os.environ['PAN_CREDENTIALS_DBFILE'] = os.path.join(gettempdir(), 'pancloud_credentials.json')
+    os.environ["PAN_CREDENTIALS_DBFILE"] = os.path.join(gettempdir(), "pancloud_credentials.json")
     params = demisto.params()
-    registration_id_and_url = params.get('credentials_reg_id', {}).get('password') or params.get('reg_id')
+    registration_id_and_url = params.get("credentials_reg_id", {}).get("password") or params.get("reg_id")
     # If there's a stored token in integration context, it's newer than current
-    refresh_token = params.get('credentials_refresh_token', {}).get('password') or params.get('refresh_token')
-    enc_key = params.get('credentials_auth_key', {}).get('password') or params.get('auth_key')
-    if not enc_key or not refresh_token or not registration_id_and_url:
-        raise DemistoException('Key, Token and ID must be provided.')
-    registration_id_and_url = registration_id_and_url.split('@')
-    if len(registration_id_and_url) != 2:
-        token_retrieval_url = "https://oproxy.demisto.ninja"  # guardrails-disable-line
-    else:
-        token_retrieval_url = registration_id_and_url[1]
-    registration_id = registration_id_and_url[0]
-    use_ssl = not params.get('insecure', False)
-    proxy = params.get('proxy', False)
+    refresh_token = params.get("credentials_refresh_token", {}).get("password") or params.get("refresh_token")
+    enc_key = params.get("credentials_auth_key", {}).get("password") or params.get("auth_key")
+    client_secret = params.get("credentials_client_secret", {}).get("password")
+    auth_mode = AUTH_MODE_SCM if client_secret else AUTH_MODE_OPROXY
+
+    demisto.debug(
+        f"CDL auth routing: auth_mode={auth_mode} client_secret_set={bool(client_secret)} "
+        f"enc_key_set={bool(enc_key)} refresh_token_set={bool(refresh_token)} "
+        f"registration_id_set={bool(registration_id_and_url)}"
+    )
+
+    if not enc_key:
+        raise DemistoException("Encryption Key must be provided.")
+    if not registration_id_and_url:
+        raise DemistoException("Registration ID must be provided.")
+    if bool(refresh_token) == bool(client_secret):
+        raise DemistoException("Either an Authentication Token or a Client Secret must be provided, but not both.")
+
+    use_ssl = not params.get("insecure", False)
+    proxy = params.get("proxy", False)
     args = demisto.args()
-    fetch_table = params.get('fetch_table')
-    fetch_fields = params.get('fetch_fields') or '*'
+    fetch_table = params.get("fetch_table") or "firewall.threat"
+    fetch_fields = params.get("fetch_fields") or "*"
     command = demisto.command()
-    LOG(f'command is {command}')
+    demisto.debug(f"Command called {command}")
     # needs to be executed before creating a Client
-    if command == 'cdl-reset-authentication-timeout':
+    if command == "cdl-reset-authentication-timeout":
         Client.reset_failure_times()
         return_outputs(readable_output="Caching mechanism failure time counters have been successfully reset.")
         return
 
-    client = Client(token_retrieval_url, registration_id, use_ssl, proxy, refresh_token, enc_key)
+    token_retrieval_url, registration_id = extract_client_args(registration_id_and_url, auth_mode)
+    client = Client(
+        token_retrieval_url,
+        registration_id,
+        use_ssl,
+        proxy,
+        refresh_token,
+        enc_key,
+        client_secret=client_secret,
+        auth_mode=auth_mode,
+    )
 
     try:
-        if command == 'test-module':
-            test_module(client, fetch_table, fetch_fields, params.get('isFetch'), params.get('filter_query', ''),
-                        params.get('firewall_subtype'), params.get('firewall_severity'),
-                        params.get('first_fetch_timestamp', '24 hours').strip())
-        elif command == 'cdl-query-logs':
+        if command == "test-module":
+            test_module(
+                client,
+                fetch_table,
+                fetch_fields,
+                params.get("isFetch"),
+                params.get("filter_query", ""),
+                params.get("firewall_subtype"),
+                params.get("firewall_severity"),
+                params.get("first_fetch_timestamp", "24 hours").strip(),
+            )
+        elif command == "cdl-query-logs":
             return_outputs(*query_logs_command(args, client))
-        elif command == 'cdl-get-critical-threat-logs':
+        elif command == "sls-query-logs":
+            return_outputs(*query_logs_sls_command(args, client))
+        elif command == "cdl-get-critical-threat-logs":
             return_outputs(*get_critical_logs_command(args, client))
-        elif command == 'cdl-get-social-applications':
+        elif command == "sls-get-critical-threat-logs":
+            return_outputs(*get_critical_logs_sls_command(args, client))
+        elif command == "cdl-get-social-applications":
             return_outputs(*get_social_applications_command(args, client))
-        elif command == 'cdl-search-by-file-hash':
+        elif command == "sls-get-social-applications":
+            return_outputs(*get_social_applications_sls_command(args, client))
+        elif command == "cdl-search-by-file-hash":
             return_outputs(*search_by_file_hash_command(args, client))
-        elif command == 'cdl-query-traffic-logs':
+        elif command == "sls-search-by-file-hash":
+            return_outputs(*search_by_file_hash_sls_command(args, client))
+        elif command == "cdl-query-traffic-logs":
             return_outputs(*query_traffic_logs_command(args, client))
-        elif command == 'cdl-query-threat-logs':
+        elif command == "sls-query-traffic-logs":
+            return_outputs(*query_traffic_logs_sls_command(args, client))
+        elif command == "cdl-query-threat-logs":
             return_outputs(*query_threat_logs_command(args, client))
-        elif command == 'cdl-query-url-logs':
+        elif command == "sls-query-threat-logs":
+            return_outputs(*query_threat_logs_sls_command(args, client))
+        elif command == "cdl-query-url-logs":
             return_outputs(*query_url_logs_command(args, client))
-        elif command == 'cdl-query-file-data':
+        elif command == "sls-query-url-logs":
+            return_outputs(*query_url_logs_sls_command(args, client))
+        elif command == "cdl-query-file-data":
             return_outputs(*query_file_data_command(args, client))
-        elif command == 'fetch-incidents':
-            first_fetch_timestamp = params.get('first_fetch_timestamp', '24 hours').strip()
-            fetch_severity = params.get('firewall_severity')
-            fetch_table = params.get('fetch_table')
-            fetch_fields = params.get('fetch_fields') or '*'
-            fetch_subtype = params.get('firewall_subtype')
-            fetch_limit = params.get('limit')
+        elif command == "sls-query-file-data":
+            return_outputs(*query_file_data_sls_command(args, client))
+        elif command == "cdl-query-gp-logs":
+            return_outputs(*query_gp_logs_command(args, client))
+        elif command == "sls-query-gp-logs":
+            return_outputs(*query_gp_logs_sls_command(args, client))
+        elif command == "fetch-incidents":
+            first_fetch_timestamp = params.get("first_fetch_timestamp", "24 hours").strip()
+            fetch_severity = params.get("firewall_severity")
+            fetch_table = params.get("fetch_table") or "firewall.threat"
+            fetch_fields = params.get("fetch_fields") or "*"
+            fetch_subtype = params.get("firewall_subtype")
+            fetch_limit = params.get("limit")
             last_run = demisto.getLastRun()
-            fetch_filter = params.get('filter_query', '')
-            next_run, incidents = fetch_incidents(client,
-                                                  first_fetch_timestamp,
-                                                  fetch_severity,
-                                                  fetch_table,
-                                                  fetch_subtype,
-                                                  fetch_fields,
-                                                  fetch_limit,
-                                                  last_run,
-                                                  fetch_filter)
+            fetch_filter = params.get("filter_query", "")
+            next_run, incidents = fetch_incidents(
+                client,
+                first_fetch_timestamp,
+                fetch_severity,
+                fetch_table,
+                fetch_subtype,
+                fetch_fields,
+                fetch_limit,
+                last_run,
+                fetch_filter,
+            )
             demisto.setLastRun(next_run)
             demisto.incidents(incidents)
     except Exception as e:
@@ -1282,5 +2000,5 @@ def main():
         return_error(error_message)
 
 
-if __name__ in ('__main__', 'builtins'):
+if __name__ in ("__main__", "builtins"):
     main()

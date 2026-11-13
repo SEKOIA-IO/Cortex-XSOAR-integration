@@ -1,0 +1,1945 @@
+from datetime import datetime
+import json
+import time
+import pytest
+import demistomock as demisto
+from unittest.mock import MagicMock
+from Doppel import (
+    test_module,
+    fetch_incidents_command,
+    get_remote_data_command,
+    update_remote_system_command,
+    get_mapping_fields_command,
+    doppel_get_alert_command,
+    doppel_update_alert_command,
+    doppel_get_alerts_command,
+    doppel_create_alert_command,
+    doppel_create_abuse_alert_command,
+    doppel_get_alert_screenshot_command,
+    _screenshot_blob_path,
+    _attach_screenshot_if_new,
+    _track_screenshot_version,
+    get_modified_remote_data_command,
+    format_datetime,
+    _paginated_call_to_get_alerts,
+    _get_last_fetch_datetime,
+    _get_mirroring_fields,
+    _get_remote_updated_incident_data_with_entry,
+    _normalize_entity_content_for_grid,
+    _reopen_entry_if_revived,
+    _parse_fetch_timeout,
+    _parse_max_fetch,
+    _incident_alert_id,
+    _alert_to_incident,
+    _xsoar_severity,
+    Client,
+)
+
+from CommonServerPython import *
+from CommonServerUserPython import *
+
+ALERTS_RESPONSE = [
+    {"id": "1", "created_at": "2025-02-01T12:00:00.000000Z"},
+    {"id": "2", "created_at": "2025-02-01T12:05:00.000000Z"},
+]
+
+DOPPEL_API_DATE_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
+MIRROR_DIRECTION = {
+    "None": None,
+    "Incoming": "In",
+    "Outgoing": "Out",
+    "Incoming And Outgoing": "Both",
+}
+
+
+def util_load_json(path):
+    """Helper function to load JSON data from a file."""
+    with open(path, encoding="utf-8") as f:
+        return json.loads(f.read())
+
+
+# Mock function for _http_request
+
+
+def mock_http_request(method, url_suffix, params=None, headers=None, data=None, json_data=None):
+    if url_suffix == "alert":
+        return util_load_json("test_data/get-alert.json")
+    return {}
+
+
+# Mock function to return alerts in the expected format
+def mock_get_alerts(*args, **kwargs):
+    if kwargs.get("page", 0) > 0:  # Simulate an empty response after the first page
+        return {"alerts": []}
+
+    modified_alerts = [{**alert, "created_at": alert["created_at"].rstrip("Z")} for alert in ALERTS_RESPONSE]
+    return {"alerts": modified_alerts}  # Ensure response is a dictionary
+
+
+@pytest.fixture
+def client():
+    # Create a mock client
+    client = MagicMock()
+
+    # Assign the mock function to get_alerts
+    client.get_alerts.side_effect = mock_get_alerts
+
+    # Mocking fetch single alert (Used in update_remote_system_command)
+    client.get_alert.return_value = {"id": "123", "queue_state": "open", "entity_state": "active"}
+
+    # Mocking update alert (Used in update_remote_system_command)
+    client.update_alert.return_value = None  # Assume update succeeds
+
+    return client
+
+
+def test_test_module(mocker, client):
+    """
+    Given:
+        - A mock Client instance
+    When:
+        - Running test_module() to test connectivity
+    Then:
+        - The function should return 'ok' if the API request is successful
+    """
+
+    # Mock the _http_request method
+    mocker.patch.object(client, "_http_request", side_effect=mock_http_request)
+
+    # Pass an empty dictionary `{}` as `args`, not a string
+    result = test_module(client)
+
+    # Assert the expected output
+    assert result == "ok"
+
+
+def test_fetch_incidents_command(mocker):
+    """
+    Test the `fetch_incidents_command` function for multiple fetch cycles.
+    """
+
+    # Mocking demisto functions
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": 1, "fetch_timeout": "30"})
+    mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "incidents")
+
+    # Load mock data
+    mock_alerts = util_load_json("test_data/get-all-alerts.json")  # List of alerts from Doppel
+
+    # Mock `_paginated_call_to_get_alerts` to simulate API responses in different cycles
+    mocker.patch(
+        "Doppel._paginated_call_to_get_alerts",
+        side_effect=[
+            mock_alerts["alerts"][:50],  # First fetch - fill queue
+            mock_alerts["alerts"][50:100],  # Second fetch - next batch
+            [],  # Third fetch - No new alerts, return remaining
+            [],  # Fourth fetch - No new alerts, return empty
+        ],
+    )
+
+    # Run test cycles
+    last_run = None
+    incidents_queue = []
+
+    # for current_flow in ['first', 'second', 'third', 'forth']:
+    # Mock last run data
+    mocker.patch.object(demisto, "getLastRun", return_value={"last_run": last_run, "incidents_queue": incidents_queue})
+
+    # Call function
+    fetch_incidents_command(client=None, args={})
+
+    # Verify incidents pushed to XSOAR
+    incidents_pushed = demisto.incidents.call_args[0][0]
+    assert len(incidents_pushed) == 1, "Mismatch in incidents"
+
+    incident = incidents_pushed[0]
+    assert "name" in incident
+    assert "type" in incident
+    assert "rawJSON" in incident
+    assert incident["name"].startswith("Doppel Alert"), "Incident name format mismatch"
+    assert incident["occurred"] != "", "Occurred timestamp should not be empty"
+
+    # Verify last run update
+    last_run_data = demisto.setLastRun.call_args[0][0]
+    assert "last_run" in last_run_data, "last_run not updated"
+
+    # The cursor advances, but no raw incident data may be persisted in lastRun.
+    last_run = last_run_data["last_run"]
+    assert "incidents_queue" not in last_run_data, "lastRun must not store raw incident data"
+
+
+def test_fetch_incidents_timeout(mocker):
+    """
+    Test the `fetch_incidents_command` function for multiple fetch cycles.
+    """
+
+    # Mocking demisto functions
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": 1, "fetch_timeout": "10"})
+    mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "incidents")
+
+    # Load mock data
+    mock_alerts = util_load_json("test_data/get-all-alerts.json")  # List of alerts from Doppel
+
+    # Mock `_paginated_call_to_get_alerts` to simulate API responses in different cycles
+    mocker.patch(
+        "Doppel._paginated_call_to_get_alerts",
+        side_effect=[
+            mock_alerts["alerts"][:50],  # First fetch - fill queue
+            mock_alerts["alerts"][50:100],  # Second fetch - next batch
+            [],  # Third fetch - No new alerts, return remaining
+            [],  # Fourth fetch - No new alerts, return empty
+        ],
+    )
+
+    # Run test cycles
+    last_run = None
+    incidents_queue = []
+
+    # for current_flow in ['first', 'second', 'third', 'forth']:
+    # Mock last run data
+    mocker.patch.object(demisto, "getLastRun", return_value={"last_run": last_run, "incidents_queue": incidents_queue})
+
+    # Call function
+    fetch_incidents_command(client=None, args={})
+
+    # Verify incidents pushed to XSOAR
+    incidents_pushed = demisto.incidents.call_args[0][0]
+    assert len(incidents_pushed) == 1, "Mismatch in incidents"
+
+    incident = incidents_pushed[0]
+    assert "name" in incident
+    assert "type" in incident
+    assert "rawJSON" in incident
+    assert incident["name"].startswith("Doppel Alert"), "Incident name format mismatch"
+    assert incident["occurred"] != "", "Occurred timestamp should not be empty"
+
+    # Verify last run update
+    last_run_data = demisto.setLastRun.call_args[0][0]
+    assert "last_run" in last_run_data, "last_run not updated"
+
+    # The cursor advances, but no raw incident data may be persisted in lastRun.
+    last_run = last_run_data["last_run"]
+    assert "incidents_queue" not in last_run_data, "lastRun must not store raw incident data"
+
+
+def test_fetch_incidents_max_fetch(mocker):
+    """
+    Test the `fetch_incidents_command` function for multiple fetch cycles.
+    """
+
+    # Mocking demisto functions
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": 3, "fetch_timeout": "30"})
+    mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "incidents")
+
+    # Load mock data
+    mock_alerts = util_load_json("test_data/get-all-alerts.json")  # List of alerts from Doppel
+
+    # Mock `_paginated_call_to_get_alerts` to simulate API responses in different cycles
+    mocker.patch(
+        "Doppel._paginated_call_to_get_alerts",
+        side_effect=[
+            mock_alerts["alerts"][:50],  # First fetch - fill queue
+            mock_alerts["alerts"][50:100],  # Second fetch - next batch
+            [],  # Third fetch - No new alerts, return remaining
+            [],  # Fourth fetch - No new alerts, return empty
+        ],
+    )
+
+    # Run test cycles
+    last_run = None
+    incidents_queue = []
+
+    # for current_flow in ['first', 'second', 'third', 'forth']:
+    # Mock last run data
+    mocker.patch.object(demisto, "getLastRun", return_value={"last_run": last_run, "incidents_queue": incidents_queue})
+
+    # Call function
+    fetch_incidents_command(client=None, args={})
+
+    # Verify incidents pushed to XSOAR
+    incidents_pushed = demisto.incidents.call_args[0][0]
+    assert len(incidents_pushed) == 3, "Mismatch in incidents"
+
+    incident = incidents_pushed[0]
+    assert "name" in incident
+    assert "type" in incident
+    assert "rawJSON" in incident
+    assert incident["name"].startswith("Doppel Alert"), "Incident name format mismatch"
+    assert incident["occurred"] != "", "Occurred timestamp should not be empty"
+
+    # Verify last run update
+    last_run_data = demisto.setLastRun.call_args[0][0]
+    assert "last_run" in last_run_data, "last_run not updated"
+
+    # The cursor advances, but no raw incident data may be persisted in lastRun.
+    last_run = last_run_data["last_run"]
+    assert "incidents_queue" not in last_run_data, "lastRun must not store raw incident data"
+
+
+def test_fetch_incidents_no_alerts(mocker):
+    """Test fetch_incidents_command when there are no incidents to fetch."""
+    # Mock Demisto functions
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": 1, "fetch_timeout": "10"})
+    mocker.patch.object(demisto, "getLastRun", return_value={"last_run": None, "incidents_queue": []})
+    mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(demisto, "incidents")
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "debug")
+
+    # Create a mock client
+    mock_client = MagicMock()
+    mocker.patch("Doppel._paginated_call_to_get_alerts", return_value=[])  # Simulating no alerts returned
+
+    fetch_incidents_command(client=mock_client, args={})
+
+    fetch_incidents_command(client=None, args={})
+
+    # Assertions
+    demisto.incidents.assert_called_with([])  # Ensure no incidents are created
+    demisto.debug.assert_any_call("Doppel - Created 0 incident(s) in XSOAR.")
+
+
+def test_get_remote_data_command(mocker, requests_mock):
+    """
+    Given:
+        - A remote incident ID and last update timestamp.
+    When:
+        - Running get_remote_data_command to fetch updates.
+    Then:
+        - It returns the relevant incident entity from the remote system with the expected mirroring fields.
+    """
+
+    # Mock API response for fetching incident updates
+    requests_mock.get(
+        "https://example.com/api/alerts", json={"data": [{"id": "123456", "status": "updated", "name": "Test Alert"}]}
+    )
+
+    # Mock necessary demisto functions
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error")
+    mocker.patch.object(demisto, "args", return_value={"id": "123456", "lastUpdate": "2025-01-27T07:55:10.063742"})
+    mocker.patch.object(demisto, "command", return_value="get-remote-data")
+
+    mock_get_remote_updated_incident_data_with_entry = mocker.patch(
+        "Doppel._get_remote_updated_incident_data_with_entry",
+        return_value=(
+            {
+                "id": "123456",
+                "status": "updated",
+                "name": "Test Alert",
+            },
+            [],
+        ),
+    )
+
+    # Prepare client mock
+    client = mocker.Mock()
+
+    # Call the function
+    result = get_remote_data_command(client, demisto.args())
+
+    assert result.mirrored_object == {"id": "123456", "status": "updated", "name": "Test Alert"}
+    assert result.entries == []
+
+    mock_get_remote_updated_incident_data_with_entry.assert_called_once()
+
+    demisto.debug.assert_called()
+
+
+def test_get_remote_data_command_rate_limit_exception(mocker, capfd):
+    """
+    Given:
+        - A remote incident ID and last update timestamp.
+        - A Rate limit exceeded exception is raised during _get_remote_updated_incident_data_with_entry.
+    When:
+        - Running get_remote_data_command to fetch updates.
+    Then:
+        - It returns a GetRemoteDataResponse with the error message in mirrored_object and logs API rate limit.
+    """
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error", side_effect=demisto.error)
+    mocker.patch.object(demisto, "args", return_value={"id": "123456", "lastUpdate": "2025-01-27T07:55:10.063742"})
+    mocker.patch.object(demisto, "command", return_value="get-remote-data")
+
+    mock_get_remote_updated_incident_data_with_entry = mocker.patch(
+        "Doppel._get_remote_updated_incident_data_with_entry",
+        side_effect=Exception("Rate limit exceeded"),
+    )
+
+    client = MagicMock()
+    with capfd.disabled():
+        result = get_remote_data_command(client, demisto.args())
+
+    assert result.mirrored_object == {"in_mirror_error": "Rate limit exceeded"}
+    assert result.entries == []
+    demisto.debug.assert_called_with("API rate limit")
+
+    mock_get_remote_updated_incident_data_with_entry.assert_called_once()
+
+
+def test_update_remote_system_command(client, mocker):
+    """Closing an XSOAR incident archives the Doppel alert and preserves live entity_state."""
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error")
+    client.get_alert.return_value = {
+        "id": "123",
+        "queue_state": "needs_review",
+        "entity_state": "down",
+    }
+
+    args = {
+        "data": {"queue_state": "needs_review"},
+        "delta": {"closeNotes": "Resolved in XSOAR"},
+        "incidentChanged": True,
+        "remoteId": "123",
+        "status": IncidentStatus.DONE,
+    }
+
+    result = update_remote_system_command(client, args)
+
+    assert result == "123"
+    client.get_alert.assert_called_once_with(id="123", entity="")
+    client.update_alert.assert_called_once_with(
+        queue_state="archived",
+        entity_state="down",
+        comment="Resolved in XSOAR",
+        alert_id="123",
+    )
+    demisto.error.assert_not_called()
+
+
+def test_update_remote_system_incident_not_closed(mocker, capfd):
+    """Test update_remote_system_command when the incident is not closed."""
+
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error")
+    mocker.patch.object(demisto, "command", return_value="update-remote-system")
+
+    client = MagicMock()
+    args = {
+        "data": {"queue_state": "active"},
+        "entries": [],
+        "incidentChanged": True,
+        "remoteId": "123456",
+        "status": IncidentStatus.ACTIVE,
+    }
+
+    with capfd.disabled():
+        update_remote_system_command(client, args)
+
+    demisto.debug.assert_called_with("Incident not closed. Skipping update for remote ID [123456].")
+    client.get_alert.assert_not_called()
+    client.update_alert.assert_not_called()
+
+
+def test_update_remote_system_already_archived_with_comment(client, mocker):
+    """Already-archived alerts still receive close notes when the XSOAR incident is closed."""
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error")
+    client.get_alert.return_value = {
+        "id": "123",
+        "queue_state": "archived",
+        "entity_state": "down",
+    }
+
+    args = {
+        "data": {},
+        "delta": {"closeNotes": "Closing note"},
+        "incidentChanged": True,
+        "remoteId": "123",
+        "status": IncidentStatus.DONE,
+    }
+
+    assert update_remote_system_command(client, args) == "123"
+    client.update_alert.assert_called_once_with(
+        queue_state="archived",
+        entity_state="down",
+        comment="Closing note",
+        alert_id="123",
+    )
+
+
+def test_update_remote_system_already_archived_without_comment(client, mocker):
+    """Skip the API call when the alert is already archived and there are no close notes."""
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error")
+    client.get_alert.return_value = {
+        "id": "123",
+        "queue_state": "archived",
+        "entity_state": "down",
+    }
+
+    args = {
+        "data": {},
+        "delta": {},
+        "incidentChanged": True,
+        "remoteId": "123",
+        "status": IncidentStatus.DONE,
+    }
+
+    assert update_remote_system_command(client, args) == "123"
+    client.update_alert.assert_not_called()
+
+
+def test_normalize_entity_content_for_grid_root_domain():
+    """Domains entity_content.root_domain becomes a one-row grid list."""
+    entity_content = {
+        "root_domain": {
+            "domain": "1.com",
+            "registrar": None,
+            "ip_address": None,
+            "mx_records": [],
+            "nameservers": [],
+        }
+    }
+    assert _normalize_entity_content_for_grid(entity_content) == [
+        {
+            "domain": "1.com",
+            "registrar": None,
+            "ip_address": None,
+            "mx_records": [],
+            "nameservers": [],
+        }
+    ]
+
+
+def test_normalize_entity_content_for_grid_passthrough_list():
+    """Already-normalized lists are returned unchanged (dict rows only)."""
+    rows = [{"domain": "a.com"}, {"domain": "b.com"}]
+    assert _normalize_entity_content_for_grid(rows) == rows
+    assert _normalize_entity_content_for_grid([]) == []
+    assert _normalize_entity_content_for_grid(None) == []
+
+
+def test_normalize_entity_content_for_grid_single_nested_dict():
+    """Non-domain archetypes ({archetype_key: {fields}}) unwrap the single nested dict."""
+    entity_content = {"social_media_post": {"full_text": "spam", "num_upvotes": 3}}
+    assert _normalize_entity_content_for_grid(entity_content) == [{"full_text": "spam", "num_upvotes": 3}]
+
+
+def test_normalize_entity_content_for_grid_flat_dict_fallback():
+    """A flat dict with no nested objects is used as the grid row so no data is dropped."""
+    entity_content = {"domain": "flat.com", "registrar": "R"}
+    assert _normalize_entity_content_for_grid(entity_content) == [{"domain": "flat.com", "registrar": "R"}]
+    # Ambiguous shapes with multiple nested dicts still return no rows.
+    ambiguous = {"a": {"x": 1}, "b": {"y": 2}}
+    assert _normalize_entity_content_for_grid(ambiguous) == []
+
+
+def test_alert_to_incident_normalizes_entity_content():
+    """Fetched incidents put grid-shaped entity_content into rawJSON for the mapper."""
+    alert = {
+        "id": "TST-3620",
+        "created_at": "2026-07-31T13:18:52.149692",
+        "severity": "medium",
+        "entity_content": {"root_domain": {"domain": "1.com", "registrar": None}},
+    }
+    incident = _alert_to_incident(alert, {"mirror_direction": "Both"})
+    raw = json.loads(incident["rawJSON"])
+    assert raw["entity_content"] == [{"domain": "1.com", "registrar": None}]
+
+
+def test_get_remote_updated_incident_data_normalizes_entity_content():
+    """Incoming mirror sync also shapes entity_content for the grid field."""
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {
+        "id": "TST-3620",
+        "queue_state": "archived",
+        "entity_content": {"root_domain": {"domain": "1.com"}},
+        "audit_logs": [],
+    }
+
+    updated_alert, _entries = _get_remote_updated_incident_data_with_entry(mock_client, "TST-3620", "2025-02-24T14:30:00.120000Z")
+
+    assert updated_alert is not None
+    assert updated_alert["entity_content"] == [{"domain": "1.com"}]
+
+
+def test_get_mapping_fields_command(client, mocker):
+    """Test get_mapping_fields_command function."""
+
+    # Mocking demisto functions using mocker.patch.object
+    mock_debug = mocker.patch.object(demisto, "debug")
+
+    # Run the function
+    result = get_mapping_fields_command(client, {})
+
+    # Assertions
+    assert result is not None, "Result should not be None"
+    assert hasattr(result, "extract_mapping"), "Result should have extract_mapping method"
+
+    mapping = result.extract_mapping()
+    assert mapping["Doppel Alert"]["queue_state"] == "Queue State of the Doppel Alert"
+    assert mapping["Doppel Alert"]["entity_state"] == "Current state of the alert entity"
+    assert mapping["Doppel Alert"]["doppel_link"] == "Link to the alert in the Doppel platform"
+    assert mapping["Doppel Alert"]["entity_content"] == "Additional content related to the alert entity"
+
+    mock_debug.assert_called()  # Ensure debug logs are generated
+
+
+def test_get_mapping_fields_command_raises_exception(mocker):
+    """Test get_mapping_fields_command function when an exception occurs."""
+
+    # Mock the SchemeTypeMapping to raise an exception
+    mock_scheme = mocker.patch("Doppel.SchemeTypeMapping")
+    mock_scheme.return_value.add_field.side_effect = Exception("Unexpected Error")
+
+    # Run the function and verify it raises an exception
+    with pytest.raises(Exception, match="Unexpected Error"):
+        get_mapping_fields_command(client=None, args={})
+
+
+def test_doppel_get_alert_command(client, mocker):
+    # Mock API response
+    mocker.patch.object(client, "get_alert", return_value={"id": "TET-1953443", "status": "Open", "name": "Test Alert"})
+
+    args = {"id": "TET-1953443"}
+    result = doppel_get_alert_command(client, args)
+
+    assert isinstance(result, CommandResults), f"Expected CommandResults but got {type(result)}"
+    assert result.outputs_prefix == "Doppel.Alert"
+    assert result.outputs_key_field == "id"
+    assert result.outputs.get("id") == "TET-1953443"
+    assert "Alert Summary" in result.readable_output
+
+
+def test_doppel_get_alert_command_with_invalid_params(client):
+    args = {"id": "TET-1953443", "entity": "http://test-doppel.com"}
+
+    with pytest.raises(ValueError):
+        doppel_get_alert_command(client, args)
+
+
+def test_doppel_get_alert_command_with_missing_params(client):
+    args = {}
+
+    with pytest.raises(ValueError):
+        doppel_get_alert_command(client, args)
+
+
+def mock_no_alert_found(*args, **kwargs):
+    raise DemistoException("No alert found with the given parameters.")
+
+
+def test_doppel_get_alert_command_with_no_alert_found(client, mocker):
+    mocker.patch.object(client, "get_alert", side_effect=mock_no_alert_found)
+
+    args = {"id": "NON_EXISTENT_ID"}
+
+    with pytest.raises(Exception):
+        doppel_get_alert_command(client, args)
+
+
+def test_doppel_update_alert_command(mocker):
+    """Test doppel_update_alert_command function with an inline mock client."""
+
+    # Mocking the Client instance
+    mock_client = MagicMock()
+    mock_client.update_alert.return_value = {"id": "123", "queue_state": "archived", "entity_state": "closed"}
+
+    # Sample arguments
+    args = {"alert_id": "123", "queue_state": "archived", "entity_state": "closed", "comment": "Resolved"}
+
+    # Run the function
+    result = doppel_update_alert_command(mock_client, args)
+
+    # Assertions
+    assert result.outputs_prefix == "Doppel.UpdatedAlert", "Incorrect outputs prefix"
+    assert result.outputs_key_field == "id", "Incorrect key field"
+    assert result.outputs == {"id": "123", "queue_state": "archived", "entity_state": "closed"}, "Unexpected output"
+
+
+def test_doppel_update_alert_command_negative_cases():
+    """Test doppel_update_alert_command for various negative scenarios."""
+
+    mock_client = MagicMock()
+
+    # Case 1: Both alert_id and entity are provided
+    args_conflict = {"alert_id": "123", "entity": "some_entity", "queue_state": "archived"}
+    with pytest.raises(ValueError, match="Only one of 'alert_id' or 'entity' can be specified."):
+        doppel_update_alert_command(mock_client, args_conflict)
+
+    # Case 2: No update fields provided
+    args_missing_fields = {"alert_id": "123"}
+    with pytest.raises(ValueError, match="At least one of 'queue_state', 'entity_state', or 'comment' must be provided."):
+        doppel_update_alert_command(mock_client, args_missing_fields)
+
+    # Case 3: API Failure (Simulated by raising an exception in mock)
+    mock_client.update_alert.side_effect = Exception("API error: Alert not found")
+    args_api_error = {"alert_id": "999", "queue_state": "archived"}
+    with pytest.raises(Exception, match="Failed to update the alert with the given parameters :- API error: Alert not found"):
+        doppel_update_alert_command(mock_client, args_api_error)
+
+
+def test_doppel_update_alert_command_with_entity(client, mocker):
+    # Prepare the mock response for the _http_request function
+    mocker.patch.object(client, "_http_request", side_effect=mock_http_request)
+
+    # Sample arguments to simulate the command input, using 'entity' instead of 'alert_id'
+    args = {
+        "alert_id": "",  # Empty alert_id to test entity usage
+        "queue_state": "doppel_review",
+        "entity_state": "active",
+        "entity": "http://test-doppel.com",  # Provide an entity for testing
+        "comment": "Test update comment",
+    }
+
+    mock_response = util_load_json("test_data/get-alert.json")
+
+    # Set up the mock return value
+    client.update_alert.return_value = mock_response
+
+    # Call the command function
+    result = doppel_update_alert_command(client, args)
+
+    # Assert that the result's human-readable output is generated correctly
+    assert "Alert Summary" in result.readable_output  # Check if the title exists
+    assert isinstance(result, CommandResults)  # Ensure the result is a CommandResults object
+    assert result.outputs_prefix == "Doppel.UpdatedAlert"  # Ensure the outputs prefix is correct
+    assert result.outputs_key_field == "id"  # Ensure the key field is correct
+    assert result.outputs == mock_response  # Ensure the correct output is returned
+
+
+def test_doppel_get_alerts_command(client, mocker):
+    mock_data = util_load_json("test_data/get-all-alerts.json")
+    mocker.patch.object(client, "get_alerts", return_value=mock_data)
+
+    args = {
+        "search_key": "test-key",
+        "queue_state": "open",
+        "product": "domains",
+        "created_before": "2025-01-01T00:00:00Z",
+        "created_after": "2025-01-01T00:00:00Z",
+        "sort_type": "created",
+        "sort_order": "asc",
+        "page": 1,
+        "tags": "tag1,tag2",
+    }
+
+    result = doppel_get_alerts_command(client, args)
+
+    assert isinstance(result, CommandResults)
+
+    assert result.outputs_prefix == "Doppel.GetAlerts"
+    assert result.outputs_key_field == "id"
+    assert result.outputs["alerts"][0]["id"] == "TET-1953443"
+    assert "Alert Summary" in result.readable_output
+
+
+def test_doppel_get_alerts_command_no_results(client, mocker):
+    """Test doppel_get_alerts_command when no alerts are found."""
+
+    # Mock the API response to return an empty list
+    mocker.patch.object(client, "get_alerts", return_value={"alerts": []})
+
+    args = {
+        "search_key": "non-existent-key",
+        "queue_state": "closed",
+        "product": "unknown",
+        "created_before": "2025-01-01T00:00:00Z",
+        "created_after": "2025-01-01T00:00:00Z",
+        "sort_type": "created",
+        "sort_order": "asc",
+        "page": 1,
+        "tags": "invalid-tag",
+    }
+
+    result = doppel_get_alerts_command(client, args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs == {"alerts": []}  # Expecting an empty result
+    assert "No alerts were found" not in result.readable_output  # Should not raise an error, just be empty
+
+
+def test_doppel_get_alerts_command_api_error(client, mocker):
+    """Test doppel_get_alerts_command when API raises an exception."""
+
+    # Mock the API call to raise an exception
+    mocker.patch.object(client, "get_alerts", side_effect=Exception("API failure"))
+
+    args = {
+        "search_key": "test-key",
+        "queue_state": "open",
+        "product": "domains",
+        "created_before": "2025-01-01T00:00:00Z",
+        "created_after": "2025-01-01T00:00:00Z",
+        "sort_type": "created",
+        "sort_order": "asc",
+        "page": 1,
+        "tags": "tag1,tag2",
+    }
+
+    with pytest.raises(Exception, match="No alerts were found with the given parameters :- API failure."):
+        doppel_get_alerts_command(client, args)
+
+
+def test_doppel_create_alert_command(client, mocker):
+    test_response = util_load_json("test_data/create-alert.json")
+
+    client.create_alert.return_value = test_response
+
+    args = {
+        "entity": "test-doppel.com"  # Ensure 'entity' is included in the arguments
+    }
+
+    result = doppel_create_alert_command(client, args)
+
+    assert isinstance(result, CommandResults)
+
+    assert result.outputs_prefix == "Doppel.CreatedAlert"
+    assert result.outputs_key_field == "id"
+    assert result.outputs == test_response  # Check if the result matches the mocked response
+
+    assert "Alert Summary" in result.readable_output
+
+
+def test_doppel_create_alert_command_missing_entity(client):
+    """Test case when 'entity' is missing in the arguments."""
+    args = {}  # Missing 'entity'
+
+    with pytest.raises(ValueError, match="Entity must be specified to create an alert."):
+        doppel_create_alert_command(client, args)
+
+
+def test_doppel_create_alert_command_failure(mocker):
+    """Test doppel_create_alert_command when alert creation fails."""
+    # Mock client
+    mock_client = MagicMock()
+
+    # Simulate API failure
+    mock_client.create_alert.side_effect = Exception("API call failed")
+
+    # Define arguments
+    test_args = {"entity": "test_entity"}
+
+    # Verify exception is raised
+    with pytest.raises(Exception, match="Failed to create the alert with the given parameters:- API call failed"):
+        doppel_create_alert_command(client=mock_client, args=test_args)
+
+
+def test_doppel_get_alerts_no_results(mocker):
+    """Test when no alerts are found (empty response)."""
+
+    mock_client = MagicMock()
+    mock_client.get_alerts.return_value = {"alerts": []}
+
+    test_args = {"queue_state": "resolved"}
+
+    result = doppel_get_alerts_command(mock_client, test_args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs_prefix == "Doppel.GetAlerts"
+    assert result.outputs == {"alerts": []}
+    assert "No alerts were found" not in result.readable_output
+
+
+def test_doppel_get_alerts_missing_params(mocker):
+    """Test when query parameters are missing."""
+
+    mock_client = MagicMock()
+    mock_client.get_alerts.return_value = {"alerts": [{"id": "125", "name": "Alert"}]}
+
+    test_args = {}  # No parameters provided
+
+    result = doppel_get_alerts_command(mock_client, test_args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs_prefix == "Doppel.GetAlerts"
+    assert len(result.outputs) == 1
+    assert result.outputs["alerts"][0]["id"] == "125"
+
+
+def test_doppel_get_alerts_optional_params(mocker):
+    """Test handling of optional parameters like tags and pagination."""
+
+    mock_client = MagicMock()
+    mock_client.get_alerts.return_value = {"alerts": [{"id": "126", "name": "Optional Param Test"}]}
+
+    test_args = {"tags": "phishing,low", "page": "2"}
+
+    result = doppel_get_alerts_command(mock_client, test_args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs_prefix == "Doppel.GetAlerts"
+    assert len(result.outputs) == 1
+    assert result.outputs["alerts"][0]["name"] == "Optional Param Test"
+
+
+def test_doppel_create_abuse_alert_command(client, mocker):
+    test_response = util_load_json("test_data/create-abuse-alert.json")
+
+    client.create_abuse_alert.return_value = test_response
+
+    args = {"entity": "test-doppel.com"}
+
+    result = doppel_create_abuse_alert_command(client, args)
+
+    assert isinstance(result, CommandResults)
+
+    assert result.outputs_prefix == "Doppel.AbuseAlert"
+    assert result.outputs_key_field == "id"
+
+    expected_output = util_load_json("test_data/create-abuse-alert.json")
+
+    assert result.outputs == expected_output
+
+    assert "Alert Summary" in result.readable_output
+
+
+def test_doppel_create_abuse_alert_command_missing_entity(client):
+    args = {}
+
+    with pytest.raises(ValueError, match="Entity must be specified to create an abuse alert."):
+        doppel_create_abuse_alert_command(client, args)
+
+
+def test_doppel_create_abuse_alert_command_failure(mocker):
+    """Test doppel_create_abuse_alert_command when abuse alert creation fails."""
+    # Mock client
+    mock_client = MagicMock()
+
+    # Simulate API failure
+    mock_client.create_abuse_alert.side_effect = Exception("API call failed")
+
+    # Define arguments
+    test_args = {"entity": "test_entity"}
+
+    # Verify exception is raised
+    with pytest.raises(Exception, match="Failed to create the abuse alert with the given parameters:- API call failed"):
+        doppel_create_abuse_alert_command(client=mock_client, args=test_args)
+
+
+def test_get_modified_remote_data_command(mocker):
+    """
+    Test that `get_modified_remote_data_command` returns modified incident IDs.
+    """
+    mock_client = MagicMock()
+    mock_alerts = [
+        {"id": "alert-001", "name": "Alert 1"},
+        {"id": "alert-002", "name": "Alert 2"},
+    ]
+    mock_client.get_alerts.return_value = {"alerts": mock_alerts}
+
+    args = {"lastUpdate": "2025-02-24T14:30:00Z"}
+
+    mocker.patch.object(demisto, "debug")
+
+    result = get_modified_remote_data_command(mock_client, args)
+
+    assert result.modified_incident_ids == ["alert-001", "alert-002"]
+
+
+def test_doppel_update_alert_both_alert_id_and_entity(mocker):
+    """Test failure when both alert_id and entity are provided."""
+
+    mock_client = MagicMock()
+
+    test_args = {"alert_id": "123", "entity": "TestEntity", "queue_state": "open"}
+
+    with pytest.raises(ValueError, match="Only one of 'alert_id' or 'entity' can be specified."):
+        doppel_update_alert_command(mock_client, test_args)
+
+
+def test_doppel_update_alert_no_update_fields(mocker):
+    """Test failure when no update fields are provided."""
+
+    mock_client = MagicMock()
+
+    test_args = {"alert_id": "123"}
+
+    with pytest.raises(ValueError, match="At least one of 'queue_state', 'entity_state', or 'comment' must be provided."):
+        doppel_update_alert_command(mock_client, test_args)
+
+
+def test_doppel_update_alert_api_failure(mocker):
+    """Test API failure handling when an exception is raised."""
+
+    mock_client = MagicMock()
+    mock_client.update_alert.side_effect = Exception("API error")
+
+    test_args = {"alert_id": "123", "queue_state": "open"}
+
+    with pytest.raises(Exception, match="Failed to update the alert with the given parameters"):
+        doppel_update_alert_command(mock_client, test_args)
+
+
+def test_doppel_update_alert_partial_update(mocker):
+    """Test updating an alert with only one field (entity_state)."""
+
+    mock_client = MagicMock()
+    mock_client.update_alert.return_value = {"id": "124", "entity_state": "investigating"}
+
+    test_args = {"alert_id": "124", "entity_state": "investigating"}
+
+    result = doppel_update_alert_command(mock_client, test_args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs_prefix == "Doppel.UpdatedAlert"
+    assert result.outputs["id"] == "124"
+    assert result.outputs["entity_state"] == "investigating"
+
+
+def test_doppel_update_alert_only_entity(mocker):
+    """Test updating an alert using 'entity' instead of 'alert_id'."""
+
+    mock_client = MagicMock()
+    mock_client.update_alert.return_value = {"id": "125", "queue_state": "open", "entity": "TestEntity"}
+
+    test_args = {"entity": "TestEntity", "queue_state": "open"}
+
+    result = doppel_update_alert_command(mock_client, test_args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs_prefix == "Doppel.UpdatedAlert"
+    assert result.outputs["entity"] == "TestEntity"
+    assert result.outputs["queue_state"] == "open"
+
+
+def test_doppel_update_alert_only_queue_state(mocker):
+    """Test updating an alert with only queue_state provided."""
+
+    mock_client = MagicMock()
+    mock_client.update_alert.return_value = {"id": "126", "queue_state": "archived"}
+
+    test_args = {"alert_id": "126", "queue_state": "archived"}
+
+    result = doppel_update_alert_command(mock_client, test_args)
+
+    assert isinstance(result, CommandResults)
+    assert result.outputs_prefix == "Doppel.UpdatedAlert"
+    assert result.outputs["queue_state"] == "archived"
+
+
+def test_format_datetime():
+    """Test format_datetime with various datetime formats."""
+
+    # Test valid ISO 8601 format
+    assert format_datetime("2025-02-27T14:30:00") == "2025-02-27T14:30:00"
+
+    # Test ISO 8601 with 'Z'
+    assert format_datetime("2025-02-27T14:30:00Z") == "2025-02-27T14:30:00+00:00"
+
+    # Test empty input
+    assert format_datetime("") is None
+
+    # Test None input
+    assert format_datetime(None) is None
+
+    # Test invalid format
+    with pytest.raises(ValueError):
+        format_datetime("invalid-date")
+
+
+def test_paginated_call_to_get_alerts():
+    """Test the _paginated_call_to_get_alerts function."""
+
+    # Mock client and response
+    mock_client = MagicMock()
+    mock_client.get_alerts.return_value = {"alerts": [{"id": "alert1"}, {"id": "alert2"}]}
+
+    # Define test inputs
+    page = 1
+    last_fetch_datetime = datetime(2025, 2, 27, 14, 30, 0)
+
+    # Call function
+    result = _paginated_call_to_get_alerts(mock_client, page, last_fetch_datetime)
+
+    # Assertions
+    expected_query_params = {
+        "created_after": last_fetch_datetime.strftime(DOPPEL_API_DATE_FORMAT),
+        "sort_type": "date_sourced",
+        "sort_order": "asc",
+        "page": page,
+        "page_size": 200,
+    }
+
+    mock_client.get_alerts.assert_called_once_with(params=expected_query_params)  # Ensure correct API call
+    assert isinstance(result, list)  # Should return a list
+    assert len(result) == 2  # Should return 2 alerts
+    assert result[0]["id"] == "alert1"  # Validate alert content
+    assert result[1]["id"] == "alert2"
+
+    # Test case where no alerts are returned
+    mock_client.get_alerts.return_value = {}
+    result = _paginated_call_to_get_alerts(mock_client, page, last_fetch_datetime)
+    assert result is None  # Should return None if no alerts key exists
+
+
+def test_get_last_fetch_datetime():
+    """Test _get_last_fetch_datetime with different inputs."""
+
+    # Test case: Valid last_run timestamp
+    last_run = "2025-02-24T14:30:00Z"
+    expected_datetime = datetime.strptime(last_run, "%Y-%m-%dT%H:%M:%SZ")
+    assert _get_last_fetch_datetime(last_run) == expected_datetime
+
+    # Test case: No last_run, using first_fetch with "3 days"
+    result = _get_last_fetch_datetime(None)
+    assert isinstance(result, datetime)  # Ensure result is a datetime object
+
+    # Test case: Invalid last_run format should raise ValueError
+    with pytest.raises(ValueError):
+        _get_last_fetch_datetime("invalid-date")
+
+
+def test_get_mirroring_fields():
+    """Test _get_mirroring_fields function."""
+
+    # Mocking expected return values
+    demisto_params = {"mirror_direction": "Both"}
+    demisto_instance = "Test_Integration"
+
+    # Setting mock values manually
+    demisto.params = lambda: demisto_params
+    demisto.integrationInstance = lambda: demisto_instance
+
+    expected_result = {
+        "mirror_direction": MIRROR_DIRECTION.get("Both"),
+        "mirror_instance": "Test_Integration",
+        "incident_type": "Doppel_Incident",
+    }
+
+    assert _get_mirroring_fields() == expected_result
+
+
+def test_get_remote_updated_incident_data_with_entry():
+    """Test _get_remote_updated_incident_data_with_entry with a mock client."""
+
+    # Mock client
+    mock_client = MagicMock()
+
+    # Test data
+    doppel_alert_id = "12345"
+    last_update_str = "2025-02-24T14:30:00.120000Z"  # ISO format
+
+    # Mock API response
+    mock_client.get_alert.return_value = {
+        "id": doppel_alert_id,
+        "audit_logs": [
+            {"timestamp": "2024-11-27T06:51:50.357664", "type": "alert_create"},
+            {"timestamp": "2024-11-27T06:51:50.357664", "type": "alert_create"},
+        ],
+    }
+
+    # Call function
+    updated_alert, entries = _get_remote_updated_incident_data_with_entry(mock_client, doppel_alert_id, last_update_str)
+
+    # Assertions
+    assert updated_alert or updated_alert is None, "Updated alert should be either valid or None"
+
+
+def test_get_remote_updated_incident_data_never_synced_timestamp():
+    """
+    Given:
+        - A lastUpdate timestamp of a never-synced incident ("0001-01-01T00:00:00Z", no microseconds).
+    When:
+        - Running _get_remote_updated_incident_data_with_entry.
+    Then:
+        - The unparseable timestamp does not raise, and the updated alert is still returned
+          so the first incoming mirror sync completes.
+    """
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {
+        "id": "12345",
+        "queue_state": "actioned",
+        "audit_logs": [{"timestamp": "2024-11-27T06:51:50.357664", "type": "alert_create"}],
+    }
+
+    updated_alert, entries = _get_remote_updated_incident_data_with_entry(mock_client, "12345", "0001-01-01T00:00:00Z")
+
+    assert updated_alert is not None
+    assert updated_alert["queue_state"] == "actioned"
+    assert len(entries) == 1
+
+
+def test_get_remote_updated_incident_data_no_audit_logs():
+    """
+    Given:
+        - An updated alert whose payload has no audit logs.
+    When:
+        - Running _get_remote_updated_incident_data_with_entry.
+    Then:
+        - The alert field updates are still returned (not discarded), with no note entries.
+    """
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {
+        "id": "12345",
+        "queue_state": "actioned",
+    }
+
+    updated_alert, entries = _get_remote_updated_incident_data_with_entry(mock_client, "12345", "2025-02-24T14:30:00.120000Z")
+
+    assert updated_alert is not None
+    assert updated_alert["queue_state"] == "actioned"
+    assert entries == []
+
+
+def test_get_remote_updated_incident_data_empty_audit_logs():
+    """
+    Given:
+        - An updated alert whose audit_logs list is empty.
+    When:
+        - Running _get_remote_updated_incident_data_with_entry.
+    Then:
+        - No exception is raised and the alert field updates are still returned.
+    """
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {
+        "id": "12345",
+        "queue_state": "actioned",
+        "audit_logs": [],
+    }
+
+    updated_alert, entries = _get_remote_updated_incident_data_with_entry(mock_client, "12345", "2025-02-24T14:30:00.120000Z")
+
+    assert updated_alert is not None
+    assert updated_alert["queue_state"] == "actioned"
+    assert entries == []
+
+
+def test_get_modified_remote_data_command_paginates(mocker):
+    """
+    Given:
+        - More modified alerts than fit in a single API page.
+    When:
+        - Running get_modified_remote_data_command.
+    Then:
+        - All pages are drained and every modified alert ID is returned exactly once.
+    """
+    mock_client = MagicMock()
+    first_page = [{"id": f"alert-{i:03d}"} for i in range(200)]
+    second_page = [{"id": f"alert-{i:03d}"} for i in range(200, 250)]
+    mock_client.get_alerts.side_effect = [{"alerts": first_page}, {"alerts": second_page}]
+
+    mocker.patch.object(demisto, "debug")
+
+    result = get_modified_remote_data_command(mock_client, {"lastUpdate": "2025-02-24T14:30:00Z"})
+
+    assert len(result.modified_incident_ids) == 250
+    assert result.modified_incident_ids[0] == "alert-000"
+    assert result.modified_incident_ids[-1] == "alert-249"
+    assert mock_client.get_alerts.call_count == 2
+    first_call_params = mock_client.get_alerts.call_args_list[0][1]["params"]
+    second_call_params = mock_client.get_alerts.call_args_list[1][1]["params"]
+    assert first_call_params["page"] == 0
+    assert second_call_params["page"] == 1
+    assert first_call_params["page_size"] == 200
+
+
+def test_client_initialization_with_proxy(mocker):
+    """Test Client initialization with proxy enabled."""
+    base_url = "https://api.doppel.com/v1"
+    api_key = "test-api-key"
+
+    # Mock BaseClient.__init__ to verify proxy is passed correctly
+    mock_base_init = mocker.patch("Doppel.BaseClient.__init__", return_value=None)
+
+    # Create client with proxy enabled
+    Client(base_url=base_url, api_key=api_key, proxy=True, verify=True)
+
+    # Verify BaseClient was initialized with proxy=True
+    mock_base_init.assert_called_once()
+    call_kwargs = mock_base_init.call_args[1]
+    assert call_kwargs["proxy"]
+    assert call_kwargs["verify"]
+
+
+def test_client_initialization_without_proxy(mocker):
+    """Test Client initialization with proxy disabled."""
+    base_url = "https://api.doppel.com/v1"
+    api_key = "test-api-key"
+
+    # Mock BaseClient.__init__
+    mock_base_init = mocker.patch("Doppel.BaseClient.__init__", return_value=None)
+
+    # Create client with proxy disabled
+    Client(base_url=base_url, api_key=api_key, proxy=False, verify=True)
+
+    # Verify BaseClient was initialized with proxy=False
+    mock_base_init.assert_called_once()
+    call_kwargs = mock_base_init.call_args[1]
+    assert call_kwargs["proxy"] is False
+
+
+def test_client_initialization_proxy_default_none(mocker):
+    """Test Client initialization with proxy parameter not specified (defaults to None)."""
+    base_url = "https://api.doppel.com/v1"
+    api_key = "test-api-key"
+
+    # Mock BaseClient.__init__
+    mock_base_init = mocker.patch("Doppel.BaseClient.__init__", return_value=None)
+
+    # Create client without specifying proxy
+    Client(base_url=base_url, api_key=api_key, verify=True)
+
+    # Verify BaseClient was initialized with proxy=None
+    mock_base_init.assert_called_once()
+    call_kwargs = mock_base_init.call_args[1]
+    assert call_kwargs["proxy"] is None
+
+
+def test_client_sends_attribution_headers(requests_mock):
+    """Every Doppel API request carries the x-doppel-client attribution header and User-Agent."""
+    from Doppel import CLIENT_ATTRIBUTION, PACK_VERSION
+
+    client = Client(base_url="https://api.doppel.com/v1", api_key="test-api-key", verify=True)
+    alert_mock = requests_mock.get("https://api.doppel.com/v1/alert", json={"id": "TET-1"})
+
+    client.get_alert(id="TET-1", entity="")
+
+    assert f"xsoar/{PACK_VERSION}" == CLIENT_ATTRIBUTION
+    assert alert_mock.last_request.headers["x-doppel-client"] == CLIENT_ATTRIBUTION
+    assert alert_mock.last_request.headers["User-Agent"] == f"doppel-{CLIENT_ATTRIBUTION}"
+    # Attribution never replaces auth headers.
+    assert alert_mock.last_request.headers["x-api-key"] == "test-api-key"
+
+
+SIGNED_URL_V1 = "https://storage.googleapis.com/screenshots-bucket/TET-1234/shot-v1.png?X-Goog-Signature=abc&X-Goog-Expires=3600"
+SIGNED_URL_V1_RESIGNED = (
+    "https://storage.googleapis.com/screenshots-bucket/TET-1234/shot-v1.png?X-Goog-Signature=zzz&X-Goog-Expires=3600"
+)
+SIGNED_URL_V2 = "https://storage.googleapis.com/screenshots-bucket/TET-1234/shot-v2.png?X-Goog-Signature=def&X-Goog-Expires=3600"
+
+
+def _mock_screenshot_context(mocker, initial=None):
+    """Mock the integration context read/write used for screenshot version tracking.
+
+    Returns copies on read and stores copies on write, mirroring the real server
+    behavior (the context is serialized, so callers never share object references).
+    """
+    import copy
+
+    state = {"screenshot_versions": dict(initial or {})}
+    mocker.patch("Doppel.get_integration_context", side_effect=lambda: copy.deepcopy(state))
+
+    def _set(new_context):
+        snapshot = copy.deepcopy(new_context)
+        state.clear()
+        state.update(snapshot)
+
+    mocker.patch("Doppel.set_integration_context", side_effect=_set)
+    return state
+
+
+def test_screenshot_blob_path_ignores_signature():
+    """Re-signed URLs for the same object must map to the same dedup key."""
+    assert _screenshot_blob_path(SIGNED_URL_V1) == _screenshot_blob_path(SIGNED_URL_V1_RESIGNED)
+    assert _screenshot_blob_path(SIGNED_URL_V1) != _screenshot_blob_path(SIGNED_URL_V2)
+    assert _screenshot_blob_path(SIGNED_URL_V1) == "storage.googleapis.com/screenshots-bucket/TET-1234/shot-v1.png"
+
+
+def test_get_alert_screenshot_command_attaches_new_screenshot(mocker):
+    """First run downloads the screenshot and returns a file entry plus summary."""
+    _mock_screenshot_context(mocker)
+    file_entry = {"Type": 3, "File": "TET-1234-screenshot-shot-v1.png"}
+    mocker.patch("Doppel.fileResult", return_value=file_entry)
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"id": "TET-1234", "screenshot_url": SIGNED_URL_V1}
+    mock_client.download_screenshot.return_value = b"png-bytes"
+
+    results = doppel_get_alert_screenshot_command(mock_client, {"id": "TET-1234"})
+
+    mock_client.download_screenshot.assert_called_once_with(SIGNED_URL_V1)
+    assert results[0] is file_entry
+    summary = results[1]
+    assert summary.outputs["attached"] is True
+    assert summary.outputs["version"] == "shot-v1.png"
+
+
+def test_get_alert_screenshot_command_skips_unchanged_screenshot(mocker):
+    """A re-signed URL for the already-attached version attaches nothing."""
+    _mock_screenshot_context(mocker, {"TET-1234": _screenshot_blob_path(SIGNED_URL_V1)})
+    file_result = mocker.patch("Doppel.fileResult")
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"id": "TET-1234", "screenshot_url": SIGNED_URL_V1_RESIGNED}
+
+    results = doppel_get_alert_screenshot_command(mock_client, {"id": "TET-1234"})
+
+    mock_client.download_screenshot.assert_not_called()
+    file_result.assert_not_called()
+    assert len(results) == 1
+    assert results[0].outputs["attached"] is False
+    assert "already current" in results[0].readable_output
+
+
+def test_get_alert_screenshot_command_force_reattaches(mocker):
+    """force=true re-downloads even when the version is current."""
+    _mock_screenshot_context(mocker, {"TET-1234": _screenshot_blob_path(SIGNED_URL_V1)})
+    mocker.patch("Doppel.fileResult", return_value={"Type": 3})
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"id": "TET-1234", "screenshot_url": SIGNED_URL_V1_RESIGNED}
+    mock_client.download_screenshot.return_value = b"png-bytes"
+
+    results = doppel_get_alert_screenshot_command(mock_client, {"id": "TET-1234", "force": "true"})
+
+    mock_client.download_screenshot.assert_called_once()
+    assert results[-1].outputs["attached"] is True
+
+
+def test_get_alert_screenshot_command_new_version_replaces_tracked(mocker):
+    """A new screenshot version is attached and becomes the tracked version."""
+    context = _mock_screenshot_context(mocker, {"TET-1234": _screenshot_blob_path(SIGNED_URL_V1)})
+    mocker.patch("Doppel.fileResult", return_value={"Type": 3})
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"id": "TET-1234", "screenshot_url": SIGNED_URL_V2}
+    mock_client.download_screenshot.return_value = b"new-png-bytes"
+
+    results = doppel_get_alert_screenshot_command(mock_client, {"id": "TET-1234"})
+
+    assert results[-1].outputs["attached"] is True
+    assert context["screenshot_versions"]["TET-1234"] == _screenshot_blob_path(SIGNED_URL_V2)
+
+
+def test_get_alert_screenshot_command_no_screenshot(mocker):
+    """Alerts without screenshots return a readable message and no file."""
+    _mock_screenshot_context(mocker)
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"id": "TET-1234"}
+
+    results = doppel_get_alert_screenshot_command(mock_client, {"id": "TET-1234"})
+
+    mock_client.download_screenshot.assert_not_called()
+    assert len(results) == 1
+    assert "no screenshot available" in results[0].readable_output
+
+
+def test_get_alert_screenshot_command_requires_id(mocker):
+    with pytest.raises(ValueError, match="id must be specified"):
+        doppel_get_alert_screenshot_command(MagicMock(), {})
+
+
+def test_mirroring_attaches_screenshot_when_param_enabled(mocker):
+    """get-remote-data appends the screenshot file entry when the opt-in param is set."""
+    from Doppel import _get_remote_updated_incident_data_with_entry
+
+    _mock_screenshot_context(mocker)
+    file_entry = {"Type": 3, "File": "TET-1234-screenshot-shot-v1.png"}
+    mocker.patch("Doppel.fileResult", return_value=file_entry)
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"queue_state": "archived", "screenshot_url": SIGNED_URL_V1, "audit_logs": []}
+    mock_client.download_screenshot.return_value = b"png-bytes"
+
+    _, entries = _get_remote_updated_incident_data_with_entry(
+        mock_client, "TET-1234", "2025-01-19T08:44:52Z", attach_screenshots=True
+    )
+
+    assert file_entry in entries
+
+
+def test_mirroring_skips_screenshot_when_param_disabled(mocker):
+    """Default behavior: no screenshot download during mirroring."""
+    from Doppel import _get_remote_updated_incident_data_with_entry
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"queue_state": "archived", "screenshot_url": SIGNED_URL_V1, "audit_logs": []}
+
+    _, entries = _get_remote_updated_incident_data_with_entry(mock_client, "TET-1234", "2025-01-19T08:44:52Z")
+
+    mock_client.download_screenshot.assert_not_called()
+    assert entries == []
+
+
+def test_mirroring_skips_unchanged_screenshot_version(mocker):
+    """Re-signed URL for an unchanged screenshot never duplicates the file on sync."""
+    from Doppel import _get_remote_updated_incident_data_with_entry
+
+    _mock_screenshot_context(mocker, {"TET-1234": _screenshot_blob_path(SIGNED_URL_V1)})
+    file_result = mocker.patch("Doppel.fileResult")
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"queue_state": "archived", "screenshot_url": SIGNED_URL_V1_RESIGNED, "audit_logs": []}
+
+    _, entries = _get_remote_updated_incident_data_with_entry(
+        mock_client, "TET-1234", "2025-01-19T08:44:52Z", attach_screenshots=True
+    )
+
+    mock_client.download_screenshot.assert_not_called()
+    file_result.assert_not_called()
+    assert entries == []
+
+
+def test_mirroring_screenshot_failure_does_not_block_sync(mocker):
+    """A download error must not prevent the field sync itself."""
+    from Doppel import _get_remote_updated_incident_data_with_entry
+
+    _mock_screenshot_context(mocker)
+
+    mock_client = MagicMock()
+    mock_client.get_alert.return_value = {"queue_state": "archived", "screenshot_url": SIGNED_URL_V1, "audit_logs": []}
+    mock_client.download_screenshot.side_effect = Exception("GCS unreachable")
+
+    updated_alert, entries = _get_remote_updated_incident_data_with_entry(
+        mock_client, "TET-1234", "2025-01-19T08:44:52Z", attach_screenshots=True
+    )
+
+    assert updated_alert is not None
+    assert entries == []
+
+
+def test_download_screenshot_rejects_non_https():
+    """The screenshot downloader refuses cleartext URLs outright."""
+    from CommonServerPython import DemistoException
+
+    client = Client(base_url="https://api.doppel.com/v1", api_key="test-api-key", verify=True)
+    with pytest.raises(DemistoException, match="non-HTTPS"):
+        client.download_screenshot("http://storage.googleapis.com/screenshots-bucket/TET-1234/shot-v1.png")
+
+
+def test_track_screenshot_version_prunes_oldest(mocker):
+    """The tracking map never grows beyond the cap; oldest entries are evicted first."""
+    import Doppel as doppel_module
+
+    context = _mock_screenshot_context(mocker)
+    mocker.patch.object(doppel_module, "SCREENSHOT_VERSIONS_MAX_TRACKED", 3)
+
+    for i in range(5):
+        _track_screenshot_version(f"TET-{i}", f"bucket/shot-{i}.png")
+
+    versions = context["screenshot_versions"]
+    assert len(versions) == 3
+    assert set(versions) == {"TET-2", "TET-3", "TET-4"}
+
+
+def test_attach_screenshot_if_new_reports_missing_url(mocker):
+    _mock_screenshot_context(mocker)
+    file_entry, blob_path, message = _attach_screenshot_if_new(MagicMock(), "TET-1", None)
+    assert file_entry is None
+    assert blob_path is None
+    assert "no screenshot available" in message
+
+
+def test_pack_version_matches_pack_metadata():
+    """PACK_VERSION (used in attribution headers) must match pack_metadata.json.
+
+    pack_metadata.json is not readable at runtime, so Doppel.py carries the version as a
+    hardcoded constant that must be bumped manually on every release. This test makes CI
+    fail if the two ever drift apart.
+    """
+    from pathlib import Path
+
+    from Doppel import PACK_VERSION
+
+    pack_metadata_path = Path(__file__).resolve().parents[2] / "pack_metadata.json"
+    pack_metadata = json.loads(pack_metadata_path.read_text())
+
+    assert pack_metadata["currentVersion"] == PACK_VERSION, (
+        f"pack_metadata.json currentVersion ({pack_metadata['currentVersion']}) does not match "
+        f"PACK_VERSION ({PACK_VERSION}) in Doppel.py; bump the constant so the x-doppel-client "
+        f"attribution header reports the released pack version."
+    )
+
+
+def test_main_function_with_proxy_enabled(mocker):
+    """Test main function when proxy is enabled in params."""
+    # Mock demisto functions
+    mocker.patch.object(
+        demisto,
+        "params",
+        return_value={
+            "url": "https://api.doppel.com",
+            "credentials": {"password": "test-api-key"},
+            "proxy": True,
+            "insecure": False,
+        },
+    )
+    mocker.patch.object(demisto, "command", return_value="test-module")
+    mocker.patch.object(demisto, "args", return_value={})
+
+    # Mock Client initialization
+    mock_client_init = mocker.patch("Doppel.Client")
+
+    # Mock test_module to return 'ok'
+    mocker.patch("Doppel.test_module", return_value="ok")
+    mocker.patch("Doppel.return_results")
+
+    # Call main
+    from Doppel import main
+
+    main()
+
+    # Verify Client was called with proxy=True
+    mock_client_init.assert_called_once()
+    call_kwargs = mock_client_init.call_args[1]
+    assert call_kwargs["proxy"] is True
+    assert call_kwargs["verify"] is True
+
+
+def test_main_function_with_proxy_disabled(mocker):
+    """Test main function when proxy is disabled in params."""
+    # Mock demisto functions
+    mocker.patch.object(
+        demisto,
+        "params",
+        return_value={
+            "url": "https://api.doppel.com",
+            "credentials": {"password": "test-api-key"},
+            "proxy": False,
+            "insecure": False,
+        },
+    )
+    mocker.patch.object(demisto, "command", return_value="test-module")
+    mocker.patch.object(demisto, "args", return_value={})
+
+    # Mock Client initialization
+    mock_client_init = mocker.patch("Doppel.Client")
+
+    # Mock test_module to return 'ok'
+    mocker.patch("Doppel.test_module", return_value="ok")
+    mocker.patch("Doppel.return_results")
+
+    # Call main
+    from Doppel import main
+
+    main()
+
+    # Verify Client was called with proxy=False
+    mock_client_init.assert_called_once()
+    call_kwargs = mock_client_init.call_args[1]
+    assert call_kwargs["proxy"] is False
+
+
+def test_parse_fetch_timeout(mocker):
+    """fetch_timeout is parsed to a float; blank/invalid/missing yields no limit (None)."""
+    mocker.patch.object(demisto, "params", return_value={"fetch_timeout": "30"})
+    assert _parse_fetch_timeout() == 30.0
+    mocker.patch.object(demisto, "params", return_value={"fetch_timeout": ""})
+    assert _parse_fetch_timeout() is None
+    mocker.patch.object(demisto, "params", return_value={"fetch_timeout": None})
+    assert _parse_fetch_timeout() is None
+    mocker.patch.object(demisto, "params", return_value={"fetch_timeout": "abc"})
+    assert _parse_fetch_timeout() is None
+    mocker.patch.object(demisto, "params", return_value={})
+    assert _parse_fetch_timeout() is None
+
+
+def test_parse_max_fetch(mocker):
+    """max_fetch is parsed to a positive int; blank/invalid/non-positive falls back to the default."""
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": "25"})
+    assert _parse_max_fetch() == 25
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": ""})
+    assert _parse_max_fetch() == 10
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": "0"})
+    assert _parse_max_fetch() == 10
+    mocker.patch.object(demisto, "params", return_value={"max_fetch": "-5"})
+    assert _parse_max_fetch() == 10
+    mocker.patch.object(demisto, "params", return_value={})
+    assert _parse_max_fetch() == 10
+
+
+def test_incident_alert_id():
+    """The Doppel alert id is read from dbotMirrorId first, then from rawJSON, else empty."""
+    assert _incident_alert_id({"dbotMirrorId": "TET-1"}) == "TET-1"
+    assert _incident_alert_id({"rawJSON": json.dumps({"id": "TET-2"})}) == "TET-2"
+    assert _incident_alert_id({"rawJSON": "not-json"}) == ""
+    assert _incident_alert_id({}) == ""
+
+
+def test_alert_to_incident():
+    """An alert becomes an incident named by its external id, with dbotMirrorId, severity, and merged mirroring fields."""
+    alert = {"id": "TET-1953443", "created_at": "2025-01-27T07:55:10.063742", "severity": "high"}
+    incident = _alert_to_incident(alert, {"mirror_direction": "In"})
+    assert incident["name"] == "Doppel Alert TET-1953443"
+    assert incident["type"] == "Doppel Alert"
+    assert incident["dbotMirrorId"] == "TET-1953443"
+    assert incident["occurred"] == "2025-01-27T07:55:10Z"
+    assert incident["severity"] == 3
+    raw = json.loads(incident["rawJSON"])
+    assert raw["mirror_direction"] == "In"
+
+
+def test_xsoar_severity():
+    """Doppel severities map to XSOAR numeric severities; unknown/blank values default to 0 (Unknown)."""
+    assert _xsoar_severity({"severity": "low"}) == 1
+    assert _xsoar_severity({"severity": "Medium"}) == 2
+    assert _xsoar_severity({"severity": "HIGH"}) == 3
+    assert _xsoar_severity({"severity": "critical"}) == 4
+    assert _xsoar_severity({"severity": "bogus"}) == 0
+    assert _xsoar_severity({}) == 0
+
+
+def _fetch_demisto_mocks(mocker, params, last_run):
+    mocker.patch.object(demisto, "params", return_value=params)
+    mocker.patch.object(demisto, "getLastRun", return_value=last_run)
+    set_last_run = mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(demisto, "incidents")
+    mocker.patch.object(demisto, "info")
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "integrationInstance", return_value="inst")
+    return set_last_run
+
+
+def test_fetch_incidents_dedupes_within_run(mocker):
+    """A duplicated alert id inside a single page creates only one incident."""
+    _fetch_demisto_mocks(
+        mocker,
+        params={"max_fetch": 50, "fetch_timeout": "30", "mirror_direction": "None"},
+        last_run={},
+    )
+    page = [
+        {"id": "TET-1", "created_at": "2025-01-27T07:55:10.063742"},
+        {"id": "TET-1", "created_at": "2025-01-27T07:55:10.063742"},  # duplicate id in same page
+        {"id": "TET-2", "created_at": "2025-01-27T07:55:11.063742"},
+    ]
+    mocker.patch("Doppel._paginated_call_to_get_alerts", side_effect=[page, []])
+
+    fetch_incidents_command(client=MagicMock(), args={})
+
+    created = demisto.incidents.call_args[0][0]
+    assert sorted(i["name"] for i in created) == ["Doppel Alert TET-1", "Doppel Alert TET-2"]
+
+
+def test_fetch_incidents_skips_recently_seen_ids(mocker):
+    """Ids persisted from the previous run's boundary second are not re-created on the inclusive re-pull."""
+    _fetch_demisto_mocks(
+        mocker,
+        params={"max_fetch": 50, "fetch_timeout": "30", "mirror_direction": "None"},
+        last_run={"last_run": "2025-01-27T07:55:10Z", "incidents_queue": [], "recently_seen_ids": ["TET-1"]},
+    )
+    page = [
+        {"id": "TET-1", "created_at": "2025-01-27T07:55:10.063742"},  # seen on the prior run
+        {"id": "TET-2", "created_at": "2025-01-27T07:55:12.063742"},  # genuinely new
+    ]
+    mocker.patch("Doppel._paginated_call_to_get_alerts", side_effect=[page, []])
+
+    fetch_incidents_command(client=MagicMock(), args={})
+
+    created = demisto.incidents.call_args[0][0]
+    assert [i["name"] for i in created] == ["Doppel Alert TET-2"]
+
+
+def test_fetch_incidents_persists_boundary_ids(mocker):
+    """The cursor advances to the newest alert second and only that second's ids are persisted."""
+    set_last_run = _fetch_demisto_mocks(
+        mocker,
+        params={"max_fetch": 50, "fetch_timeout": "30", "mirror_direction": "None"},
+        last_run={},
+    )
+    page = [
+        {"id": "TET-1", "created_at": "2025-01-27T07:55:10.063742"},
+        {"id": "TET-2", "created_at": "2025-01-27T07:55:12.063742"},  # newest second
+    ]
+    mocker.patch("Doppel._paginated_call_to_get_alerts", side_effect=[page, []])
+
+    fetch_incidents_command(client=MagicMock(), args={})
+
+    created = demisto.incidents.call_args[0][0]
+    assert all(i["dbotMirrorId"] for i in created)
+    last_run_data = set_last_run.call_args[0][0]
+    assert last_run_data["last_run"] == "2025-01-27T07:55:12Z"
+    assert last_run_data["recently_seen_ids"] == ["TET-2"]
+
+
+# ---------------- Revival reopen entries ----------------
+
+
+def test_reopen_entry_emitted_for_fresh_transition_into_active_queue():
+    """A queue move into an active queue after lastUpdate produces a dbotIncidentReopen entry."""
+    last_update = datetime(2025, 3, 1, 12, 0, 0)
+    alert = {"queue_state": "doppel_review"}
+    audit_logs = [
+        {"type": "queue_state_change", "value": "monitoring", "timestamp": "2025-02-01T09:00:00"},
+        {"type": "queue_state_change", "value": "Doppel Review", "timestamp": "2025-03-02T10:00:00"},
+    ]
+
+    entry = _reopen_entry_if_revived(alert, audit_logs, last_update)
+
+    assert entry is not None
+    assert entry["Contents"] == {"dbotIncidentReopen": True}
+
+
+def test_reopen_entry_not_emitted_for_inactive_queue():
+    """Alerts sitting in monitoring or archived never trigger a reopen."""
+    last_update = datetime(2025, 3, 1, 12, 0, 0)
+    audit_logs = [{"type": "queue_state_change", "value": "archived", "timestamp": "2025-03-02T10:00:00"}]
+
+    assert _reopen_entry_if_revived({"queue_state": "archived"}, audit_logs, last_update) is None
+    assert _reopen_entry_if_revived({"queue_state": "monitoring"}, audit_logs, last_update) is None
+
+
+def test_reopen_entry_not_emitted_for_stale_transition():
+    """An active queue state reached before lastUpdate does not reopen on every mirror cycle."""
+    last_update = datetime(2025, 3, 1, 12, 0, 0)
+    alert = {"queue_state": "actioned"}
+    audit_logs = [{"type": "queue_state_change", "value": "actioned", "timestamp": "2025-01-15T10:00:00"}]
+
+    assert _reopen_entry_if_revived(alert, audit_logs, last_update) is None
+
+
+def test_reopen_entry_requires_parseable_last_update():
+    """Without a usable lastUpdate there is no safe transition baseline, so no reopen."""
+    alert = {"queue_state": "actioned"}
+    audit_logs = [{"type": "queue_state_change", "value": "actioned", "timestamp": "2025-03-02T10:00:00"}]
+
+    assert _reopen_entry_if_revived(alert, audit_logs, None) is None
+
+
+# ---------------- API V2 (OAuth 2.0 client credentials) ----------------
+
+V2_BASE_URL = "https://api.doppel.com/v2"
+V2_TOKEN_URL = "https://api.doppel.com/oauth/token"
+
+
+def _v2_client():
+    return Client(
+        base_url=V2_BASE_URL,
+        verify=True,
+        api_version="v2",
+        oauth_client_id="test-client-id",
+        oauth_client_secret="test-client-secret",
+        token_url=V2_TOKEN_URL,
+    )
+
+
+def _mock_integration_context(mocker, initial=None):
+    """Replace the integration context with an in-memory store; returns the store."""
+    store = {"ctx": initial or {}}
+    mocker.patch("Doppel.get_integration_context", side_effect=lambda: store["ctx"])
+    mocker.patch("Doppel.set_integration_context", side_effect=lambda ctx: store.update(ctx=ctx))
+    return store
+
+
+def test_v2_mints_token_and_sends_bearer(mocker, requests_mock):
+    """With no cached token, a request first mints a token, caches it, and sends it as a Bearer header."""
+    store = _mock_integration_context(mocker)
+    token_mock = requests_mock.post(V2_TOKEN_URL, json={"access_token": "tok-1", "expires_in": 86400})
+    alert_mock = requests_mock.get(f"{V2_BASE_URL}/alert", json={"id": "TET-1"})
+
+    result = _v2_client().get_alert(id="TET-1", entity="")
+
+    assert result == {"id": "TET-1"}
+    assert token_mock.call_count == 1
+    assert token_mock.last_request.json() == {
+        "client_id": "test-client-id",
+        "client_secret": "test-client-secret",
+        "audience": "doppel-external",
+        "grant_type": "client_credentials",
+    }
+    assert alert_mock.last_request.headers["Authorization"] == "Bearer tok-1"
+    assert store["ctx"]["oauth_token"]["access_token"] == "tok-1"
+    # Attribution headers ride along on both the token mint and the API request.
+    from Doppel import CLIENT_ATTRIBUTION
+
+    assert token_mock.last_request.headers["x-doppel-client"] == CLIENT_ATTRIBUTION
+    assert alert_mock.last_request.headers["x-doppel-client"] == CLIENT_ATTRIBUTION
+    assert alert_mock.last_request.headers["User-Agent"] == f"doppel-{CLIENT_ATTRIBUTION}"
+
+
+def test_v2_reuses_cached_token(mocker, requests_mock):
+    """A cached, unexpired token is reused without calling the token endpoint."""
+    future_expiry = int(time.time()) + 3600
+    _mock_integration_context(mocker, {"oauth_token": {"access_token": "cached-tok", "expiry_epoch": future_expiry}})
+    token_mock = requests_mock.post(V2_TOKEN_URL, json={"access_token": "should-not-be-minted"})
+    alert_mock = requests_mock.get(f"{V2_BASE_URL}/alert", json={"id": "TET-1"})
+
+    _v2_client().get_alert(id="TET-1", entity="")
+
+    assert token_mock.call_count == 0
+    assert alert_mock.last_request.headers["Authorization"] == "Bearer cached-tok"
+
+
+def test_v2_expired_token_is_reminted(mocker, requests_mock):
+    """A cached token past its expiry is replaced with a freshly minted one."""
+    past_expiry = int(time.time()) - 10
+    store = _mock_integration_context(mocker, {"oauth_token": {"access_token": "old-tok", "expiry_epoch": past_expiry}})
+    requests_mock.post(V2_TOKEN_URL, json={"access_token": "fresh-tok", "expires_in": 86400})
+    alert_mock = requests_mock.get(f"{V2_BASE_URL}/alert", json={"id": "TET-1"})
+
+    _v2_client().get_alert(id="TET-1", entity="")
+
+    assert alert_mock.last_request.headers["Authorization"] == "Bearer fresh-tok"
+    assert store["ctx"]["oauth_token"]["access_token"] == "fresh-tok"
+
+
+def test_v2_401_retries_once_with_fresh_token(mocker, requests_mock):
+    """A 401 on a cached token invalidates the cache, mints once, and retries the request once."""
+    future_expiry = int(time.time()) + 3600
+    _mock_integration_context(mocker, {"oauth_token": {"access_token": "revoked-tok", "expiry_epoch": future_expiry}})
+    token_mock = requests_mock.post(V2_TOKEN_URL, json={"access_token": "fresh-tok", "expires_in": 86400})
+    alert_mock = requests_mock.get(
+        f"{V2_BASE_URL}/alert",
+        [
+            {"status_code": 401, "json": {"error": "unauthorized"}},
+            {"status_code": 200, "json": {"id": "TET-1"}},
+        ],
+    )
+
+    result = _v2_client().get_alert(id="TET-1", entity="")
+
+    assert result == {"id": "TET-1"}
+    assert token_mock.call_count == 1
+    assert alert_mock.call_count == 2
+    assert alert_mock.request_history[0].headers["Authorization"] == "Bearer revoked-tok"
+    assert alert_mock.request_history[1].headers["Authorization"] == "Bearer fresh-tok"
+
+
+def test_v2_token_429_raises_readable_error(mocker, requests_mock):
+    """A 429 from the token endpoint surfaces the mint quota and the Retry-After value."""
+    _mock_integration_context(mocker)
+    requests_mock.post(V2_TOKEN_URL, status_code=429, headers={"Retry-After": "1200"}, json={})
+
+    with pytest.raises(DemistoException, match="token request limit.*1200"):
+        _v2_client().get_alert(id="TET-1", entity="")
+
+
+def test_v2_token_401_raises_credentials_error(mocker, requests_mock):
+    """A 401 from the token endpoint points at the Client ID / Client Secret."""
+    _mock_integration_context(mocker)
+    requests_mock.post(V2_TOKEN_URL, status_code=401, json={})
+
+    with pytest.raises(DemistoException, match="Client ID and.*Client Secret"):
+        _v2_client().get_alert(id="TET-1", entity="")
+
+
+def test_v1_client_sends_api_key_not_bearer(requests_mock):
+    """A V1 client keeps the legacy header auth and never touches the OAuth flow."""
+    client = Client(base_url="https://api.doppel.com/v1", api_key="test-api-key", verify=True)
+    alert_mock = requests_mock.get("https://api.doppel.com/v1/alert", json={"id": "TET-1"})
+
+    client.get_alert(id="TET-1", entity="")
+
+    assert alert_mock.last_request.headers["x-api-key"] == "test-api-key"
+    assert "Authorization" not in alert_mock.last_request.headers
+
+
+def test_main_v2_requires_client_credentials(mocker):
+    """Selecting V2 without client credentials fails fast with a clear message."""
+    from Doppel import main
+
+    mocker.patch.object(
+        demisto,
+        "params",
+        return_value={"url": "https://api.doppel.com/", "api_version": "V2 (OAuth 2.0 Client Credentials)"},
+    )
+    mocker.patch.object(demisto, "command", return_value="test-module")
+    return_error_mock = mocker.patch("Doppel.return_error")
+
+    main()
+
+    assert "Client ID and a Client Secret" in return_error_mock.call_args[0][0]
+
+
+def test_main_v1_requires_api_key(mocker):
+    """The V1 default without an API Key fails fast with a clear message."""
+    from Doppel import main
+
+    mocker.patch.object(demisto, "params", return_value={"url": "https://api.doppel.com/"})
+    mocker.patch.object(demisto, "command", return_value="test-module")
+    return_error_mock = mocker.patch("Doppel.return_error")
+
+    main()
+
+    assert "requires an API Key" in return_error_mock.call_args[0][0]

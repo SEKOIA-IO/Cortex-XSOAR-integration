@@ -21,7 +21,11 @@
     "associatedTypes": [
         "IAM - App Add",
         "IAM - App Remove",
-        "IAM - Group Membership Update"
+        "IAM - Group Membership Update",
+        "CrowdStrike Falcon OFP Detection"
+    ],
+    "systemAssociatedTypes": [
+        "CrowdStrike Falcon OFP Detection"
     ],
     "associatedToAll": false,
     "unmapped": false,
@@ -29,5 +33,9 @@
     "caseInsensitive": true,
     "sla": 0,
     "threshold": 72,
-    "fromVersion": "5.0.0"
+    "fromVersion": "5.0.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

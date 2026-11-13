@@ -3,6 +3,7 @@
 <h2>Overview</h2>
 <hr>
 <p>Use the Salesforce integration to search, query, and add new objects (tasks, accounts, cases, and so on) to Salesforce directly from Cortex XSOAR.</p>
+<p>Support Salesforce API Version 63.0.</p>
 <p>The <em><strong>fetch incident</strong></em> option enables you to monitor the creation of new Salesforce cases and manage them in Cortex XSOAR.</p>
 <h2>Use cases</h2>
 <hr>
@@ -13,7 +14,7 @@
 <p><strong>Creating Cases:</strong> !salesforce-add-case status="On Hold" subject="adding case from command add-case" type="Feature Request" priority=Low</p>
 <p>This command will create a new Salesforce case with the given data.</p>
 <p><strong>Submitting Chatter message:</strong> !salesforce-push-comment oid=5003600000Smg4sAAB text="adding comment to case" link="google.com"</p>
-<p>This command will add a new comment to the object oid and result with the following comment.<br><a href="https://user-images.githubusercontent.com/30797606/44449362-98450c80-a5f6-11e8-94e0-6a5b31093efb.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44449362-98450c80-a5f6-11e8-94e0-6a5b31093efb.png" alt="image"></a></p>
+<p>This command will add a new comment to the object oid and result with the following comment.<br><a href="../../doc_files/44449362-98450c80-a5f6-11e8-94e0-6a5b31093efb.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44449362-98450c80-a5f6-11e8-94e0-6a5b31093efb.png" alt="image"></a></p>
 <h2>Configure Salesforce to Work with Cortex XSOAR</h2>
 <hr>
 <ol>
@@ -320,7 +321,7 @@
 <h5>Context Output</h5>
 <p>There is no context output for this command.</p>
 <h5>Command Example</h5>
-<p><a href="https://user-images.githubusercontent.com/30797606/44452383-0db4db00-a5ff-11e8-8f75-6027a8a339e2.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44452383-0db4db00-a5ff-11e8-8f75-6027a8a339e2.png" alt="image" width="751" height="157"></a></p>
+<p><a href="../../doc_files/44452383-0db4db00-a5ff-11e8-8f75-6027a8a339e2.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44452383-0db4db00-a5ff-11e8-8f75-6027a8a339e2.png" alt="image" width="751" height="157"></a></p>
 <h3 id="h_5581952191921536046406297">3. Get an object</h3>
 <hr>
 <p>Get object by path</p>
@@ -1094,9 +1095,9 @@
 </table>
 <h5> </h5>
 <h5>Command Example</h5>
-<p><a href="https://user-images.githubusercontent.com/30797606/44452576-874cc900-a5ff-11e8-9c5b-4ce0f75ae3f9.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44452576-874cc900-a5ff-11e8-9c5b-4ce0f75ae3f9.png" alt="image"></a></p>
+<p><a href="../../doc_files/44452576-874cc900-a5ff-11e8-9c5b-4ce0f75ae3f9.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44452576-874cc900-a5ff-11e8-9c5b-4ce0f75ae3f9.png" alt="image"></a></p>
 <h5>Context Example</h5>
-<p><a href="https://user-images.githubusercontent.com/30797606/44452616-a8adb500-a5ff-11e8-96d5-46069125ce64.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44452616-a8adb500-a5ff-11e8-96d5-46069125ce64.png" alt="image"></a></p>
+<p><a href="../../doc_files/44452616-a8adb500-a5ff-11e8-96d5-46069125ce64.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44452616-a8adb500-a5ff-11e8-96d5-46069125ce64.png" alt="image"></a></p>
 <h3 id="h_8016050955551536046471202">7. Get case information</h3>
 <hr>
 <p>Get information for a specified on a case. All arguments are optional, but you must specify at least one for the command to execute successfully.</p>
@@ -1194,9 +1195,9 @@
 </table>
 <h5> </h5>
 <h5>Command Example</h5>
-<p><a href="https://user-images.githubusercontent.com/30797606/44452464-43f25a80-a5ff-11e8-918a-7efb4af4ea29.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44452464-43f25a80-a5ff-11e8-918a-7efb4af4ea29.png" alt="image"></a></p>
+<p><a href="../../doc_files/44452464-43f25a80-a5ff-11e8-918a-7efb4af4ea29.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44452464-43f25a80-a5ff-11e8-918a-7efb4af4ea29.png" alt="image"></a></p>
 <h5>Context Example</h5>
-<p><a href="https://user-images.githubusercontent.com/30797606/44452529-66847380-a5ff-11e8-80af-32177c2479d0.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44452529-66847380-a5ff-11e8-80af-32177c2479d0.png" alt="image"></a></p>
+<p><a href="../../doc_files/44452529-66847380-a5ff-11e8-80af-32177c2479d0.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44452529-66847380-a5ff-11e8-80af-32177c2479d0.png" alt="image"></a></p>
 <h3 id="h_8706041276441536046477422">8. Create a case</h3>
 <hr>
 <p>Create a new case</p>
@@ -1545,7 +1546,7 @@
 </table>
 <h5> </h5>
 <h5>Command Example</h5>
-<p><a href="https://user-images.githubusercontent.com/30797606/44452804-1bb72b80-a600-11e8-9ab0-85b6fb631091.png" target="_blank" rel="noopener noreferrer"><img src="https://user-images.githubusercontent.com/30797606/44452804-1bb72b80-a600-11e8-9ab0-85b6fb631091.png" alt="image"></a></p>
+<p><a href="../../doc_files/44452804-1bb72b80-a600-11e8-9ab0-85b6fb631091.png" target="_blank" rel="noopener noreferrer"><img src="../../doc_files/44452804-1bb72b80-a600-11e8-9ab0-85b6fb631091.png" alt="image"></a></p>
 <h3 id="h_2235322109811536046505155">12. Add a comment to a chatter thread</h3>
 <hr>
 <p>Add the comment to the chatter thread. Use this command only after salesforce-push-comment</p>
@@ -1637,15 +1638,15 @@
 <ul>
 <li>
 <p>This error indicates that there is a problem with the credentials or the IP connection to the app (see step 6-7 in Credentials walkthrough below).</p>
- <img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip1.png" width="308" height="123"><br><br>
+ <img src="../../doc_files/integration-Salesforce_mceclip1.png" width="308" height="123"><br><br>
 </li>
-<li>This error indicates a problem in the Costumer Key:<br><br> <img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip2.png" width="282" height="113"><br><br>
+<li>This error indicates a problem in the Costumer Key:<br><br> <img src="../../doc_files/integration-Salesforce_mceclip2.png" width="282" height="113"><br><br>
 </li>
-<li>This error indicates a problem in the Costumer Secret:<br><br> <img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip3.png" width="282" height="111"><br> </li>
+<li>This error indicates a problem in the Costumer Secret:<br><br> <img src="../../doc_files/integration-Salesforce_mceclip3.png" width="282" height="111"><br> </li>
 </ul>
 <h3 id="h_5753070501321535544438325">Credentials walkthrough:</h3>
-<p> 1. Open <strong>Setup</strong>.<br><br> <img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip4.png" width="206" height="136"></p>
-<p>2. Go to the App manager on the left side menu (use Quick Find for faster search).<br> <img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip5.png" width="238" height="108"></p>
+<p> 1. Open <strong>Setup</strong>.<br><br> <img src="../../doc_files/integration-Salesforce_mceclip4.png" width="206" height="136"></p>
+<p>2. Go to the App manager on the left side menu (use Quick Find for faster search).<br> <img src="../../doc_files/integration-Salesforce_mceclip5.png" width="238" height="108"></p>
 <p>3. Click “New Connected App” on the right side of the screen.</p>
 <p>4. Fill in the form as follows:</p>
 <ul>
@@ -1659,9 +1660,9 @@
 </ul>
 <p>5. Click “Save” at the bottom of the form.</p>
 <p>6. In the information page on the APP that you will be forwarded to locate “<strong>API (Enable OAuth Settings)</strong>” and copy the consumer key and secret to the integration instance configuration.</p>
-<p>6. Go to “Manage Connected Apps”.<br><img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip6.png" width="165" height="162"></p>
+<p>6. Go to “Manage Connected Apps”.<br><img src="../../doc_files/integration-Salesforce_mceclip6.png" width="165" height="162"></p>
 <p>7. Edit the new application and under “OAuth Policies” enable all IP address.</p>
-<p> <img src="https://raw.githubusercontent.com/demisto/content/ca13780e216a39751600dcb1e386d12f52fc8f25/docs/images/Integrations/integration-Salesforce_mceclip7.png" width="486" height="37"> </p>
+<p> <img src="../../doc_files/integration-Salesforce_mceclip7.png" width="486" height="37"> </p>
 ### salesforce-get-casecomment
 
 ***
@@ -1675,23 +1676,24 @@ Returns a comment through the case number.
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| oid | Returns information of a case. | Optional | 
-| caseNumber | The case number of the case. | Optional | 
+| oid | Returns information of a case. | Optional |
+| caseNumber | The case number of the case. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| ID | string | The ID of the case. | 
-| ParentId | string | The ID of the parent case of the case comment. Required. | 
-| IsPublished | boolean | Whether the case comment is visible to customers in the Self-Service portal \(true\). The label is published. This is the only CaseComment field that can be updated through the API. | 
-| CommentBody | string | The text of the case body. Maximum size is 4,000 bytes. The label is Body. | 
-| CreatedById | unknown | The created date by ID. | 
-| CreatedDate | string | The created date. | 
-| SystemModstamp | string | The SystemMod stamp. | 
-| LastModifiedDate | string | The last modified date.  | 
-| LastModifiedById | string | The last modified date by ID. | 
-| IsDeleted | boolean | Whether the object has been moved to the Recycle Bin \(true\). Label is Deleted. | 
+| ID | string | The ID of the case. |
+| ParentId | string | The ID of the parent case of the case comment. Required. |
+| IsPublished | boolean | Whether the case comment is visible to customers in the Self-Service portal \(true\). The label is published. This is the only CaseComment field that can be updated through the API. |
+| CommentBody | string | The text of the case body. Maximum size is 4,000 bytes. The label is Body. |
+| CreatedById | unknown | The created date by ID. |
+| CreatedDate | string | The created date. |
+| SystemModstamp | string | The SystemMod stamp. |
+| LastModifiedDate | string | The last modified date.  |
+| LastModifiedById | string | The last modified date by ID. |
+| IsDeleted | boolean | Whether the object has been moved to the Recycle Bin \(true\). Label is Deleted. |
+
 ### salesforce-post-casecomment
 
 ***
@@ -1705,13 +1707,14 @@ The post comment through the case number.
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| oid | The Object ID of the case. | Optional | 
-| caseNumber | The case number of the case. | Optional | 
-| text | Added Text to context. | Optional | 
+| oid | The Object ID of the case. | Optional |
+| caseNumber | The case number of the case. | Optional |
+| text | Added Text to context. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 ### salesforce-get-user
 
 ***
@@ -1725,28 +1728,29 @@ Returns the UserName through the case number.
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| oid | The Object ID of the case. | Optional | 
-| caseNumber | The case number of the case. | Optional | 
+| oid | The Object ID of the case. | Optional |
+| caseNumber | The case number of the case. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| ID | string | The ID of the case. | 
-| Alias | string | The user’s alias. Required. For example, jsmith. | 
-| CommunityNickname | string | The name used to identify the user in the Community application, which includes the ideas and answers features. | 
-| CreatedById | string | Created by the ID. | 
-| Email | string | The user’s email address. Required. | 
-| LastLoginDate | string | The time and date when the user last successfully logged in. This value is updated if 60 seconds have elapsed since the user’s last login. | 
-| LastModifiedDate | string | The last modified date. | 
-| LastName | string | The user’s last name. Required. | 
-| Name | string | Concatenation of FirstName and LastName. Limited to 121 characters. | 
-| Username | string | Contains the name that a user enters to log in to the API or the user interface. Required. Must be in the form of an email address, all characters should be lowercase, and unique across all organizations. Each added user counts as a license. Every organization has a maximum number of licenses. If you attempt to exceed the maximum number of licenses by inserting user records, the attempt to create a user is rejected. | 
-| UserRoleId | string | The ID of the user’s UserRole. Label is Role ID. | 
+| ID | string | The ID of the case. |
+| Alias | string | The user’s alias. Required. For example, jsmith. |
+| CommunityNickname | string | The name used to identify the user in the Community application, which includes the ideas and answers features. |
+| CreatedById | string | Created by the ID. |
+| Email | string | The user’s email address. Required. |
+| LastLoginDate | string | The time and date when the user last successfully logged in. This value is updated if 60 seconds have elapsed since the user’s last login. |
+| LastModifiedDate | string | The last modified date. |
+| LastName | string | The user’s last name. Required. |
+| Name | string | Concatenation of FirstName and LastName. Limited to 121 characters. |
+| Username | string | Contains the name that a user enters to log in to the API or the user interface. Required. Must be in the form of an email address, all characters should be lowercase, and unique across all organizations. Each added user counts as a license. Every organization has a maximum number of licenses. If you attempt to exceed the maximum number of licenses by inserting user records, the attempt to create a user is rejected. |
+| UserRoleId | string | The ID of the user’s UserRole. Label is Role ID. |
+
 ### salesforce-get-org
 
 ***
-Returns organization details from the case number. 
+Returns organization details from the case number.
 
 #### Base Command
 
@@ -1756,11 +1760,289 @@ Returns organization details from the case number.
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| caseNumber | The case number of the case. | Optional | 
+| caseNumber | The case number of the case. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| ID | string | The unique ID of the case. | 
-| Name | string | Name of the account. Required. Label is Account Name. Maximum size is 255 characters. If the account has a record type of Person Account, this value is the concatenation of the FirstName, MiddleName, LastName, and Suffix of the associated person contact. You cannot modify this value. | 
+| ID | string | The unique ID of the case. |
+| Name | string | Name of the account. Required. Label is Account Name. Maximum size is 255 characters. If the account has a record type of Person Account, this value is the concatenation of the FirstName, MiddleName, LastName, and Suffix of the associated person contact. You cannot modify this value. |
+
+### salesforce-file-delete
+
+***
+Soft-deletes a file (ContentDocument), moving it to the Recycle Bin and cascading to its versions. Recoverable for 15 days.
+
+#### Base Command
+
+`salesforce-file-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| type | The Salesforce sObject type. Default is ContentDocument. | Optional |
+| id | The ContentDocument record ID to delete. | Required |
+| ignore_not_found | Whether to treat a 404/NOT_FOUND response as success. Possible values are: true, false. Default is true. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| SalesForce.Remediation.Action | string | The remediation action performed. |
+| SalesForce.Remediation.ObjectType | string | The Salesforce sObject type acted on. |
+| SalesForce.Remediation.Id | string | The record ID acted on. |
+| SalesForce.Remediation.Status | string | The result status of the remediation action. |
+
+#### Command example
+
+```!salesforce-file-delete id=069dn000007JlATAA0```
+
+#### Context Example
+
+```json
+{
+    "SalesForce": {
+        "Remediation": {
+            "Action": "Delete File",
+            "Id": "069dn000007JlATAA0",
+            "ObjectType": "ContentDocument",
+            "Status": "Deleted"
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### Salesforce Remediation - Delete File
+>
+>|Action|Id|ObjectType|Status|
+>|---|---|---|---|
+>| Delete File | 069dn000007JlATAA0 | ContentDocument | Deleted |
+
+### salesforce-knowledge-article-archive
+
+***
+Archives a Knowledge article (non-destructive). Sets PublishStatus to Archived via the standard archiveKnowledgeArticles action. Reversible to Draft/Online.
+
+#### Base Command
+
+`salesforce-knowledge-article-archive`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| type | The Salesforce sObject type. Default is KnowledgeArticleVersion. | Optional |
+| id | The Knowledge article version ID (the __kav record ID, starting with 'ka') to archive. | Required |
+| ignore_not_found | Whether to treat a 404/NOT_FOUND response as success. Possible values are: true, false. Default is true. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| SalesForce.Remediation.Action | string | The remediation action performed. |
+| SalesForce.Remediation.ObjectType | string | The Salesforce sObject type acted on. |
+| SalesForce.Remediation.Id | string | The record ID acted on. |
+| SalesForce.Remediation.Status | string | The result status of the remediation action. |
+
+#### Command example
+
+```!salesforce-knowledge-article-archive id=ka1dn0000001ZwbAAE```
+
+#### Context Example
+
+```json
+{
+    "SalesForce": {
+        "Remediation": {
+            "Action": "Archive Knowledge Article",
+            "Id": "ka1dn0000001ZwbAAE",
+            "ObjectType": "KnowledgeArticleVersion",
+            "Status": "Archived"
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### Salesforce Remediation - Archive Knowledge Article
+>
+>|Action|Id|ObjectType|Status|
+>|---|---|---|---|
+>| Archive Knowledge Article | ka1dn0000001ZwbAAE | KnowledgeArticleVersion | Archived |
+
+### salesforce-file-public-link-list
+
+***
+Lists all public links (ContentDistribution records) for a given ContentDocument ID. Use the returned ContentDistribution IDs with salesforce-file-public-link-remove to remove each link.
+
+#### Base Command
+
+`salesforce-file-public-link-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| id | The ContentDocument record ID whose public links (ContentDistribution rows) should be listed. | Required |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| SalesForce.ContentDistribution.Id | string | The ContentDistribution record ID \(use with salesforce-file-public-link-remove\). |
+| SalesForce.ContentDistribution.ContentDocumentId | string | The parent ContentDocument ID. |
+| SalesForce.ContentDistribution.Name | string | The name of the content distribution. |
+| SalesForce.ContentDistribution.PublicUrl | string | The public distribution URL. |
+
+#### Command example
+
+```!salesforce-file-public-link-list id=069dn000007PpOIAA0```
+
+#### Context Example
+
+```json
+{
+    "SalesForce": {
+        "ContentDistribution": {
+            "ContentDocumentId": "069dn000007PpOIAA0",
+            "Id": "05Ddn000000VfWjEAK",
+            "Name": "cortex-test-file-01 7/28/2026",
+            "PublicUrl": "https://paloaltonetworks-sahil.sandbox.my.salesforce.com/sfc/p/7X000001T5lm/a/dn000000VfWj/TExjFQ7nttSYbbnXER8CaxGLqYDmVhzw2LEe1jg9_Vo"
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### Salesforce File Public Links (ContentDistribution) for 069dn000007PpOIAA0
+>
+>|ContentDocumentId|Id|Name|PublicUrl|
+>|---|---|---|---|
+>| 069dn000007PpOIAA0 | 05Ddn000000VfWjEAK | cortex-test-file-01 7/28/2026 | https://paloaltonetworks-sahil.sandbox.my.salesforce.com/sfc/p/7X000001T5lm/a/dn000000VfWj/TExjFQ7nttSYbbnXER8CaxGLqYDmVhzw2LEe1jg9_Vo |
+
+### salesforce-file-public-link-remove
+
+***
+Removes a file public link by deleting a single ContentDistribution record. The external link is severed immediately and irreversibly.
+
+#### Base Command
+
+`salesforce-file-public-link-remove`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| type | The Salesforce sObject type. Default is ContentDistribution. | Optional |
+| id | The ContentDistribution record ID to delete (severs the public link). Use salesforce-file-public-link-list to obtain distribution IDs for a ContentDocument. | Required |
+| ignore_not_found | Whether to treat a 404/NOT_FOUND response as success. Possible values are: true, false. Default is true. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| SalesForce.Remediation.Action | string | The remediation action performed. |
+| SalesForce.Remediation.ObjectType | string | The Salesforce sObject type acted on. |
+| SalesForce.Remediation.Id | string | The ContentDistribution record ID acted on. |
+| SalesForce.Remediation.Status | string | The result status of the remediation action. |
+
+#### Command example
+
+```!salesforce-file-public-link-remove id=05Ddn000000VfWjEAK```
+
+#### Context Example
+
+```json
+{
+    "SalesForce": {
+        "Remediation": {
+            "Action": "Remove File Public Link",
+            "Id": "05Ddn000000VfWjEAK",
+            "ObjectType": "ContentDistribution",
+            "Status": "Deleted"
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### Salesforce Remediation - Remove File Public Link
+>
+>|Action|Id|ObjectType|Status|
+>|---|---|---|---|
+>| Remove File Public Link | 05Ddn000000VfWjEAK | ContentDistribution | Deleted |
+
+### salesforce-knowledge-article-draft-create
+
+***
+Moves a published Knowledge article to Draft using the standard createDraftFromOnlineKnowledgeArticle action. By default (unpublish=true) the online version is removed from public visibility and an editable draft is created.
+
+#### Base Command
+
+`salesforce-knowledge-article-draft-create`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| type | The Salesforce sObject type. Default is KnowledgeArticleVersion. | Optional |
+| id | The Knowledge article ID (KnowledgeArticleId, starting with 'kA') or article version ID (starting with 'ka'). Used with the standard createDraftFromOnlineKnowledgeArticle action. | Required |
+| unpublish | Whether to archive the current online version (removing it from public visibility) and create a new draft. If false, keeps the article online and creates an editable draft alongside it. Possible values are: true, false. Default is true. | Optional |
+| ignore_not_found | Whether to treat a 404/NOT_FOUND response as success. Possible values are: true, false. Default is true. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| SalesForce.Remediation.Action | string | The remediation action performed. |
+| SalesForce.Remediation.ObjectType | string | The Salesforce sObject type acted on. |
+| SalesForce.Remediation.Id | string | The record ID acted on. |
+| SalesForce.Remediation.Status | string | The result status of the remediation action. |
+| SalesForce.Remediation.Unpublished | boolean | Whether the online version was unpublished \(removed from public visibility\). |
+| SalesForce.Remediation.DraftVersionId | string | The ID of the newly created draft article version. |
+
+#### Command example
+
+```!salesforce-knowledge-article-draft-create id=ka1dn0000001ZyDAAU unpublish=true```
+
+#### Context Example
+
+```json
+{
+    "SalesForce": {
+        "Remediation": {
+            "Action": "Draft Knowledge Article",
+            "DraftVersionId": "ka1dn0000001ZzpAAE",
+            "Id": "ka1dn0000001ZyDAAU",
+            "ObjectType": "KnowledgeArticleVersion",
+            "Status": "Unpublished (Draft created)",
+            "Unpublished": true
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### Salesforce Remediation - Draft Knowledge Article
+>
+>|Action|DraftVersionId|Id|ObjectType|Status|Unpublished|
+>|---|---|---|---|---|---|
+>| Draft Knowledge Article | ka1dn0000001ZzpAAE | ka1dn0000001ZyDAAU | KnowledgeArticleVersion | Unpublished (Draft created) | true |
+
+<~PLATFORM>
+
+## License Requirements
+
+The following configuration parameters require one of these licenses: **Cortex XSIAM** or **Agentix**:
+
+- Fetch incidents
+
+</~PLATFORM>

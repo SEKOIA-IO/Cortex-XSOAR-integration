@@ -6,9 +6,17 @@ Get all tasks for a specific incident by the given state, name and/or tag.
 
 | **Name** | **Description** |
 | --- | --- |
-| Script Type | python3 |
+| Script Type | javascript |
 | Tags | Utility |
 | Cortex XSOAR Version | 6.10.0 |
+
+## Dependencies
+
+---
+This script uses the following commands and scripts.
+
+* Core REST API
+* core-api-get
 
 ## Inputs
 
@@ -20,6 +28,7 @@ Get all tasks for a specific incident by the given state, name and/or tag.
 | states | Comma-separated list of states. Possible values: New, InProgress, Completed, Waiting, Error, LoopError, Skipped, Blocked. \(Leave empty to get all tasks\). |
 | name | The name of the task to search. |
 | tag | The tag to search. |
+| using | The Cortex REST API integration instance to use for the API request. If not provided, the default instance is used. |
 
 ## Outputs
 
@@ -73,4 +82,3 @@ Get all tasks for a specific incident by the given state, name and/or tag.
 >|id|name|state|owner|scriptId|
 >|---|---|---|---|---|
 >| 101 | Email Campaign Search | Completed | Dummy |  |
-

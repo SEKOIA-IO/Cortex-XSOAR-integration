@@ -1,65 +1,70 @@
 Cloudflare WAF integration allows customers to manage firewall rules, filters, and IP-lists. It also allows to retrieve zones list for each account.
 This integration was integrated and tested with version 4 of CloudflareWAF
 
-## Configure Cloudflare WAF on Cortex XSOAR
+## Configure Cloudflare WAF in Cortex
 
-1. Navigate to **Settings** > **Integrations** > **Servers & Services**.
-2. Search for Cloudflare WAF.
-3. Click **Add instance** to create and configure a new integration instance.
+| **Parameter** | **Description** | **Required** |
+| --- | --- | --- |
+| Server URL (e.g. https://api.cloudflare.com/client/v4/) |  | False |
+| API Token |  | False |
+| Global API Key |  | False |
+| Email |  | False |
+| Account ID | Account identifier. | True |
+| Default Zone ID | The domain identifier. Zone ID can be override when executing commands.The domain identifier. Zone ID can be override when executing commands. | False |
+| Use system proxy settings |  | False |
+| Trust any certificate (not secure) |  | False |
 
-    | **Parameter** | **Description** | **Required** |
-    | --- | --- | --- |
-    | User Token |  | True |
-    | Password |  | True |
-    | Account ID | Account identifier. | True |
-    | Password |  | True |
-    | Default Zone ID | The domain identifier. Zone ID can be override when executing commands.The domain identifier. Zone ID can be override when executing commands. | False |
-    | Password |  | False |
-    | Use system proxy settings |  | False |
-    | Trust any certificate (not secure) |  | False |
-
-4. Click **Test** to validate the URLs, token, and connection.
 ## Commands
-You can execute these commands from the Cortex XSOAR CLI, as part of an automation, or in a playbook.
-After you successfully execute a command, a DBot message appears in the War Room with the command details.
-### cloudflare-waf-firewall-rule-create
-***
-Create a new firewall rule that create new filter or use an exist filter.
 
+You can execute these commands from the CLI, as part of an automation, or in a playbook.
+After you successfully execute a command, a DBot message appears in the War Room with the command details.
+
+### cloudflare-waf-firewall-rule-create
+
+***
+*will be as deprecated, available until 2025-06-15*
+Create a new firewall rule that create new filter or use an exist filter.
+Permissions required for the API token:
+Account: Account Firewall Access Rules:Edit
+Zone: Firewall Services:Edit
+Include all zones and accounts needed.
 
 #### Base Command
 
 `cloudflare-waf-firewall-rule-create`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| action | The rule action. Possible values are: block, challenge, js_challenge, managed_challenge, allow, log, bypass. | Required | 
-| filter_id | Identifier of an existing filter. Required if filter_expression is unspecified. | Optional | 
+| action | The rule action. Possible values are: block, challenge, js_challenge, managed_challenge, allow, log, bypass. | Required |
+| filter_id | Identifier of an existing filter. Required if filter_expression is unspecified. | Optional |
 | filter_expression | Filter expression when creating a filter for a new rule. Required if filter_id is unspecified. Expression example: "(ip.src eq 120.2.2.8) or (ip.src in $list_name)". For syntax explanations and more examples: https://developers.cloudflare.com/ruleset-engine/rules-language/expressions/. | Optional |
-| products | Comma separated list of products to bypass for a request when the bypass action is used. Valid values: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. Possible values are: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. | Optional | 
-| priority | The priority of the rule to allow control of processing order. A lower number indicates high priority. If not provided, any rules with a priority will be sequenced before those without.<br/>min value: 0.<br/>max value: 2147483647. | Optional | 
-| paused | Whether this firewall rule is currently paused. Possible values are: True, False. | Optional | 
-| description | A description of the rule to help identify it. | Optional | 
-| ref | Short reference tag to quickly select related rules. | Optional | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| products | Comma separated list of products to bypass for a request when the bypass action is used. Valid values: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. Possible values are: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. | Optional |
+| priority | The priority of the rule to allow control of processing order. A lower number indicates high priority. If not provided, any rules with a priority will be sequenced before those without.<br/>min value: 0.<br/>max value: 2147483647. | Optional |
+| paused | Whether this firewall rule is currently paused. Possible values are: True, False. | Optional |
+| description | A description of the rule to help identify it. | Optional |
+| ref | Short reference tag to quickly select related rules. | Optional |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.FirewallRule.id | String | Firewall rule ID. | 
-| CloudflareWAF.FirewallRule.priority | unknown | The priority of the rule to allow control of processing order. | 
-| CloudflareWAF.FirewallRule.action | unknown | The action of the rule. | 
-| CloudflareWAF.FirewallRule.products | unknown | List of products to bypass for a request when the bypass action is used. | 
-| CloudflareWAF.FirewallRule.paused | Boolean | Whether this firewall rule is currently paused. | 
-| CloudflareWAF.FirewallRule.description | String | A description of the rule to help identify it. | 
-| CloudflareWAF.FirewallRule.ref | String | Short reference tag to quickly select related rules. | 
+| CloudflareWAF.FirewallRule.id | String | Firewall rule ID. |
+| CloudflareWAF.FirewallRule.priority | unknown | The priority of the rule to allow control of processing order. |
+| CloudflareWAF.FirewallRule.action | unknown | The action of the rule. |
+| CloudflareWAF.FirewallRule.products | unknown | List of products to bypass for a request when the bypass action is used. |
+| CloudflareWAF.FirewallRule.paused | Boolean | Whether this firewall rule is currently paused. |
+| CloudflareWAF.FirewallRule.description | String | A description of the rule to help identify it. |
+| CloudflareWAF.FirewallRule.ref | String | Short reference tag to quickly select related rules. |
 
 #### Command example
+
 ```!cloudflare-waf-firewall-rule-create action=allow filter_expression="(ip.src eq 120.2.2.8)"```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -82,102 +87,124 @@ Create a new firewall rule that create new filter or use an exist filter.
 
 #### Human Readable Output
 
->### Firewall rule was successfully created.
+>### Firewall rule was successfully created
+>
 >|Id|Action|Filter Id|Filter Expression|Products|Priority|Paused|Description|Ref|
 >|---|---|---|---|---|---|---|---|---|
 >| 8da08f6f0c214e378e7847e420ec7965 | allow | 2e740a75f2904b8e8df8e4fb36de1563 | (ip.src eq 120.2.2.8) |  |  | false |  |  |
 
-
 ### cloudflare-waf-firewall-rule-update
-***
-Update firewall rule by the specified rule ID. Can update rule action, paused, description, priority, products and ref. Can not update or delete rule filter, ONLY add a new filter.
 
+***
+*will be as deprecated, available until 2025-06-15*
+Update firewall rule by the specified rule ID. Can update rule action, paused, description, priority, products and ref. Can not update or delete rule filter, ONLY add a new filter.
+Permissions required for the API token:
+Account: Account Firewall Access Rules:Edit
+Zone: Firewall Services:Edit
+Include all zones and accounts needed.
 
 #### Base Command
 
 `cloudflare-waf-firewall-rule-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | Firewall Rule identifier. . | Required | 
-| action | The exist rule action or the new rule action to set. Possible values are: block, challenge, js_challenge, managed_challenge, allow, log, bypass. | Required | 
-| filter_id | The ID of the exist rule filter or the ID of the new filter to set. | Required | 
-| products | List of products to bypass for a request when the bypass action is used (comma separated list). Valid values: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. Possible values are: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. | Optional | 
-| priority | The priority of the rule to allow control of processing order. A lower number indicates high priority. If not provided, any rules with a priority will be sequenced before those without.<br/>min value: 0.<br/>max value: 2147483647. | Optional | 
-| paused | Whether this firewall rule is currently paused. Possible values are: true, false. | Optional | 
-| description | A description of the rule to help identify it. | Optional | 
-| ref | Short reference tag to quickly select related rules. | Optional | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| id | Firewall Rule identifier. . | Required |
+| action | The exist rule action or the new rule action to set. Possible values are: block, challenge, js_challenge, managed_challenge, allow, log, bypass. | Required |
+| filter_id | The ID of the exist rule filter or the ID of the new filter to set. | Required |
+| products | List of products to bypass for a request when the bypass action is used (comma separated list). Valid values: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. Possible values are: zoneLockdown, uaBlock, bic, hot, securityLevel, rateLimit, waf. | Optional |
+| priority | The priority of the rule to allow control of processing order. A lower number indicates high priority. If not provided, any rules with a priority will be sequenced before those without.<br/>min value: 0.<br/>max value: 2147483647. | Optional |
+| paused | Whether this firewall rule is currently paused. Possible values are: true, false. | Optional |
+| description | A description of the rule to help identify it. | Optional |
+| ref | Short reference tag to quickly select related rules. | Optional |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
-### cloudflare-waf-firewall-rule-delete
-***
-Delete firewall rule by the specified rule ID.
 
+### cloudflare-waf-firewall-rule-delete
+
+***
+*will be as deprecated, available until 2025-06-15*
+Delete firewall rule by the specified rule ID.
+Permissions required for the API token:
+Account: Account Firewall Access Rules:Edit
+Zone: Firewall Services:Edit
+Include all zones and accounts needed.
 
 #### Base Command
 
 `cloudflare-waf-firewall-rule-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | Firewall Rule identifier. . | Required | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| id | Firewall Rule identifier. . | Required |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 #### Command example
+
 ```!cloudflare-waf-firewall-rule-delete id="93657f595665493bbfcf3664edfca130"```
+
 #### Human Readable Output
 
 >Firewall rule 93657f595665493bbfcf3664edfca130 was successfully deleted.
 
 ### cloudflare-waf-firewall-rule-list
-***
-List of firewall rules or details of individual rule by ID.
 
+***
+*will be as deprecated, available until 2025-06-15*
+List of firewall rules or details of individual rule by ID.
+Permissions required for the API token:
+Account: Account Firewall Access Rules:Read
+Zone: Firewall Services:Read
+Include all zones and accounts needed.
 
 #### Base Command
 
 `cloudflare-waf-firewall-rule-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | Firewall Rule identifier. . | Optional | 
-| action | The rule action. Possible values are: block, challenge, js_challenge, managed_challenge, allow, log, bypass. | Optional | 
-| paused | Whether this firewall rule is currently paused. Possible values are: true, false. | Optional | 
-| description | A description of the rule to help identify it. | Optional | 
-| page | Page number of paginated results.<br/>min value: 1. | Optional | 
-| page_size | Number of firewall rules per page. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. | Optional | 
-| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| id | Firewall Rule identifier. . | Optional |
+| action | The rule action. Possible values are: block, challenge, js_challenge, managed_challenge, allow, log, bypass. | Optional |
+| paused | Whether this firewall rule is currently paused. Possible values are: true, false. | Optional |
+| description | A description of the rule to help identify it. | Optional |
+| page | Page number of paginated results.<br/>min value: 1. | Optional |
+| page_size | Number of firewall rules per page. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. | Optional |
+| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.FirewallRule.id | String | Firewall Rule identifier.  | 
-| CloudflareWAF.FirewallRule.action | String | The rule action. | 
-| CloudflareWAF.FirewallRule.paused | Boolean | Whether this firewall rule is currently paused. | 
-| CloudflareWAF.FirewallRule.description | String | Rule description. | 
-| CloudflareWAF.FirewallRule.Filter.id | String | Rule filter id. | 
-| CloudflareWAF.FirewallRule.Filter.expression | String | Rule filter expression. | 
-| CloudflareWAF.FirewallRule.Filter.paused | Boolean | Whether this rule filter is currently paused. | 
-| CloudflareWAF.FirewallRule.Filter.description | String | Description of the rule filter. | 
-| CloudflareWAF.FirewallRule.Filter.ref | String | Short reference tag. | 
+| CloudflareWAF.FirewallRule.id | String | Firewall Rule identifier.  |
+| CloudflareWAF.FirewallRule.action | String | The rule action. |
+| CloudflareWAF.FirewallRule.paused | Boolean | Whether this firewall rule is currently paused. |
+| CloudflareWAF.FirewallRule.description | String | Rule description. |
+| CloudflareWAF.FirewallRule.Filter.id | String | Rule filter id. |
+| CloudflareWAF.FirewallRule.Filter.expression | String | Rule filter expression. |
+| CloudflareWAF.FirewallRule.Filter.paused | Boolean | Whether this rule filter is currently paused. |
+| CloudflareWAF.FirewallRule.Filter.description | String | Description of the rule filter. |
+| CloudflareWAF.FirewallRule.Filter.ref | String | Short reference tag. |
 
 #### Command example
+
 ```!cloudflare-waf-firewall-rule-list```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -226,7 +253,9 @@ List of firewall rules or details of individual rule by ID.
 #### Human Readable Output
 
 >### Firewall rule list
+>
 >Showing 4 rows out of 4.
+>
 >|Id|Action|Paused|Description|Filter Id|Filter Expression|
 >|---|---|---|---|---|---|
 >| 47c7b26db654427d98235705abfcf32e | block | false |  | 2aafaaea87da44ffa0929c115d2bebfc | (cf.client.bot) |
@@ -234,39 +263,44 @@ List of firewall rules or details of individual rule by ID.
 >| c643071e10694fecb194c95d80c64706 | block | false |  | c092787d60b54f06b270ab4cb22edd54 | (ip.src eq 120.2.2.8) |
 >| 45a16a6ed90349db851eda214188f47a | block | false |  | 3d6ea4fe88614d3c99d9f11da5b84b62 | (ip.src eq 120.2.2.8) |
 
-
 ### cloudflare-waf-filter-create
+
 ***
 Create a new filter which can be added to a firewall rule.
-
+Permissions required for the API token:
+Account: Account Filter Lists:Edit
+Zone: Firewall Services:Edit
 
 #### Base Command
 
 `cloudflare-waf-filter-create`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
 | expression | The filter expression to be used. Expression example: "(ip.src eq 120.2.2.8) or (ip.src in $list_name)". For syntax explanations and more examples: https://developers.cloudflare.com/ruleset-engine/rules-language/expressions/. | Required |
-| ref | Short reference tag to quickly select related rules. | Optional | 
-| paused | Whether this filter is currently paused. Possible values are: true, false. | Optional | 
-| description | A note that you can use to describe the purpose of the filter. | Optional | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| ref | Short reference tag to quickly select related rules. | Optional |
+| paused | Whether this filter is currently paused. Possible values are: true, false. | Optional |
+| description | A note that you can use to describe the purpose of the filter. | Optional |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.Filter.id | String | Filter identifier. | 
-| CloudflareWAF.Filter.expression | String | The filter expression to be used. | 
-| CloudflareWAF.Filter.paused | Boolean | Whether this filter is currently paused. | 
-| CloudflareWAF.Filter.description | String | A note that describe the purpose of the filter. | 
-| CloudflareWAF.Filter.ref | String | Short reference tag to quickly select related rules. | 
+| CloudflareWAF.Filter.id | String | Filter identifier. |
+| CloudflareWAF.Filter.expression | String | The filter expression to be used. |
+| CloudflareWAF.Filter.paused | Boolean | Whether this filter is currently paused. |
+| CloudflareWAF.Filter.description | String | A note that describe the purpose of the filter. |
+| CloudflareWAF.Filter.ref | String | Short reference tag to quickly select related rules. |
 
 #### Command example
+
 ```!cloudflare-waf-filter-create expression="(ip.src eq 120.2.2.8)"```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -286,97 +320,113 @@ Create a new filter which can be added to a firewall rule.
 
 #### Human Readable Output
 
->### Filter was successfully created.
+>### Filter was successfully created
+>
 >|Id|Expression|Paused|Description|Ref|
 >|---|---|---|---|---|
 >| 02f3f01de4644c31a048d4b837145162 | (ip.src eq 120.2.2.8) | false |  |  |
 >|  |  |  |  |  |
 
-
 ### cloudflare-waf-filter-update
+
 ***
 Update filter by the specified filter ID.
-
+Permissions required for the API token:
+Account: Account Filter Lists:Edit
+Zone: Firewall Services:Edit
 
 #### Base Command
 
 `cloudflare-waf-filter-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | Filter identifier.  . Possible values are: . | Required | 
+| id | Filter identifier.  . Possible values are: . | Required |
 | expression | The filter expression to be used. Expression example: "(ip.src eq 120.2.2.8) or (ip.src in $list_name)". | Required |
-| ref | Short reference tag to quickly select related rules. | Optional | 
-| paused | Whether this filter is currently paused. Possible values are: true, false. | Optional | 
-| description | A note that you can use to describe the purpose of the filter. | Optional | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| ref | Short reference tag to quickly select related rules. | Optional |
+| paused | Whether this filter is currently paused. Possible values are: true, false. | Optional |
+| description | A note that you can use to describe the purpose of the filter. | Optional |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 ### cloudflare-waf-filter-delete
+
 ***
 Delete an exist filter (Note that a filter linked to firewall rule cannot be deleted).
-
+Permissions required for the API token:
+Account: Account Filter Lists:Edit
+Zone: Firewall Services:Edit
 
 #### Base Command
 
 `cloudflare-waf-filter-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| filter_id | The filter ID. | Required | 
-| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional | 
-
+| filter_id | The filter ID. | Required |
+| zone_id | Zone identifier. The initialization will override the value set in the instance. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 #### Command example
+
 ```!cloudflare-waf-filter-delete filter_id="c8bf98553afd4522bde108f600d8a794"```
+
 #### Human Readable Output
 
 >Filter c8bf98553afd4522bde108f600d8a794 was successfully deleted.
 
 ### cloudflare-waf-filter-list
+
 ***
 List filters.
-
+Permissions required for the API token:
+Account: Account Filter Lists:Read
+Zone: Firewall Services:Read
 
 #### Base Command
 
 `cloudflare-waf-filter-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | Filter identifier. . | Optional | 
-| expression | The filter expression to be used. | Optional | 
-| ref | Short reference tag to quickly select related rules. | Optional | 
-| paused | Whether this filter is currently paused. Possible values are: true, false. | Optional | 
-| description | A note that you can use to describe the purpose of the filter. | Optional | 
-| page | Page number of paginated results.<br/>min value: 1. | Optional | 
-| page_size | Number of filter based firewall rules per page. The argument accepts values ​​divided by 5.<br/>Minimum value 5.<br/>Maximum value 100.<br/>For example: 5,10,15. | Optional | 
-| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional | 
-| zone_id | Zone identifier. If provided, it will override the value set in the instance. | Optional | 
-
+| id | Filter identifier. . | Optional |
+| expression | The filter expression to be used. | Optional |
+| ref | Short reference tag to quickly select related rules. | Optional |
+| paused | Whether this filter is currently paused. Possible values are: true, false. | Optional |
+| description | A note that you can use to describe the purpose of the filter. | Optional |
+| page | Page number of paginated results.<br/>min value: 1. | Optional |
+| page_size | Number of filter based firewall rules per page. The argument accepts values ​​divided by 5.<br/>Minimum value 5.<br/>Maximum value 100.<br/>For example: 5,10,15. | Optional |
+| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional |
+| zone_id | Zone identifier. If provided, it will override the value set in the instance. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.Filter.id | String | Filter identifier.  | 
-| CloudflareWAF.Filter.expression | String | The filter expression. | 
-| CloudflareWAF.Filter.description | String | Description of the filter purpose. | 
-| CloudflareWAF.Filter.paused | Boolean | Whether this filter is currently paused. | 
-| CloudflareWAF.Filter.ref | String | Short reference tag. | 
+| CloudflareWAF.Filter.id | String | Filter identifier.  |
+| CloudflareWAF.Filter.expression | String | The filter expression. |
+| CloudflareWAF.Filter.description | String | Description of the filter purpose. |
+| CloudflareWAF.Filter.paused | Boolean | Whether this filter is currently paused. |
+| CloudflareWAF.Filter.ref | String | Short reference tag. |
 
 #### Command example
+
 ```!cloudflare-waf-filter-list```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -413,7 +463,9 @@ List filters.
 #### Human Readable Output
 
 >### Filter list
+>
 >Showing 50 rows out of 93.
+>
 >|Id|Expression|Ref|Description|Paused|
 >|---|---|---|---|---|
 >| c092787d60b54f06b270ab4cb22edd54 | (ip.src eq 120.2.2.8) |  |  | false |
@@ -421,56 +473,61 @@ List filters.
 >| 3d6ea4fe88614d3c99d9f11da5b84b62 | (ip.src eq 120.2.2.8) |  |  | false |
 >| f368d129d8fa4c97ad62fd4024bf63f9 | (ip.src eq 120.2.2.8) |  |  | false |
 
-
 ### cloudflare-waf-zone-list
+
 ***
 List all account zones.
-
+Permissions required for the API token:
+Zone: Zone Settings:Read
+Zone:Read
 
 #### Base Command
 
 `cloudflare-waf-zone-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| match | Whether to match all search requirements or at least one (any). Possible values are: any, all. Default is all. | Optional | 
-| name | A domain name. | Optional | 
-| account_name | Account name. | Optional | 
-| account_id | Account identifier tag. | Optional | 
-| status | Status of the zone. Possible values are: active, pending, initializing, moved, deleted, deactivated, read only. | Optional | 
-| order | Field to order zones by. Possible values are: name, status, account.id, account.name. | Optional | 
-| direction | Direction to order zones. Possible values are: asc, desc. | Optional | 
-| page | Page number of paginated results. Default value: 1, min value: 1. | Optional | 
-| page_size | Number of zones per page. The argument accepts values ​​divided by 5.<br/>Minimum value 5.<br/>Maximum value 100.<br/>For example: 5,10,15. | Optional | 
-| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional | 
-
+| match | Whether to match all search requirements or at least one (any). Possible values are: any, all. Default is all. | Optional |
+| name | A domain name. | Optional |
+| account_name | Account name. | Optional |
+| account_id | Account identifier tag. | Optional |
+| status | Status of the zone. Possible values are: active, pending, initializing, moved, deleted, deactivated, read only. | Optional |
+| order | Field to order zones by. Possible values are: name, status, account.id, account.name. | Optional |
+| direction | Direction to order zones. Possible values are: asc, desc. | Optional |
+| page | Page number of paginated results. Default value: 1, min value: 1. | Optional |
+| page_size | Number of zones per page. The argument accepts values ​​divided by 5.<br/>Minimum value 5.<br/>Maximum value 100.<br/>For example: 5,10,15. | Optional |
+| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.Zone.success | Boolean | The status of the request \(true or false\). | 
-| CloudflareWAF.Zone.id | String | The zone ID.  | 
-| CloudflareWAF.Zone.name | String | A domain name. | 
-| CloudflareWAF.Zone.development_mode | Integer | Development mode. | 
-| CloudflareWAF.Zone.original_name_servers | Data | Original name servers. | 
-| CloudflareWAF.Zone.original_registrar | String | Original registrar. | 
-| CloudflareWAF.Zone.original_dnshost | String | Original DNS host. | 
-| CloudflareWAF.Zone.created_on | Date | Zone created date. | 
-| CloudflareWAF.Zone.modified_on | Date | Zone modified date. | 
-| CloudflareWAF.Zone.activated_on | Date | Zone activated date. | 
-| CloudflareWAF.Zone.status | String | Status of the zone. | 
-| CloudflareWAF.Zone.paused | Boolean | Whether this zone is currently paused. | 
-| CloudflareWAF.Zone.type | String | Short reference tag. | 
-| CloudflareWAF.Zone.permissions | Data | List of zone permissions. | 
-| CloudflareWAF.Zone.Account | Data | Account details. | 
-| CloudflareWAF.Zone.owner | Data | The zone owner details. | 
-| CloudflareWAF.Zone.name_servers | Data | Zone servers names. | 
+| CloudflareWAF.Zone.success | Boolean | The status of the request \(true or false\). |
+| CloudflareWAF.Zone.id | String | The zone ID.  |
+| CloudflareWAF.Zone.name | String | A domain name. |
+| CloudflareWAF.Zone.development_mode | Integer | Development mode. |
+| CloudflareWAF.Zone.original_name_servers | Data | Original name servers. |
+| CloudflareWAF.Zone.original_registrar | String | Original registrar. |
+| CloudflareWAF.Zone.original_dnshost | String | Original DNS host. |
+| CloudflareWAF.Zone.created_on | Date | Zone created date. |
+| CloudflareWAF.Zone.modified_on | Date | Zone modified date. |
+| CloudflareWAF.Zone.activated_on | Date | Zone activated date. |
+| CloudflareWAF.Zone.status | String | Status of the zone. |
+| CloudflareWAF.Zone.paused | Boolean | Whether this zone is currently paused. |
+| CloudflareWAF.Zone.type | String | Short reference tag. |
+| CloudflareWAF.Zone.permissions | Data | List of zone permissions. |
+| CloudflareWAF.Zone.Account | Data | Account details. |
+| CloudflareWAF.Zone.owner | Data | The zone owner details. |
+| CloudflareWAF.Zone.name_servers | Data | Zone servers names. |
 
 #### Command example
+
 ```!cloudflare-waf-zone-list```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -671,98 +728,111 @@ List all account zones.
 #### Human Readable Output
 
 >### Zone list
+>
 >Showing 2 rows out of 2
+>
 >|Name|Account Name|Status|Account Id|Direction|
 >|---|---|---|---|---|
 >| fortresscyber.io |  | active |  |  |
 >| stronghold.services |  | active |  |  |
 
-
 ### cloudflare-waf-ip-list-create
+
 ***
 Create a new IP-list. An IP-list is a list that includes IP addresses and CIDR. IP-list is used in the filter expression.
-
+Permissions required for the API token:
+Account: All accounts - Account WAF:Edit
 
 #### Base Command
 
 `cloudflare-waf-ip-list-create`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | The name of the list (used in filter expressions). | Required | 
-| description | A note that can be used to annotate the List. | Optional | 
-
+| name | The name of the list (used in filter expressions). | Required |
+| description | A note that can be used to annotate the List. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.IpList.id | String | The list ID.  | 
-| CloudflareWAF.IpList.name | String | The name of the list. | 
-| CloudflareWAF.IpList.description | String | A note that annotate the List. | 
-| CloudflareWAF.IpList.kind | String | The kind of values in the List. | 
-| CloudflareWAF.IpList.num_items | Integer | Number of list items. | 
-| CloudflareWAF.IpList.num_referencing_filters | Integer | Number of referencing filters to the list. | 
-| CloudflareWAF.IpList.created_on | Date | List created date. | 
-| CloudflareWAF.IpList.modified_on | Date | List modified date. | 
+| CloudflareWAF.IpList.id | String | The list ID.  |
+| CloudflareWAF.IpList.name | String | The name of the list. |
+| CloudflareWAF.IpList.description | String | A note that annotate the List. |
+| CloudflareWAF.IpList.kind | String | The kind of values in the List. |
+| CloudflareWAF.IpList.num_items | Integer | Number of list items. |
+| CloudflareWAF.IpList.num_referencing_filters | Integer | Number of referencing filters to the list. |
+| CloudflareWAF.IpList.created_on | Date | List created date. |
+| CloudflareWAF.IpList.modified_on | Date | List modified date. |
 
 ### cloudflare-waf-ip-list-delete
+
 ***
 Delete IP-list by the specified list ID.
-
+Permissions required for the API token:
+Account: All accounts - Account WAF:Edit
 
 #### Base Command
 
 `cloudflare-waf-ip-list-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | The list ID. . | Required | 
-
+| id | The list ID. . | Required |
 
 #### Context Output
 
 There is no context output for this command.
+
 #### Command example
-```!cloudflare-waf-ip-list-delete id="dd7e3f1f5edf4591acb22f20da320b8f"	```
+
+```!cloudflare-waf-ip-list-delete id="dd7e3f1f5edf4591acb22f20da320b8f"```
+
 #### Human Readable Output
 
 >IP list dd7e3f1f5edf4591acb22f20da320b8f was successfully deleted
 
 ### cloudflare-waf-ip-lists-list
+
 ***
 List IP-lists.
-
+Permissions required for the API token:
+Account: All accounts - Account WAF:Read
 
 #### Base Command
 
 `cloudflare-waf-ip-lists-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| id | Retrieve details for an individual list Id. | Optional | 
-| page | Page number of paginated results.<br/>Default value: 1, min value: 1. | Optional | 
-| page_size | Number of IP-list per page. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. | Optional | 
-| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional | 
-
+| id | Retrieve details for an individual list Id. | Optional |
+| page | Page number of paginated results.<br/>Default value: 1, min value: 1. | Optional |
+| page_size | Number of IP-list per page. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. | Optional |
+| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.IpList.id | String | The list ID.  | 
-| CloudflareWAF.IpList.name | String | The list name. | 
-| CloudflareWAF.IpList.description | String | List description. | 
-| CloudflareWAF.IpList.kind | String | List kind \(ip\\redirect\). | 
-| CloudflareWAF.IpList.num_items | unknown | Number of list items. | 
-| CloudflareWAF.IpList.num_referencing_filters | unknown | Number of referencing filters to the list. | 
+| CloudflareWAF.IpList.id | String | The list ID.  |
+| CloudflareWAF.IpList.name | String | The list name. |
+| CloudflareWAF.IpList.description | String | List description. |
+| CloudflareWAF.IpList.kind | String | List kind \(ip\\redirect\). |
+| CloudflareWAF.IpList.num_items | unknown | Number of list items. |
+| CloudflareWAF.IpList.num_referencing_filters | unknown | Number of referencing filters to the list. |
 
 #### Command example
+
 ```!cloudflare-waf-ip-lists-list```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -847,7 +917,9 @@ List IP-lists.
 #### Human Readable Output
 
 >### IP lists list
+>
 >Showing 8 rows out of 8.
+>
 >|Id|Name|Kind|Num Items|Num Referencing Filters|Created On|Modified On|
 >|---|---|---|---|---|---|---|
 >| e6efdc37cf7d41f2860a3fd448c68df8 | my_first_list1 | ip | 8 | 1 | 2022-04-10T09:42:13Z | 2022-04-27T13:39:44Z |
@@ -859,105 +931,118 @@ List IP-lists.
 >| 8e9773d982fb4dbfb198f8078d22f4f6 | list_name2 | ip | 0 | 0 | 2022-04-27T10:08:53Z | 2022-04-27T10:08:53Z |
 >| 8667dc96872c44ebabd7559594e92372 | demo_list2 | ip | 1 | 1 | 2022-04-26T08:25:48Z | 2022-04-26T08:55:54Z |
 
-
 ### cloudflare-waf-ip-list-item-create
-***
-Create new items for exist IP-list. 
 
+***
+Create new items for exist IP-list.
+Permissions required for the API token:
+Account: All accounts - Account WAF:Edit
 
 #### Base Command
 
 `cloudflare-waf-ip-list-item-create`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| list_id | The ID of the list to insert the new items. Possible values are: . | Required | 
-| items | The new items to be added (comma separated IP addresses). | Required | 
-| polling | Use Cortex XSOAR built-in polling to retrieve the result when it's ready. Default is False. Possible values are: true, false. Default is True. | Optional | 
+| list_id | The ID of the list to insert the new items. Possible values are: . | Required |
+| items | The new items to be added (comma separated IP addresses). | Required |
+| polling | Use Cortex XSOAR built-in polling to retrieve the result when it's ready. Default is False. Possible values are: true, false. Default is True. | Optional |
 | interval | Indicates how long to wait between command execution (in seconds) when 'polling' argument is true. Minimum value is 10 seconds. Default is 30. Default is 10. | Optional |
-| timeout | Indicates the time in seconds until the polling sequence timeouts. Default is 60. Default is 60. | Optional | 
-| operation_id | The ID of the pipeline run to retrieve when polling argument is true. Intended for use by the Polling process and does not need to be provided by the user. | Optional | 
-
+| timeout | Indicates the time in seconds until the polling sequence timeouts. Default is 60. Default is 60. | Optional |
+| operation_id | The ID of the pipeline run to retrieve when polling argument is true. Intended for use by the Polling process and does not need to be provided by the user. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 ### cloudflare-waf-ip-list-item-update
+
 ***
 Replace the IP-list items with a new items
-
+Permissions required for the API token:
+Account: All accounts - Account WAF:Edit
 
 #### Base Command
 
 `cloudflare-waf-ip-list-item-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| list_id | The list ID. | Required | 
-| items | The new items. | Required | 
-| polling | Use Cortex XSOAR built-in polling to retrieve the result when it's ready. Default is False. Possible values are: true, false. Default is True. | Optional | 
+| list_id | The list ID. | Required |
+| items | The new items. | Required |
+| polling | Use Cortex XSOAR built-in polling to retrieve the result when it's ready. Default is False. Possible values are: true, false. Default is True. | Optional |
 | interval | Indicates how long to wait between command execution (in seconds) when 'polling' argument is true. Minimum value is 10 seconds. Default is 30. Default is 10. | Optional |
-| timeout | Indicates the time in seconds until the polling sequence timeouts. Default is 60. Default is 60. | Optional | 
-| operation_id | The ID of the pipeline run to retrieve when polling argument is true. Intended for use by the Polling process and does not need to be provided by the user. | Optional | 
-
+| timeout | Indicates the time in seconds until the polling sequence timeouts. Default is 60. Default is 60. | Optional |
+| operation_id | The ID of the pipeline run to retrieve when polling argument is true. Intended for use by the Polling process and does not need to be provided by the user. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 ### cloudflare-waf-ip-list-item-delete
+
 ***
 Delete item of a IP-list by the specified list ID and list item.
-
+Permissions required for the API token:
+Account: All accounts - Account WAF:Edit
 
 #### Base Command
 
 `cloudflare-waf-ip-list-item-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| list_id | The list ID. | Required | 
-| items_id | The items ID to be delete. | Required | 
-| polling | Use Cortex XSOAR built-in polling to retrieve the result when it's ready. Default is False. Possible values are: true, false. Default is True. | Optional | 
+| list_id | The list ID. | Required |
+| items_id | The items ID to be delete. | Required |
+| polling | Use Cortex XSOAR built-in polling to retrieve the result when it's ready. Default is False. Possible values are: true, false. Default is True. | Optional |
 | interval | Indicates how long to wait between command execution (in seconds) when 'polling' argument is true. Minimum value is 10 seconds. Default is 30. Default is 10. | Optional |
-| timeout | Indicates the time in seconds until the polling sequence timeouts. Default is 60. Default is 60. | Optional | 
-| operation_id | The ID of the pipeline run to retrieve when polling argument is true. Intended for use by the Polling process and does not need to be provided by the user. | Optional | 
-
+| timeout | Indicates the time in seconds until the polling sequence timeouts. Default is 60. Default is 60. | Optional |
+| operation_id | The ID of the pipeline run to retrieve when polling argument is true. Intended for use by the Polling process and does not need to be provided by the user. | Optional |
 
 #### Context Output
 
 There is no context output for this command.
+
 ### cloudflare-waf-ip-list-item-list
+
 ***
 List all items in the List or details of individual item by ID.
-
+Permissions required for the API token:
+Account: All accounts - Account WAF:Read
 
 #### Base Command
 
 `cloudflare-waf-ip-list-item-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| list_id | The list ID. | Required | 
-| item_id | Retrieve details for an individual item Id. | Optional | 
-| page | Page number of paginated results.<br/>Default value: 1, min value: 1. | Optional | 
-| page_size | Number of zones per page. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. | Optional | 
-| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional | 
-
+| list_id | The list ID. | Required |
+| item_id | Retrieve details for an individual item Id. | Optional |
+| page | Page number of paginated results.<br/>Default value: 1, min value: 1. | Optional |
+| page_size | Number of zones per page. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. | Optional |
+| limit | The maximum number of records to retrieve. The argument accepts values ​​divided by 5. Minimum value 5. Maximum value 100. For example: 5,10,15. Default is 50. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CloudflareWAF.IpListItem.items | Unknown | The list items. | 
-| CloudflareWAF.IpListItem.list_id | String | The list ID. | 
+| CloudflareWAF.IpListItem.items | Unknown | The list items. |
+| CloudflareWAF.IpListItem.list_id | String | The list ID. |
 
 #### Command example
+
 ```!cloudflare-waf-ip-list-item-list list_id="e6efdc37cf7d41f2860a3fd448c68df8"```
+
 #### Context Example
+
 ```json
 {
     "CloudflareWAF": {
@@ -1021,7 +1106,9 @@ List all items in the List or details of individual item by ID.
 #### Human Readable Output
 
 >### ip-list e6efdc37cf7d41f2860a3fd448c68df8
+>
 >Showing 8 rows out of 8.
+>
 >|Id|Ip|Created On|Modified On|
 >|---|---|---|---|
 >| b3016f6529274bbd8086a4ac0be07822 | 120.2.2.8 | 2022-04-26T10:58:55Z | 2022-04-26T10:59:24Z |
@@ -1033,3 +1120,578 @@ List all items in the List or details of individual item by ID.
 >| eccdf2f286804a988850accbaaeaa462 | 120.2.2.8 | 2022-04-25T12:45:50Z | 2022-04-25T12:46:05Z |
 >| d3b69c4d7bc34384a7448498dd8d9b45 | 120.2.2.8 | 2022-04-25T12:45:50Z | 2022-04-25T12:46:05Z |
 
+### cloudflare-waf-ruleset-list
+
+***
+The command lists all rulesets at the account or zone level.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| zone_id | Zone identifier. If provided, lists zone-level rulesets. If not provided, lists account-level rulesets. The value set in the instance configuration is used by default. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of the ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | A description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The timestamp of when the ruleset was last updated. |
+
+#### Command example
+
+```!cloudflare-waf-ruleset-list```
+
+#### Human Readable Output
+
+>### Ruleset list
+>
+>|Id|Name|Kind|Phase|Description|Version|Last Updated|
+>|---|---|---|---|---|---|---|
+>| abc123 | Cloudflare Managed Ruleset | managed | http_request_firewall_managed | Managed ruleset | 1 | 2023-01-15T10:00:00Z |
+
+### cloudflare-waf-ruleset-get
+
+***
+The command retrieves a specific ruleset by ID, including its list of rules.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| zone_id | Zone identifier. If provided, gets a zone-level ruleset. If not provided, gets an account-level ruleset. The value set in the instance configuration is used by default. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of the ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | A description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The timestamp of when the ruleset was last updated. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | A description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+
+#### Command example
+
+```!cloudflare-waf-ruleset-get ruleset_id="abc123"```
+
+#### Human Readable Output
+
+>### Ruleset details
+>
+>|Id|Name|Kind|Phase|Description|Version|Last Updated|
+>|---|---|---|---|---|---|---|
+>| abc123 | Cloudflare Managed Ruleset | managed | http_request_firewall_managed | Managed ruleset | 1 | 2023-01-15T10:00:00Z |
+>
+>### Ruleset rules
+>
+>|Id|Action|Expression|Description|Enabled|Version|Ref|
+>|---|---|---|---|---|---|---|
+>| rule_1 | block | (ip.src eq 192.0.2.1) | Block bad IP | true | 1 | ref_1 |
+
+### cloudflare-waf-ruleset-create
+
+***
+The command creates a new ruleset at the account or zone level.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-create`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| name | The name of the ruleset. | Required |
+| kind | The kind of the ruleset. Possible values are: managed, custom, root, zone. | Required |
+| phase | The phase of the ruleset. Possible values are: ddos_l4, ddos_l7, http_config_settings, http_custom_errors, http_log_custom_fields, http_ratelimit, http_request_cache_settings, http_request_dynamic_redirect, http_request_firewall_custom, http_request_firewall_managed, http_request_late_transform, http_request_origin, http_request_redirect, http_request_sanitize, http_request_sbfm, http_request_transform, http_response_cache_settings, http_response_compression, http_response_firewall_managed, http_response_headers_transform, magic_transit, magic_transit_ids_managed, magic_transit_managed, magic_transit_ratelimit. | Required |
+| description | The description of the ruleset. | Optional |
+| rules | The JSON array of rule objects to include in the ruleset. For example: [{"action": "block", "expression": "(ip.src eq 192.0.2.1)", "description": "Block bad IP"}]. | Optional |
+| zone_id | The Zone identifier. If provided, creates a zone-level ruleset. If not provided, creates an account-level ruleset. The value set in the instance configuration is used by default. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of the ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The timestamp of when the ruleset was last updated. For example, 2024-08-01T17:37:12.291474Z. |
+
+#### Command example
+
+```!cloudflare-waf-ruleset-create name="My Custom Ruleset" kind="custom" phase="http_request_firewall_custom" description="A custom ruleset"```
+
+#### Human Readable Output
+
+>### Ruleset was successfully created
+>
+>|Id|Name|Kind|Phase|Description|Version|Last Updated|
+>|---|---|---|---|---|---|---|
+>| new_id | My Custom Ruleset | custom | http_request_firewall_custom | A custom ruleset | 1 | 2023-03-10T08:00:00Z |
+
+### cloudflare-waf-ruleset-update
+
+***
+The command updates an existing ruleset by ID. Note that this replaces the entire ruleset configuration.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| name | The name of the ruleset. | Optional |
+| description | A description of the ruleset. | Optional |
+| rules | A JSON array of rule objects to set in the ruleset. This replaces all existing rules. For example: [{"action": "block", "expression": "(ip.src eq 192.0.2.1)", "description": "Block bad IP"}]. | Optional |
+| zone_id | Zone identifier. If provided, updates a zone-level ruleset. If not provided, updates an account-level ruleset. The value set in the instance configuration is used by default. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of the ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | A description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The timestamp of when the ruleset was last updated. |
+
+#### Command example
+
+```!cloudflare-waf-ruleset-update ruleset_id="abc123" name="Updated Ruleset" description="Updated description"```
+
+#### Human Readable Output
+
+>Ruleset abc123 was successfully updated.
+
+### cloudflare-waf-ruleset-delete
+
+***
+The command deletes a ruleset by ID.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| zone_id | Zone identifier. If provided, deletes a zone-level ruleset. If not provided, deletes an account-level ruleset. The value set in the instance configuration is used by default. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+#### Command example
+
+```!cloudflare-waf-ruleset-delete ruleset_id="abc123"```
+
+#### Human Readable Output
+
+>Ruleset abc123 was successfully deleted.
+>
+### cloudflare-waf-ruleset-entrypoint-get
+
+***
+Retrieves the entry point ruleset for a specific phase at the account or zone level.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-entrypoint-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| phase | The phase of the ruleset. Possible values are: ddos_l4, ddos_l7, http_config_settings, http_custom_errors, http_log_custom_fields, http_ratelimit, http_request_cache_settings, http_request_dynamic_redirect, http_request_firewall_custom, http_request_firewall_managed, http_request_late_transform, http_request_origin, http_request_redirect, http_request_sanitize, http_request_sbfm, http_request_transform, http_response_cache_settings, http_response_compression, http_response_firewall_managed, http_response_headers_transform, magic_transit, magic_transit_ids_managed, magic_transit_managed, magic_transit_ratelimit. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: \`2024-08-01T17:37:12.291474Z\`. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+
+### cloudflare-waf-ruleset-entrypoint-version-get
+
+***
+Retrieves a specific version of the entry point ruleset for a phase, including its rules.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-entrypoint-version-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| phase | The phase of the ruleset. Possible values are: ddos_l4, ddos_l7, http_config_settings, http_custom_errors, http_log_custom_fields, http_ratelimit, http_request_cache_settings, http_request_dynamic_redirect, http_request_firewall_custom, http_request_firewall_managed, http_request_late_transform, http_request_origin, http_request_redirect, http_request_sanitize, http_request_sbfm, http_request_transform, http_response_cache_settings, http_response_compression, http_response_firewall_managed, http_response_headers_transform, magic_transit, magic_transit_ids_managed, magic_transit_managed, magic_transit_ratelimit. | Required |
+| version | The version of the ruleset. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: 2024-08-01T17:37:12.291474Z. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+
+### cloudflare-waf-ruleset-entrypoint-update
+
+***
+Updates the entry point ruleset for a specific phase. When rules are provided, they replace all existing entry-point rules.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-entrypoint-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| phase | The phase of the ruleset. Possible values are: ddos_l4, ddos_l7, http_config_settings, http_custom_errors, http_log_custom_fields, http_ratelimit, http_request_cache_settings, http_request_dynamic_redirect, http_request_firewall_custom, http_request_firewall_managed, http_request_late_transform, http_request_origin, http_request_redirect, http_request_sanitize, http_request_sbfm, http_request_transform, http_response_cache_settings, http_response_compression, http_response_firewall_managed, http_response_headers_transform, magic_transit, magic_transit_ids_managed, magic_transit_managed, magic_transit_ratelimit. | Required |
+| name | The human-readable name of the ruleset. | Optional |
+| description | The description of the ruleset. | Optional |
+| rules | The JSON array of rule objects that replaces all existing entry-point rules. For example: `[{"action": "block", "expression": "(ip.src eq 192.0.2.1)", "description": "Block bad IP"}]`. | Optional |
+| dry_run | Whether to validate the update without applying it. Possible values are: true, false. | Optional |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: 2024-08-01T17:37:12.291474Z. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+
+### cloudflare-waf-ruleset-rule-update
+
+***
+Updates an existing rule in a ruleset by replacing the entire rule. Replaces the deprecated `cloudflare-waf-firewall-rule-update` and `cloudflare-waf-filter-update` commands.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-rule-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| rule_id | The rule identifier. | Required |
+| rule | The full rule object as a JSON string representing the request body. A PATCH request replaces the entire rule. For example: `{"action": "block", "expression": "(ip.src eq 192.0.2.1)", "description": "Block bad IP"}`. | Required |
+| dry_run | Whether to validate the rule without applying it. Possible values are: true, false. | Optional |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: \`2024-08-01T17:37:12.291474Z\`. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+
+### cloudflare-waf-ruleset-version-list
+
+***
+Lists all versions of a ruleset at the account or zone level.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-version-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+| limit | The maximum number of records to return. Default is 50. | Optional |
+| all_results | Whether to retrieve all results, overriding the limit argument. Possible values are: true, false. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: 2024-08-01T17:37:12.291474Z. |
+
+### cloudflare-waf-ruleset-rule-delete
+
+***
+Deletes a rule from a ruleset. Replaces the deprecated `cloudflare-waf-firewall-rule-delete` and `cloudflare-waf-filter-delete` commands.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-rule-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| rule_id | The rule identifier. | Required |
+| dry_run | Whether to validate the deletion without applying it. Possible values are: true, false. | Optional |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+### cloudflare-waf-ruleset-version-delete
+
+***
+Deletes a specific version of a ruleset. Known limitation: deleting a version that does not exist or was already deleted returns a success response rather than an error.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-version-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| version | The version of the ruleset. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+| dry_run | Whether to validate the deletion without applying it. Possible values are: true, false. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+### cloudflare-waf-ruleset-rule-create
+
+***
+Creates a new rule in a ruleset at the account or zone level. Replaces the deprecated `cloudflare-waf-firewall-rule-create` and `cloudflare-waf-filter-create` commands.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-rule-create`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| rule | The rule object to add as a JSON string. For example: `{"action": "block", "expression": "(ip.src eq 192.0.2.1)", "description": "Block bad IP", "position": {"before": "&lt;rule_id&gt;"}}`. | Required |
+| dry_run | Whether to validate the rule without applying it. Possible values are: true, false. | Optional |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: \`2024-08-01T17:37:12.291474Z\`. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+
+### cloudflare-waf-ruleset-entrypoint-version-list
+
+***
+Lists all versions of the entry point ruleset for a specific phase at the account or zone level.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-entrypoint-version-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| phase | The phase of the ruleset. Possible values are: ddos_l4, ddos_l7, http_config_settings, http_custom_errors, http_log_custom_fields, http_ratelimit, http_request_cache_settings, http_request_dynamic_redirect, http_request_firewall_custom, http_request_firewall_managed, http_request_late_transform, http_request_origin, http_request_redirect, http_request_sanitize, http_request_sbfm, http_request_transform, http_response_cache_settings, http_response_compression, http_response_firewall_managed, http_response_headers_transform, magic_transit, magic_transit_ids_managed, magic_transit_managed, magic_transit_ratelimit. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+| limit | The maximum number of records to return. Default is 50. | Optional |
+| all_results | Whether to retrieve all results, overriding the limit argument. Possible values are: true, false. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: 2024-08-01T17:37:12.291474Z. |
+
+### cloudflare-waf-ruleset-rule-list-by-tag
+
+***
+Lists the rules of a managed ruleset, filtered by tag or category. Account scope only.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-rule-list-by-tag`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| version | The version of the ruleset. | Required |
+| tag | The tag or category by which to filter the rules. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Defaults to the instance Account ID. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: 2024-08-01T17:37:12.291474Z. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |
+| CloudflareWAF.Ruleset.rules.categories | Unknown | The categories or tags that the rule carries. |
+
+### cloudflare-waf-ruleset-version-get
+
+***
+Retrieves a specific version of a ruleset, including its rules. Replaces the deprecated `cloudflare-waf-firewall-rule-list` command.
+
+#### Base Command
+
+`cloudflare-waf-ruleset-version-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ruleset_id | The ruleset identifier. | Required |
+| version | The version of the ruleset. | Required |
+| account_id | The account scope. Overrides the instance-configured Account ID. Mutually exclusive with zone_id. Defaults to the instance Account ID. | Optional |
+| zone_id | The zone scope. Overrides the instance-configured Zone ID. Mutually exclusive with account_id. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CloudflareWAF.Ruleset.id | String | The ruleset identifier. |
+| CloudflareWAF.Ruleset.name | String | The name of the ruleset. |
+| CloudflareWAF.Ruleset.kind | String | The kind of ruleset. |
+| CloudflareWAF.Ruleset.phase | String | The phase of the ruleset. |
+| CloudflareWAF.Ruleset.description | String | The description of the ruleset. |
+| CloudflareWAF.Ruleset.version | String | The version of the ruleset. |
+| CloudflareWAF.Ruleset.last_updated | Date | The date and time when the ruleset was last updated. For example: 2024-08-01T17:37:12.291474Z. |
+| CloudflareWAF.Ruleset.rules.id | String | The rule identifier. |
+| CloudflareWAF.Ruleset.rules.action | String | The action to perform when the rule matches. |
+| CloudflareWAF.Ruleset.rules.expression | String | The filter expression for the rule. |
+| CloudflareWAF.Ruleset.rules.description | String | The description of the rule. |
+| CloudflareWAF.Ruleset.rules.enabled | Boolean | Whether the rule is enabled. |
+| CloudflareWAF.Ruleset.rules.version | String | The version of the rule. |
+| CloudflareWAF.Ruleset.rules.ref | String | The reference of the rule. |

@@ -12,7 +12,8 @@
         "Symantec DLP Endpoint Incident",
         "Symantec DLP Network Incident",
 		"Prisma Cloud - VM Alert Prioritization",
-        "Exabeam Notable User"
+        "Exabeam Notable User",
+        "CrowdStrike Falcon OFP Detection"
     ],
     "caseInsensitive": true,
     "cliName": "firstseen",
@@ -34,7 +35,8 @@
         "Symantec DLP Discover Incident",
         "Symantec DLP Endpoint Incident",
         "Symantec DLP Network Incident",
-        "Prisma Cloud - VM Alert Prioritization"
+        "Prisma Cloud - VM Alert Prioritization",
+        "CrowdStrike Falcon OFP Detection"
     ],
     "threshold": 72,
     "type": "shortText",
@@ -42,5 +44,9 @@
     "unsearchable": false,
     "useAsKpi": false,
     "version": -1,
-    "fromVersion": "5.0.0"
+    "fromVersion": "5.0.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

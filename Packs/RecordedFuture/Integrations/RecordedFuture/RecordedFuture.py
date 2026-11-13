@@ -5,6 +5,7 @@ from CommonServerPython import *  # noqa: F401
 """Recorded Future Integration for Demisto."""
 
 import copy
+from dataclasses import dataclass
 import platform
 from typing import *
 
@@ -15,134 +16,215 @@ STATUS_TO_RETRY = [500, 501, 502, 503, 504]
 # disable insecure warnings
 requests.packages.urllib3.disable_warnings()  # type: ignore
 
-__version__ = '2.5.1'
+__version__ = "2.6.0"
 
+DEFAULT_THRESHOLD_BAD = 65
+DEFAULT_THRESHOLD_SUSPICIOUS = 25
 
 # === === === === === === === === === === === === === === ===
 # === === === === === === HELPERS === === === === === === ===
 # === === === === === === === === === === === === === === ===
 
 
-def translate_score(score: int, threshold: int) -> int:
-    """Translate Recorded Future score to DBot score."""
-    RISK_SCORE_THRESHOLD = 25
+@dataclass(frozen=True)
+class DBotScoreDetails:
+    score: int
+    description: str
+
+
+@dataclass(frozen=True)
+class IndicatorThresholds:
+    bad: Dict[str, int]
+    suspicious: Dict[str, int]
+
+
+def translate_score(*, score: int, threshold_bad: int, threshold_suspicious: int, benign: bool = False) -> DBotScoreDetails:
+    """Translate Recorded Future score to DBot score and description."""
     # See https://support.recordedfuture.com/hc/en-us/articles/115000894468-Vulnerability-Risk-Rules.  # noqa
-    if score >= threshold:
-        return Common.DBotScore.BAD
-    elif score >= RISK_SCORE_THRESHOLD:
-        return Common.DBotScore.SUSPICIOUS
-    else:
-        return Common.DBotScore.NONE
+    if score >= threshold_bad:
+        return DBotScoreDetails(
+            score=Common.DBotScore.BAD,
+            description=f"Score above {threshold_bad}",
+        )
+    elif score >= threshold_suspicious:
+        return DBotScoreDetails(
+            score=Common.DBotScore.SUSPICIOUS,
+            description=f"Score above {threshold_suspicious}",
+        )
+    elif benign:
+        # The Recorded Future SOAR API reported "No Risk Observed" (noKnownRisk)
+        # for this entity, a deterministic benign signal. See RFPD-112104.
+        return DBotScoreDetails(
+            score=Common.DBotScore.GOOD,
+            description="No Risk Observed",
+        )
+
+    return DBotScoreDetails(score=Common.DBotScore.NONE, description="")
+
+
+def get_indicator_thresholds(demisto_params: Dict[str, Any]) -> IndicatorThresholds:
+    """Return malicious and suspicious thresholds for supported indicator types."""
+
+    def get_threshold(param_name: str, default_value: int) -> int:
+        raw_value = demisto_params.get(param_name, default_value)
+        if raw_value in ("", None):
+            return default_value
+
+        try:
+            return int(raw_value)
+        except (TypeError, ValueError) as err:
+            raise DemistoException(
+                f"Invalid threshold configuration for {param_name!r}. "
+                "Please set this integration parameter to a valid integer value."
+            ) from err
+
+    return IndicatorThresholds(
+        bad={
+            "file": get_threshold("file_threshold", DEFAULT_THRESHOLD_BAD),
+            "ip": get_threshold("ip_threshold", DEFAULT_THRESHOLD_BAD),
+            "domain": get_threshold("domain_threshold", DEFAULT_THRESHOLD_BAD),
+            "url": get_threshold("url_threshold", DEFAULT_THRESHOLD_BAD),
+            "cve": get_threshold("cve_threshold", DEFAULT_THRESHOLD_BAD),
+        },
+        suspicious={
+            "file": get_threshold("file_threshold_suspicious", DEFAULT_THRESHOLD_SUSPICIOUS),
+            "ip": get_threshold("ip_threshold_suspicious", DEFAULT_THRESHOLD_SUSPICIOUS),
+            "domain": get_threshold("domain_threshold_suspicious", DEFAULT_THRESHOLD_SUSPICIOUS),
+            "url": get_threshold("url_threshold_suspicious", DEFAULT_THRESHOLD_SUSPICIOUS),
+            "cve": get_threshold("cve_threshold_suspicious", DEFAULT_THRESHOLD_SUSPICIOUS),
+        },
+    )
 
 
 def determine_hash(hash_value: str) -> str:
     """Determine hash type by length."""
     hash_length = len(hash_value)
     if hash_length == 128:
-        return 'SHA512'
+        return "SHA512"
     elif hash_length == 64:
-        return 'SHA256'
+        return "SHA256"
     elif hash_length == 40:
-        return 'SHA1'
+        return "SHA1"
     elif hash_length == 32:
-        return 'MD5'
+        return "MD5"
     elif hash_length == 8:
-        return 'CRC32'
+        return "CRC32"
     else:
-        return 'CTPH'
+        return "CTPH"
 
 
 def create_indicator(
     entity: str,
     entity_type: str,
     score: int,
-    description: str = '',
+    description: str = "",
     location: Dict[str, Any] = None,
+    benign: bool = False,
 ) -> Common.Indicator:
-    """Create an Indicator object."""
+    """Create an Indicator object.
+
+    ``benign`` is set by the backend when the SOAR API reports "No Risk Observed"
+    for the entity (RFPD-112104).
+    """
     demisto_params = demisto.params()
 
     if location is None:
-        location = dict()
+        location = {}
 
-    thresholds = {
-        'file': int(demisto_params.get('file_threshold', 65)),
-        'ip': int(demisto_params.get('ip_threshold', 65)),
-        'domain': int(demisto_params.get('domain_threshold', 65)),
-        'url': int(demisto_params.get('url_threshold', 65)),
-        'cve': int(demisto_params.get('cve_threshold', 65)),
-    }
-    dbot_score = translate_score(score, thresholds[entity_type])
-    dbot_description = (
-        f'Score above {thresholds[entity_type]}'
-        if dbot_score == Common.DBotScore.BAD
-        else ''
+    indicator_thresholds = get_indicator_thresholds(demisto_params)
+    dbot_score_details = translate_score(
+        score=score,
+        threshold_bad=indicator_thresholds.bad[entity_type],
+        threshold_suspicious=indicator_thresholds.suspicious[entity_type],
+        benign=benign,
     )
-    dbot_vendor = 'Recorded Future v2'
-    if entity_type == 'ip':
+    dbot_vendor = "Recorded Future v2"
+    if entity_type == "ip":
         return Common.IP(
             entity,
             Common.DBotScore(
                 entity,
                 DBotScoreType.IP,
                 dbot_vendor,
-                dbot_score,
-                dbot_description,
-                reliability=demisto.params().get('integrationReliability'),
+                dbot_score_details.score,
+                dbot_score_details.description,
+                reliability=demisto.params().get("integrationReliability"),
             ),
-            asn=location.get('asn', None),
-            geo_country=location.get('location', dict()).get('country', None),
+            asn=location.get("asn", None),
+            geo_country=location.get("location", {}).get("country", None),
         )
-    elif entity_type == 'domain':
+    elif entity_type == "domain":
         return Common.Domain(
             entity,
             Common.DBotScore(
                 entity,
                 DBotScoreType.DOMAIN,
                 dbot_vendor,
-                dbot_score,
-                dbot_description,
-                reliability=demisto.params().get('integrationReliability'),
+                dbot_score_details.score,
+                dbot_score_details.description,
+                reliability=demisto.params().get("integrationReliability"),
             ),
         )
-    elif entity_type == 'file':
+    elif entity_type == "file":
         dbot_obj = Common.DBotScore(
             entity,
             DBotScoreType.FILE,
             dbot_vendor,
-            dbot_score,
-            dbot_description,
-            reliability=demisto.params().get('integrationReliability'),
+            dbot_score_details.score,
+            dbot_score_details.description,
+            reliability=demisto.params().get("integrationReliability"),
         )
         hash_type = determine_hash(entity)
-        if hash_type == 'MD5':
+        if hash_type == "MD5":
             return Common.File(dbot_obj, md5=entity)
-        elif hash_type == 'SHA1':
+        elif hash_type == "SHA1":
             return Common.File(dbot_obj, sha1=entity)
-        elif hash_type == 'SHA256':
+        elif hash_type == "SHA256":
             return Common.File(dbot_obj, sha256=entity)
-        elif hash_type == 'SHA512':
+        elif hash_type == "SHA512":
             return Common.File(dbot_obj, sha512=entity)
         else:
             return Common.File(dbot_obj)
-    elif entity_type == 'cve':
-        return Common.CVE(entity, '', '', '', description)
-    elif entity_type == 'url':
+    elif entity_type == "cve":
+        return Common.CVE(entity, "", "", "", description)
+    elif entity_type == "url":
         return Common.URL(
             entity,
             Common.DBotScore(
                 entity,
                 DBotScoreType.URL,
                 dbot_vendor,
-                dbot_score,
-                dbot_description,
-                reliability=demisto.params().get('integrationReliability'),
+                dbot_score_details.score,
+                dbot_score_details.description,
+                reliability=demisto.params().get("integrationReliability"),
             ),
         )
     else:
-        raise Exception(
-            f'Could not create indicator for this type of entity: {entity_type}'
-        )
+        raise Exception(f"Could not create indicator for this type of entity: {entity_type}")
+
+
+# Entity types for which the Recorded Future SOAR API exposes a deterministic
+# "No Risk Observed" (noKnownRisk) benign signal. See RFPD-112104.
+BENIGN_ELIGIBLE_TYPES = ("file", "url", "domain")
+
+
+def is_benign_action(action: Dict[str, Any]) -> bool:
+    """Detect the "No Risk Observed" (noKnownRisk) benign signal in a result action.
+
+    The reputation lookup surfaces this signal for ``file`` (hash), ``url`` and
+    ``domain`` entities with a zero risk score. It rides through the existing
+    response as an Evidence entry whose ``ruleid`` is ``noKnownRisk``.
+    """
+    create = action.get("create_indicator") or {}
+    if create.get("entity_type") not in BENIGN_ELIGIBLE_TYPES:
+        return False
+    if create.get("score", 0) != 0:
+        return False
+    outputs = (action.get("CommandResults") or {}).get("outputs")
+    if not isinstance(outputs, dict):
+        return False
+    evidence = outputs.get("Evidence") or []
+    return any(item.get("ruleid") == "noKnownRisk" for item in evidence)
 
 
 # === === === === === === === === === === === === === === ===
@@ -152,10 +234,9 @@ def create_indicator(
 
 class Client(BaseClient):
     def whoami(self) -> Dict[str, Any]:
-
         return self._http_request(
-            method='get',
-            url_suffix='info/whoami',
+            method="get",
+            url_suffix="info/whoami",
             timeout=60,
         )
 
@@ -164,21 +245,9 @@ class Client(BaseClient):
 
     def _clean_calling_context(self, calling_context):
         calling_context_keys_to_keep = {"args", "command", "params", "context"}
-        context_keys_to_keep = {
-            "Incidents",
-            "IntegrationInstance",
-            "ParentEntry"
-        }
-        incidents_keys_to_keep = {
-            "name",
-            "type",
-            "id"
-        }
-        parent_entry_keys_to_keep = {
-            "entryTask",
-            "scheduled",
-            "recurrent"
-        }
+        context_keys_to_keep = {"Incidents", "IntegrationInstance", "ParentEntry"}
+        incidents_keys_to_keep = {"name", "type", "id"}
+        parent_entry_keys_to_keep = {"entryTask", "scheduled", "recurrent"}
 
         if context := calling_context.get("context", None):
             context = self._key_extraction(context, context_keys_to_keep)
@@ -196,32 +265,34 @@ class Client(BaseClient):
         return calling_context
 
     def _get_writeback_data(self):
-
         if (
-            demisto.params().get('collective_insights') == "On"
-            and demisto.callingContext
-        ):
+            demisto.params().get("collective_insights") == "On" and demisto.args().get("collective_insights") != "off"
+        ) or demisto.args().get("collective_insights") == "on":
+            do_track = True
+        else:
+            do_track = False
+
+        if do_track and demisto.callingContext:
             calling_context = copy.deepcopy(demisto.callingContext)
-            calling_context.get('context', dict()).pop('ExecutionContext', None)
+            calling_context.get("context", {}).pop("ExecutionContext", None)
             calling_context = self._clean_calling_context(calling_context)
             return calling_context
 
         return None
 
     def _call(self, url_suffix, **kwargs):
-
         json_data = {
-            'demisto_command': demisto.command(),
-            'demisto_args': demisto.args(),
+            "demisto_command": demisto.command(),
+            "demisto_args": demisto.args(),
         }
 
         request_kwargs = {
-            'method': 'post',
-            'url_suffix': url_suffix,
-            'json_data': json_data,
-            'timeout': 90,
-            'retries': 3,
-            'status_list_to_retry': STATUS_TO_RETRY,
+            "method": "post",
+            "url_suffix": url_suffix,
+            "json_data": json_data,
+            "timeout": 90,
+            "retries": 3,
+            "status_list_to_retry": STATUS_TO_RETRY,
         }
 
         request_kwargs.update(kwargs)
@@ -229,23 +300,23 @@ class Client(BaseClient):
         # This need to be after 'request_kwargs.update(kwargs)'.
         calling_context = self._get_writeback_data()
         if calling_context:
-            request_kwargs['json_data']['callingContext'] = calling_context
+            request_kwargs["json_data"]["callingContext"] = calling_context
 
         try:
             response = self._http_request(**request_kwargs)
 
-            if isinstance(response, dict) and response.get('return_error'):
+            if isinstance(response, dict) and response.get("return_error"):
                 # This will raise the Exception or call "demisto.results()" for the error and sys.exit(0).
-                return_error(**response['return_error'])
+                return_error(**response["return_error"])
 
         except DemistoException as err:
-            if '404' in str(err):
+            if "404" in str(err):
                 return CommandResults(
-                    outputs_prefix='',
-                    outputs=dict(),
-                    raw_response=dict(),
-                    readable_output='No results found.',
-                    outputs_key_field='',
+                    outputs_prefix="",
+                    outputs={},
+                    raw_response={},
+                    readable_output="No results found.",
+                    outputs_key_field="",
                 )
             else:
                 raise err
@@ -255,53 +326,53 @@ class Client(BaseClient):
     def fetch_incidents(self) -> Dict[str, Any]:
         """Fetch incidents."""
         return self._call(
-            url_suffix=f'/v2/alert/fetch_incidents',
+            url_suffix="/v2/alert/fetch_incidents",
             json_data={
-                'demisto_command': demisto.command(),
-                'demisto_args': demisto.args(),
-                'demisto_params': demisto.params(),
-                'demisto_last_run': demisto.getLastRun(),
+                "demisto_command": demisto.command(),
+                "demisto_args": demisto.args(),
+                "demisto_params": demisto.params(),
+                "demisto_last_run": demisto.getLastRun(),
             },
             timeout=120,
         )
 
     def entity_search(self) -> Dict[str, Any]:
         """Search for entities with entity type."""
-        return self._call(url_suffix='/v2/search')
+        return self._call(url_suffix="/v2/search")
 
     def entity_lookup(self) -> Dict[str, Any]:
         """Entity lookup."""
-        return self._call(url_suffix='/v2/lookup/reputation', timeout=120)
+        return self._call(url_suffix="/v2/lookup/reputation", timeout=120)
 
     def get_intelligence(self) -> Dict[str, Any]:
         """Entity enrich."""
-        return self._call(url_suffix='/v2/lookup/intelligence')
+        return self._call(url_suffix="/v2/lookup/intelligence")
 
     def get_links(self) -> Dict[str, Any]:
         """Entity enrich."""
-        return self._call(url_suffix='/v2/lookup/links')
+        return self._call(url_suffix="/v2/lookup/links")
 
     def get_single_alert(self) -> dict:
         """Get a single alert"""
-        return self._call(url_suffix='/v2/alert/lookup')
+        return self._call(url_suffix="/v2/alert/lookup")
 
     def get_alerts(self) -> Dict[str, Any]:
         """Get alerts."""
-        return self._call(url_suffix='/v2/alert/search')
+        return self._call(url_suffix="/v2/alert/search")
 
     def get_alert_rules(self) -> Dict[str, Any]:
         """Get alert rules."""
-        return self._call(url_suffix='/v2/alert/rule')
+        return self._call(url_suffix="/v2/alert/rule")
 
     def alert_set_status(self, data=None):
         """Update alert."""
         # If data is None - we have alert_id and status in demisto.args().
         return self._call(
-            url_suffix='/v2/alert/set_status',
+            url_suffix="/v2/alert/set_status",
             json_data={
-                'demisto_command': demisto.command(),
-                'demisto_args': demisto.args(),
-                'alerts_update_data': data,
+                "demisto_command": demisto.command(),
+                "demisto_args": demisto.args(),
+                "alerts_update_data": data,
             },
         )
 
@@ -309,29 +380,29 @@ class Client(BaseClient):
         """Update alert."""
         # If data is None - we have alert_id and note in demisto.args().
         return self._call(
-            url_suffix='/v2/alert/set_note',
+            url_suffix="/v2/alert/set_note",
             json_data={
-                'demisto_command': demisto.command(),
-                'demisto_args': demisto.args(),
-                'alerts_update_data': data,
+                "demisto_command": demisto.command(),
+                "demisto_args": demisto.args(),
+                "alerts_update_data": data,
             },
         )
 
     def get_triage(self) -> Dict[str, Any]:
         """SOAR triage lookup."""
-        return self._call(url_suffix='/v2/lookup/triage')
+        return self._call(url_suffix="/v2/lookup/triage")
 
     def get_threat_map(self) -> Dict[str, Any]:
-        return self._call(url_suffix='/v2/threat/actors')
+        return self._call(url_suffix="/v2/threat/actors")
 
     def get_threat_links(self) -> Dict[str, Any]:
-        return self._call(url_suffix='/v2/links/search')
+        return self._call(url_suffix="/v2/links/search")
 
     def get_detection_rules(self) -> Dict[str, Any]:
-        return self._call(url_suffix='/v2/detection_rules/search')
+        return self._call(url_suffix="/v2/detection_rules/search")
 
     def submit_detection_to_collective_insight(self) -> Dict[str, Any]:
-        return self._call(url_suffix='/v2/collective-insights/detections')
+        return self._call(url_suffix="/v2/collective-insights/detections")
 
 
 # === === === === === === === === === === === === === === ===
@@ -343,10 +414,7 @@ class Actions:
     def __init__(self, rf_client: Client):
         self.client = rf_client
 
-    def _process_result_actions(
-        self, response: Union[dict, CommandResults]
-    ) -> List[CommandResults]:
-
+    def _process_result_actions(self, response: Union[dict, CommandResults]) -> List[CommandResults]:
         if isinstance(response, CommandResults):
             # Case when we got 404 on response, and it was processed in self.client._call() method.
             return [response]
@@ -354,51 +422,50 @@ class Actions:
             # In case API returned a str - we don't want to call "response.get()" on a str object.
             return None  # type: ignore
 
-        result_actions: Union[List[dict], None] = response.get('result_actions')
+        result_actions: Union[List[dict], None] = response.get("result_actions")
 
         if not result_actions:
             return None  # type: ignore
 
-        command_results: List[CommandResults] = list()
+        command_results: List[CommandResults] = []
         for action in result_actions:
-            if 'create_indicator' in action:
-                indicator = create_indicator(**action['create_indicator'])
-                if 'CommandResults' in action:
+            if "create_indicator" in action:
+                create_kwargs = dict(action["create_indicator"])
+                create_kwargs["benign"] = is_benign_action(action)
+                indicator = create_indicator(**create_kwargs)
+                if "CommandResults" in action:
                     # Custom CommandResults.
-                    command_results_kwargs = action['CommandResults']
-                    command_results_kwargs['indicator'] = indicator
+                    command_results_kwargs = action["CommandResults"]
+                    command_results_kwargs["indicator"] = indicator
                     command_results.append(CommandResults(**command_results_kwargs))
                 else:
                     # Default CommandResults after indicator creation.
                     command_results.append(
                         CommandResults(
-                            readable_output=tableToMarkdown(
-                                'New indicator was created.', indicator.to_context()
-                            ),
+                            readable_output=tableToMarkdown("New indicator was created.", indicator.to_context()),
                             indicator=indicator,
                         )
                     )
-            elif 'CommandResults' in action:
-                command_results.append(CommandResults(**action['CommandResults']))
+            elif "CommandResults" in action:
+                command_results.append(CommandResults(**action["CommandResults"]))
 
         return command_results
 
     def fetch_incidents(self) -> None:
-
         response = self.client.fetch_incidents()
 
         if isinstance(response, CommandResults):
             # 404 case.
             return
 
-        if response.get('incidents') is not None:
-            incidents = response['incidents']
-            demisto_last_run = response['demisto_last_run']
+        if response.get("incidents") is not None and response.get("demisto_last_run"):
+            incidents = response["incidents"]
+            demisto_last_run = response["demisto_last_run"]
 
             demisto.incidents(incidents)
             demisto.setLastRun(demisto_last_run)
 
-            update_alert_status = response.pop('alerts_update_data', None)
+            update_alert_status = response.pop("alerts_update_data", None)
             if update_alert_status:
                 self.client.alert_set_status(update_alert_status)
 
@@ -470,6 +537,7 @@ class Actions:
         response = self.client.submit_detection_to_collective_insight()
         return self._process_result_actions(response=response)
 
+
 # === === === === === === === === === === === === === === ===
 # === === === === === === === MAIN === === === === === === ==
 # === === === === === === === === === === === === === === ===
@@ -479,27 +547,25 @@ def main() -> None:  # pragma: no cover
     """Main method used to run actions."""
     try:
         demisto_params = demisto.params()
-        base_url = demisto_params.get('server_url', '').rstrip('/')
-        verify_ssl = not demisto_params.get('insecure', False)
-        proxy = demisto_params.get('proxy', False)
+        base_url = demisto_params.get("server_url", "").rstrip("/")
+        verify_ssl = not demisto_params.get("insecure", False)
+        proxy = demisto_params.get("proxy", False)
         api_token = demisto_params.get("token_credential", {}).get("password") or demisto_params.get("token")
         if not api_token:
-            return_error('Please provide a valid API token')
+            return_error("Please provide a valid API token")
         headers = {
-            'X-RFToken': api_token,
-            'X-RF-User-Agent': (
-                f'RecordedFuture.py/{__version__} ({platform.platform()}) '
-                f'XSOAR/{__version__} '
-                f'RFClient/{__version__} (Cortex_XSOAR_{demisto.demistoVersion()["version"]})'
+            "X-RFToken": api_token,
+            "X-RF-User-Agent": (
+                f"RecordedFuture.py/{__version__} ({platform.platform()}) "
+                f"XSOAR/{__version__} "
+                f"RFClient/{__version__} (Cortex_XSOAR_{demisto.demistoVersion()['version']})"
             ),
         }
-        client = Client(
-            base_url=base_url, verify=verify_ssl, headers=headers, proxy=proxy
-        )
+        client = Client(base_url=base_url, verify=verify_ssl, headers=headers, proxy=proxy)
         command = demisto.command()
         actions = Actions(client)
 
-        if command == 'test-module':
+        if command == "test-module":
             # This is the call made when pressing the integration Test button.
             # Returning 'ok' indicates that the integration works like it suppose to and
             # connection to the service is successful.
@@ -508,65 +574,67 @@ def main() -> None:  # pragma: no cover
 
             try:
                 client.whoami()
-                return_results('ok')
+                return_results("ok")
             except Exception as err:
                 message = str(err)
                 try:
-                    error = json.loads(str(err).split('\n')[1])
-                    if 'fail' in error.get('result', dict()).get('status', ''):
-                        message = error.get('result', dict())['message']
+                    error = json.loads(str(err).split("\n")[1])
+                    if "fail" in error.get("result", {}).get("status", ""):
+                        message = error.get("result", {})["message"]
                 except Exception:
                     message = (
-                        'Unknown error. Please verify that the API'
-                        f' URL and Token are correctly configured. RAW Error: {err}'
+                        f"Unknown error. Please verify that the API URL and Token are correctly configured. RAW Error: {err}"
                     )
-                raise DemistoException(f'Failed due to - {message}')
+                raise DemistoException(f"Failed due to - {message}")
 
-        elif command == 'fetch-incidents':
+        elif command == "fetch-incidents":
             actions.fetch_incidents()
 
-        elif command == 'recordedfuture-malware-search':
+        elif command == "recordedfuture-malware-search":
             return_results(actions.malware_search_command())
 
-        elif command in ['url', 'ip', 'domain', 'file', 'cve']:
+        elif command in ["url", "ip", "domain", "file", "cve"]:
             return_results(actions.lookup_command())
 
-        elif command == 'recordedfuture-intelligence':
+        elif command == "recordedfuture-intelligence":
             return_results(actions.intelligence_command())
 
-        elif command == 'recordedfuture-links':
+        elif command == "recordedfuture-links":
             return_results(actions.get_links_command())
 
-        elif command == 'recordedfuture-single-alert':
+        elif command == "recordedfuture-single-alert":
             return_results(actions.get_single_alert_command())
 
-        elif command == 'recordedfuture-alerts':
+        elif command == "recordedfuture-alerts":
             return_results(actions.get_alerts_command())
 
-        elif command == 'recordedfuture-alert-rules':
+        elif command == "recordedfuture-alert-rules":
             return_results(actions.get_alert_rules_command())
 
-        elif command == 'recordedfuture-alert-set-status':
+        elif command == "recordedfuture-alert-set-status":
             return_results(actions.alert_set_status_command())
 
-        elif command == 'recordedfuture-alert-set-note':
+        elif command == "recordedfuture-alert-set-note":
             return_results(actions.alert_set_note_command())
 
-        elif command == 'recordedfuture-threat-assessment':
+        elif command == "recordedfuture-threat-assessment":
             return_results(actions.triage_command())
 
-        elif command == 'recordedfuture-threat-map':
+        elif command == "recordedfuture-threat-map":
             return_results(actions.threat_actors_command())
-        elif command == 'recordedfuture-threat-links':
+        elif command == "recordedfuture-threat-links":
             return_results(actions.threat_links_command())
-        elif command == 'recordedfuture-detection-rules':
+        elif command == "recordedfuture-detection-rules":
             return_results(actions.detection_rules_command())
-        elif command == 'recordedfuture-collective-insight':
+        elif command == "recordedfuture-collective-insight":
             return_results(actions.collective_insight_command())
 
     except Exception as e:
-        return_error(message=f'Failed to execute {demisto.command()} command: {str(e)}')
+        return_error(
+            message=f"Failed to execute {demisto.command()} command: {str(e)}",
+            error=e,
+        )
 
 
-if __name__ in ('__main__', '__builtin__', 'builtins'):
+if __name__ in ("__main__", "__builtin__", "builtins"):
     main()

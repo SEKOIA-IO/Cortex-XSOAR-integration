@@ -21,15 +21,15 @@
                 "Last Update Time": {
                     "simple": "lastUpdateDateTime"
                 },
-				"Microsoft Graph Security Alert Evidence": {
-					"simple": "evidence"
-				},
-				"Microsoft Graph Security Detector Id": {
-					"simple": "detectorId"
-				},
-				"Microsoft Graph Security Comment": {
-					"simple": "comments"
-				},
+                "Microsoft Graph Security Alert Evidence": {
+                    "simple": "evidence"
+                },
+                "Microsoft Graph Security Detector Id": {
+                    "simple": "detectorId"
+                },
+                "Microsoft Graph Security Comment": {
+                    "simple": "comments"
+                },
                 "Microsoft Graph Security Alert Determination": {
                     "simple": "determination"
                 },
@@ -112,14 +112,14 @@
                                         "isContext": false,
                                         "value": {
                                             "complex": null,
-                                            "simple": "unknown, informational, low, medium, high"
+                                            "simple": "unknown,informational,low,medium,high"
                                         }
                                     },
                                     "mapped_values": {
                                         "isContext": false,
                                         "value": {
                                             "complex": null,
-                                            "simple": "Unknown, Informational, Low, Medium, High"
+                                            "simple": "Unknown,Informational,Low,Medium,High"
                                         }
                                     }
                                 },
@@ -145,5 +145,9 @@
     "name": "Graph Security Alert",
     "type": "mapping-incoming",
     "version": -1,
-    "fromVersion": "6.8.0"
+    "fromVersion": "6.8.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

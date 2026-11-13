@@ -1,50 +1,94 @@
+import time
+import traceback
 import uuid
 
 from CommonServerPython import *
 import demistomock as demisto
 from urllib import parse
 
-DEMISTO_OCCURRED_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
-WIZ_API_TIMEOUT = 300  # Increase timeout for Wiz API
+DEMISTO_OCCURRED_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+API_REQUEST_TIMEOUT = 115  # seconds; keep under the upstream gateway timeout to avoid hangs
 WIZ_HTTP_QUERIES_LIMIT = 500  # Request limit during run
 WIZ_API_LIMIT = 500  # limit number of returned records from the Wiz API
-WIZ = 'wiz'
+MAX_NOTE_LENGTH = 1400  # Hard limit for issue note text length enforced by the Wiz API
+MAX_COMMENT_PAGES = 100
+WIZ = "wiz"
 
-WIZ_VERSION = '1.3.2'
-INTEGRATION_GUID = '8864e131-72db-4928-1293-e292f0ed699f'
+WIZ_VERSION = "1.8.0"
+INTEGRATION_GUID = "8864e131-72db-4928-1293-e292f0ed699f"
+NOT_DEFINED = "Not Defined"
+
+DEFAULT_FETCH_ISSUE_STATUS = ["OPEN", "IN_PROGRESS"]
+
+
+class ValidationType:
+    """Class representing field names for validation results"""
+
+    IS_VALID = "is_valid"
+    ERROR_MESSAGE = "error_message"
+    VALUE = "value"
+    SEVERITY_LIST = "severity_list"
+    MINUTES_VALUE = "minutes_value"
+    DAYS_VALUE = "days_value"
+    STATUS_LIST = "status_list"
+
+
+class ValidationResponse:
+    """Class for standardized validation responses"""
+
+    def __init__(self, is_valid=True, error_message=None, value=None):
+        self.is_valid = is_valid
+        self.error_message = error_message
+        self.value = value
+        self.days_value = None
+        self.minutes_value = None
+        self.severity_list = None
+        self.status_list = None
+
+    def to_dict(self):
+        """Convert the response to a dictionary"""
+        return {
+            ValidationType.IS_VALID: self.is_valid,
+            ValidationType.ERROR_MESSAGE: self.error_message,
+            ValidationType.VALUE: self.value,
+            ValidationType.DAYS_VALUE: self.days_value,
+            ValidationType.MINUTES_VALUE: self.minutes_value,
+            ValidationType.SEVERITY_LIST: self.severity_list,
+            ValidationType.STATUS_LIST: self.status_list,
+        }
+
+    @classmethod
+    def create_success(cls, value=None):
+        """Create a successful validation response"""
+        return cls(is_valid=True, error_message=None, value=value)
+
+    @classmethod
+    def create_error(cls, error_message):
+        """Create a failed validation response"""
+        return cls(is_valid=False, error_message=error_message, value=None)
 
 
 def get_integration_user_agent():
-    integration_user_agent = f'{INTEGRATION_GUID}/xsoar/{WIZ_VERSION}'
+    integration_user_agent = f"{INTEGRATION_GUID}/xsoar/{WIZ_VERSION}"
     return integration_user_agent
 
 
 # Standard headers
-HEADERS_AUTH = {"Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": get_integration_user_agent()}
+HEADERS_AUTH = {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": get_integration_user_agent()}
 
-HEADERS = {"Content-Type": "application/json",
-           "User-Agent": get_integration_user_agent()}
+HEADERS = {"Content-Type": "application/json", "User-Agent": get_integration_user_agent()}
 
 TOKEN = None
-URL = ''
-AUTH_E = ''
+URL = ""
+AUTH_E = ""
 AUTH_DEFAULT = "auth"  # NEED TO BE REMOVED AFTER THAT AUTH0 IS DEPRECATED
-COGNITO_PREFIX = [
-    "auth.app",
-    "auth.gov",
-    "auth.test"
-]
-AUTH0_PREFIX = [
-    "auth",
-    "auth0.gov",
-    "auth0.test"
-]
-URL_SUFFIX = 'wiz.io/oauth/token'
-URL_SUFFIX_FED = 'wiz.us/oauth/token'
+COGNITO_PREFIX = ["auth.app", "auth.gov", "auth.test"]
+AUTH0_PREFIX = ["auth", "auth0.gov", "auth0.test"]
+URL_SUFFIX = "wiz.io/oauth/token"
+URL_SUFFIX_FED = "wiz.us/oauth/token"
 
-# Pull Issues
-PULL_ISSUES_QUERY = ("""
+# Issues Queries
+PULL_ISSUES_QUERY = """
 query IssuesTable(
   $filterBy: IssueFilters
   $first: Int
@@ -62,7 +106,7 @@ query IssuesTable(
         ... on Control {
           id
           name
-          controlDescription: description
+          description
           resolutionRecommendation
           securitySubCategories {
             title
@@ -77,14 +121,14 @@ query IssuesTable(
         ... on CloudEventRule{
           id
           name
-          cloudEventRuleDescription: description
+          description
           sourceType
           type
         }
         ... on CloudConfigurationRule{
           id
           name
-          cloudConfigurationRuleDescription: description
+          description
           remediationInstructions
           serviceType
         }
@@ -97,6 +141,12 @@ query IssuesTable(
         id
         name
         slug
+        projectOwners{
+          name
+        }
+        securityChampions{
+          name
+        }
         businessUnit
         riskProfile {
           businessImpact
@@ -126,19 +176,6 @@ query IssuesTable(
         name
         url
       }
-      notes {
-        id
-        createdAt
-        updatedAt
-        text
-        user {
-          name
-          email
-        }
-        serviceAccount {
-          name
-        }
-      }
     }
     pageInfo {
       hasNextPage
@@ -146,8 +183,30 @@ query IssuesTable(
     }
   }
 }
-""")
-PULL_ISSUE_WITH_EVIDENCE_PARAM_QUERY = ("""
+"""
+MODIFIED_ISSUE_IDS_QUERY = """
+query ModifiedIssueIds(
+  $filterBy: IssueFilters
+  $first: Int
+  $after: String
+  $orderBy: IssueOrder
+) {
+  issues:issuesV2(filterBy: $filterBy
+    first: $first
+    after: $after
+    orderBy: $orderBy) {
+    nodes {
+      id
+      statusChangedAt
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""
+PULL_ISSUE_WITH_EVIDENCE_PARAM_QUERY = """
 query IssuesTable(
   $filterBy: IssueFilters
   $first: Int
@@ -542,7 +601,6 @@ fragment CloudEventRuntimeDetails on CloudEventRuntimeDetails {
     }
   }
   rawDetails
-  runtimeExecutionDataId
   type
   context {
     ... on CloudEventRuntimeTypeFileContext {
@@ -1214,23 +1272,14 @@ fragment CloudEventAdmissionReviewTriggerDetails on CloudEventAdmissionReview {
     }
   }
 }
-""")
+"""
+PULL_ISSUES_DEFAULT_VARIABLES = {"orderBy": {"field": "SEVERITY", "direction": "DESC"}}
 PULL_ISSUES_TEST_VARIABLES = test_variables = {
-    'first': 1,
-    'filterBy': {
-        'status': [
-            'OPEN',
-            'IN_PROGRESS'
-        ]
-    },
-    'orderBy': {
-        'field': 'SEVERITY',
-        'direction': 'DESC'
-    }
+    "first": 1,
+    "filterBy": {"status": ["OPEN", "IN_PROGRESS"]},
+    "orderBy": {"field": "SEVERITY", "direction": "DESC"},
 }
-
-# Pull Issue Evidence
-PULL_ISSUE_EVIDENCE_QUERY = ("""
+PULL_ISSUE_EVIDENCE_QUERY = """
   query GraphSearch(
     $query: GraphEntityQueryInput
     $controlId: ID
@@ -1337,20 +1386,20 @@ PULL_ISSUE_EVIDENCE_QUERY = ("""
       ...PathGraphEntityFragment
     }
   }
-    """)
+    """
 PULL_ISSUE_EVIDENCE_PARAMS = {
-    'quick': True,
-    'fetchPublicExposurePaths': False,
-    'fetchInternalExposurePaths': False,
-    'fetchIssueAnalytics': False,
-    'fetchLateralMovement': False,
-    'fetchKubernetes': False,
-    'first': 5,
-    'projectId': '*',
-    'query': None,
-    'fetchTotalCount': False
+    "quick": True,
+    "fetchPublicExposurePaths": False,
+    "fetchInternalExposurePaths": False,
+    "fetchIssueAnalytics": False,
+    "fetchLateralMovement": False,
+    "fetchKubernetes": False,
+    "first": 5,
+    "projectId": "*",
+    "query": None,
+    "fetchTotalCount": False,
 }
-UPDATE_ISSUE_QUERY = ("""
+UPDATE_ISSUE_QUERY = """
 mutation UpdateIssue(
     $issueId: ID!
     $patch: UpdateIssuePatch
@@ -1359,143 +1408,37 @@ mutation UpdateIssue(
     updateIssue(input: { id: $issueId, patch: $patch, override: $override }) {
       issue {
         id
-        notes {
-          ...IssueNoteDetails
-        }
         status
         dueAt
         resolutionReason
       }
     }
   }
-
-  fragment IssueNoteDetails on IssueNote {
-    id
-    text
-    updatedAt
-    createdAt
-    user {
-      id
-      email
-    }
-    serviceAccount {
-      id
-      name
-    }
-  }
-""")
-CREATE_COMMENT_QUERY = ("""
-mutation CreateIssueComment($input: CreateIssueNoteInput!) {
-    createIssueNote(input: $input) {
-      issueNote {
-        createdAt
-        id
-        text
-        user {
-          id
-          email
-        }
+"""
+CREATE_COMMENT_QUERY = """
+mutation CreateCommentThreadComment($input: AddCommentInput!) {
+  createCommentThreadComment(input: $input) { commentThread { id } }
+}
+"""
+DELETE_COMMENT_QUERY = """
+mutation DeleteComment($input: DeleteCommentInput!) {
+  deleteComment(input: $input) { commentThread { id } }
+}
+"""
+ISSUE_COMMENTS_QUERY = """
+query IssueComments($id: ID!, $after: String) {
+  issue(id: $id) {
+    commentThread {
+      comments(first: 500, after: $after, orderBy: { field: CREATED_AT, direction: ASC }) {
+        nodes { id body createdAt updatedAt author { name } serviceAccount { name } }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
-    """)
-DELETE_NOTE_QUERY = ("""
-    mutation DeleteIssueNote($input: DeleteIssueNoteInput!) {
-    deleteIssueNote(input: $input) {
-      _stub
-    }
-  }
-    """)
+}
+"""
 
-# Pull Resources
-PULL_RESOURCES_QUERY = ("""
-        query GraphSearch(
-            $query: GraphEntityQueryInput
-            $controlId: ID
-            $projectId: String!
-            $first: Int
-            $after: String
-            $fetchTotalCount: Boolean!
-            $quick: Boolean
-            $fetchPublicExposurePaths: Boolean = false
-            $fetchInternalExposurePaths: Boolean = false
-            $fetchIssueAnalytics: Boolean = false
-          ) {
-            graphSearch(
-                query: $query
-                controlId: $controlId
-                projectId: $projectId
-                first: $first
-                after: $after
-                quick: $quick
-            ) {
-                totalCount @include(if: $fetchTotalCount)
-                maxCountReached @include(if: $fetchTotalCount)
-                pageInfo {
-                    endCursor
-                    hasNextPage
-                }
-                nodes {
-                    entities {
-                        id
-                        name
-                        type
-                        properties
-                        userMetadata {
-                            isInWatchlist
-                            isIgnored
-                            note
-                        }
-                        issueAnalytics: issues(filterBy: { status: [IN_PROGRESS, OPEN] })
-                            @include(if: $fetchIssueAnalytics) {
-                            lowSeverityCount
-                            mediumSeverityCount
-                            highSeverityCount
-                            criticalSeverityCount
-                        }
-                        publicExposures(first: 10) @include(if: $fetchPublicExposurePaths) {
-                            nodes {
-                                ...NetworkExposureFragment
-                            }
-                        }
-                        otherSubscriptionExposures(first: 10)
-                            @include(if: $fetchInternalExposurePaths) {
-                            nodes {
-                                ...NetworkExposureFragment
-                            }
-                        }
-                        otherVnetExposures(first: 10)
-                            @include(if: $fetchInternalExposurePaths) {
-                                nodes {
-                                    ...NetworkExposureFragment
-                                }
-                            }
-                        }
-                        aggregateCount
-                    }
-                }
-            }
-
-            fragment NetworkExposureFragment on NetworkExposure {
-                id
-                portRange
-                sourceIpRange
-                destinationIpRange
-                path {
-                    id
-                    name
-                    type
-                    properties
-                    issueAnalytics: issues(filterBy: { status: [IN_PROGRESS, OPEN] })
-                        @include(if: $fetchIssueAnalytics) {
-                            lowSeverityCount
-                            mediumSeverityCount
-                            highSeverityCount
-                            criticalSeverityCount
-                        }
-                }
-            }
-    """)
+# Resources Queries
 PULL_RESOURCES_ID_NATIVE_QUERY = """
 query CloudResourceSearch($filterBy: CloudResourceFilters, $first: Int, $after: String) {
   cloudResources(filterBy: $filterBy, first: $first, after: $after) {
@@ -1538,28 +1481,8 @@ query CloudResourceSearch($filterBy: CloudResourceFilters, $first: Int, $after: 
   }
 }
 """
-PULL_RESOURCES_VARIABLES = {
-    "fetchPublicExposurePaths": True,
-    "fetchInternalExposurePaths": False,
-    "fetchIssueAnalytics": False,
-    "first": 50,
-    "query": {
-        "type": [
-            "CLOUD_RESOURCE"
-        ],
-        "select": True,
-        "where": {
-            "providerUniqueId": {
-                "EQUALS": []
-            }
-        }
-    },
-    "projectId": "*",
-    "fetchTotalCount": True,
-    "quick": True
-}
 
-# Copy to forensics account
+# Forensics Queries
 COPY_TO_FORENSICS_ACCOUNT_MUTATION = """
         mutation CopyResourceForensicsToExternalAccount($input: CopyResourceForensicsToExternalAccountInput!) {
           copyResourceForensicsToExternalAccount(input: $input) {
@@ -1568,34 +1491,188 @@ COPY_TO_FORENSICS_ACCOUNT_MUTATION = """
         }
     """
 
+# Project Queries
+PULL_PROJECTS_QUERY = """
+query ProjectsTable($filterBy: ProjectFilters, $first: Int, $after: String, $orderBy: ProjectOrder) {
+  projects(filterBy: $filterBy, first: $first, after: $after, orderBy: $orderBy) {
+    nodes {
+      id
+      name
+      isFolder
+      archived
+      businessUnit
+      description
+      projectOwners {
+        id
+        name
+        email
+      }
+      securityChampions {
+        id
+        name
+        email
+      }
+    }
+  }
+}"""
+
 
 class WizInputParam:
-    ISSUE_ID = 'issue_id'
-    ISSUE_TYPE = 'issue_type'
-    ENTITY_TYPE = 'entity_type'
-    RESOURCE_ID = 'resource_id'
-    RESOURCE_NAME = 'resource_name'
-    SEVERITY = 'severity'
-    REJECT_REASON = 'reject_reason'
-    REJECT_NOTE = 'reject_note'
-    RESOLUTION_REASON = 'resolution_reason'
-    RESOLUTION_NOTE = 'resolution_note'
-    REOPEN_NOTE = 'reopen_note'
-    NOTE = 'note'
-    DUE_AT = 'due_at'
-    VM_ID = 'vm_id'
-    PROJECT_NAME = 'project_name'
+    ISSUE_ID = "issue_id"
+    ISSUE_TYPE = "issue_type"
+    ENTITY_TYPE = "entity_type"
+    RESOURCE_ID = "resource_id"
+    RESOURCE_NAME = "resource_name"
+    SEVERITY = "severity"
+    REJECT_REASON = "reject_reason"
+    REJECT_NOTE = "reject_note"
+    RESOLUTION_REASON = "resolution_reason"
+    RESOLUTION_NOTE = "resolution_note"
+    REOPEN_NOTE = "reopen_note"
+    NOTE = "note"
+    DUE_AT = "due_at"
+    VM_ID = "vm_id"
+    PROJECT_NAME = "project_name"
+    SEARCH = "search"
+    SUBSCRIPTION_EXTERNAL_IDS = "subscription_external_ids"
+    PROVIDER_UNIQUE_IDS = "provider_unique_ids"
+    PROJECT_IDS = "project_ids"
+    NATIVE_TYPES = "native_types"
+    UPDATED_AT_BEFORE = "updated_at_before"
+    UPDATED_AT_AFTER = "updated_at_after"
+    CREATED_AFTER = "created_after"
+    CREATED_BEFORE = "created_before"
+    LIMIT = "limit"
+    STATUS = "status"
 
 
 class WizStatus:
-    OPEN = 'OPEN'
-    IN_PROGRESS = 'IN PROGRESS'
-    REJECTED = 'REJECTED'
+    OPEN = "OPEN"
+    IN_PROGRESS = "IN_PROGRESS"
+    REJECTED = "REJECTED"
+    RESOLVED = "RESOLVED"
+
+    @classmethod
+    def values(cls):
+        """Get all available detection origins"""
+        return [getattr(cls, attr) for attr in dir(cls) if not attr.startswith("_") and not callable(getattr(cls, attr))]
+
+
+class WizSeverity:
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+    INFORMATIONAL = "INFORMATIONAL"
+
+    @classmethod
+    def values(cls):
+        """Get all available detection origins"""
+        return [getattr(cls, attr) for attr in dir(cls) if not attr.startswith("_") and not callable(getattr(cls, attr))]
+
+
+class WizIssueType:
+    TOXIC_COMBINATION = "TOXIC_COMBINATION"
+    CLOUD_CONFIGURATION = "CLOUD_CONFIGURATION"
+    THREAT_DETECTION = "THREAT_DETECTION"
+
+    @classmethod
+    def values(cls):
+        """Get all available detection origins"""
+        return [getattr(cls, attr) for attr in dir(cls) if not attr.startswith("_") and not callable(getattr(cls, attr))]
+
+
+class WizMirrorDirection:
+    """Mirror direction values — maps config dropdown to XSOAR direction codes."""
+
+    NONE = None
+    INCOMING = "In"
+    OUTGOING = "Out"
+    BOTH = "Both"
+
+    DIRECTION_MAP = {
+        "None": NONE,
+        "Incoming": INCOMING,
+        "Outgoing": OUTGOING,
+        "Incoming And Outgoing": BOTH,
+    }
+
+    @classmethod
+    def from_params(cls):
+        """Get mirror direction from integration params."""
+        direction_str = demisto.params().get(WizMirrorParam.DIRECTION, "None")
+        if direction_str not in cls.DIRECTION_MAP:
+            demisto.debug(f"Invalid mirror_direction value: '{direction_str}', defaulting to None")
+        return cls.DIRECTION_MAP.get(direction_str)
+
+
+class WizMirrorParam:
+    """Parameter names for mirror configuration."""
+
+    DIRECTION = "mirror_direction"
+    LIMIT = "mirror_limit"
+    COMMENT_TAG = "comment_tag"
+
+    LIMIT_MIN = 1
+    LIMIT_MAX = 500
+    LIMIT_DEFAULT = 50
+
+
+class WizMirrorField:
+    """Field names used in mirror metadata (added to rawJSON)."""
+
+    DIRECTION = "mirror_direction"
+    INSTANCE = "mirror_instance"
+    ID = "mirror_id"
+    TAGS = "mirror_tags"
+
+
+XSOAR_MIRROR_MARKER = "Mirrored from Cortex XSOAR"
+XSOAR_STATUS_NOTE = "Status mirrored from Cortex XSOAR"
+DEFAULT_RESOLUTION_REASON = "WONT_FIX"
+
+WIZ_MIRRORED_FIELDS = ["status", "notes", "dueAt", "resolutionReason"]
+
+# XSOAR's built-in `closeReason` singleSelect values → Wiz `resolutionReason` enum.
+# The outgoing mapper declares `resolutionReason <- resolutionReason`, but the Wiz Issue
+# incident type has no XSOAR field by that name, so the mapper alone never carries the
+# analyst's chosen reason. We translate XSOAR's `closeReason` (always populated on close)
+# as a fallback so the user-selected close intent reaches Wiz instead of defaulting to WONT_FIX.
+XSOAR_CLOSE_REASON_TO_WIZ = {
+    "Resolved": "ISSUE_FIXED",
+    "False Positive": "FALSE_POSITIVE",
+    "Duplicate": "WONT_FIX",
+    "Other": "WONT_FIX",
+}
+
+
+def _resolve_wiz_reason(delta, data=None):
+    """Resolve Wiz `resolutionReason` from a mirror delta, with `closeReason` fallback.
+
+    Order of precedence:
+      1. `delta.resolutionReason` — wins if a future XSOAR config adds the proper field.
+      2. `data.closeReason` (then `delta.closeReason`) — translated via XSOAR_CLOSE_REASON_TO_WIZ.
+      3. None — caller falls back to DEFAULT_RESOLUTION_REASON.
+    """
+    if delta:
+        explicit = delta.get("resolutionReason")
+        if explicit:
+            return explicit
+
+    close_reason = None
+    if data:
+        close_reason = data.get("closeReason")
+    if not close_reason and delta:
+        close_reason = delta.get("closeReason")
+
+    if not close_reason:
+        return None
+    return XSOAR_CLOSE_REASON_TO_WIZ.get(close_reason)
 
 
 def set_authentication_endpoint(auth_endpoint):
     global AUTH_E
-    AUTH_E = generate_auth_urls(AUTH_DEFAULT)[1] if auth_endpoint == '' else auth_endpoint
+    AUTH_E = generate_auth_urls(AUTH_DEFAULT)[1] if auth_endpoint == "" else auth_endpoint
 
 
 def set_api_endpoint(api_endpoint):
@@ -1619,7 +1696,7 @@ def get_token():
     """
     Retrieve the token using the credentials
     """
-    audience = ''
+    audience = ""
     cognito_list = []
     for cognito_prefix in COGNITO_PREFIX:
         cognito_list.extend(generate_auth_urls(cognito_prefix))
@@ -1631,35 +1708,37 @@ def get_token():
 
     # check Wiz portal auth endpoint - Cognito or Auth0
     if AUTH_E in cognito_list:
-        audience = 'wiz-api'
+        audience = "wiz-api"
     elif AUTH_E in auth0_list:
-        audience = 'beyond-api'
+        audience = "beyond-api"
     else:
-        raise Exception('Not a valid authentication endpoint')
+        raise Exception("Not a valid authentication endpoint")
 
     demisto_params = demisto.params()
-    said = demisto_params.get('credentials').get('identifier')
-    sasecret = demisto_params.get('credentials').get('password')
-    auth_payload = parse.urlencode({
-        'grant_type': 'client_credentials',
-        'audience': audience,
-        'client_id': said,
-        'client_secret': sasecret
-    })
-    response = requests.post(AUTH_E, headers=HEADERS_AUTH, data=auth_payload)
+    said = demisto_params.get("credentials").get("identifier")
+    sasecret = demisto_params.get("credentials").get("password")
+    auth_payload = parse.urlencode(
+        {"grant_type": "client_credentials", "audience": audience, "client_id": said, "client_secret": sasecret}
+    )
+    try:
+        response = requests.post(AUTH_E, headers=HEADERS_AUTH, data=auth_payload, timeout=API_REQUEST_TIMEOUT)
+    except requests.Timeout:
+        raise Exception(
+            f"Wiz authentication request timed out after {API_REQUEST_TIMEOUT}s. Check Wiz API availability and retry."
+        )
 
     if response.status_code != requests.codes.ok:
-        raise Exception('Error authenticating to Wiz [%d] - %s' % (response.status_code, response.text))
+        raise Exception(f"Error authenticating to Wiz [{response.status_code}] - {response.text}")
     try:
         response_json = response.json()
-        TOKEN = response_json.get('access_token')
+        TOKEN = response_json.get("access_token")
         if not TOKEN:
             demisto.debug(json.dumps(response_json))
-            message = 'Could not retrieve token from Wiz: {}'.format(response_json.get("message"))
+            message = "Could not retrieve token from Wiz: {}".format(response_json.get("message"))
             raise Exception(message)
     except ValueError as exception:
         demisto.debug(exception)
-        raise Exception('Could not parse API response')
+        raise Exception("Could not parse API response")
     HEADERS["Authorization"] = "Bearer " + TOKEN
 
     return TOKEN
@@ -1671,28 +1750,78 @@ def checkAPIerrors(query, variables):
 
     data = {"variables": variables, "query": query}
 
-    demisto.info(f"Invoking the API with is {json.dumps(data)}")
+    demisto.info(f"Invoking the API with {json.dumps(data)}")
 
-    result = requests.post(url=URL, json=data, headers=HEADERS)
+    try:
+        response = requests.post(url=URL, json=data, headers=HEADERS, timeout=API_REQUEST_TIMEOUT)
+    except requests.Timeout:
+        raise Exception(
+            f"Wiz API request timed out after {API_REQUEST_TIMEOUT}s. "
+            "Heavy queries (e.g., TOXIC_COMBINATION issue_type) may need a narrower filter."
+        )
+    response_json = response.json()
 
-    demisto.info(f"Result is {result}")
-    demisto.info(f"Result Json is {result.json()}")
+    demisto.info(f"Wiz API response status code is {response.status_code}")
+    demisto.debug(f"The response is {response_json}")
 
     error_message = ""
-    if "errors" in result.json():
-        error_message = f"Wiz API error details: {get_error_output(result.json())}"
+    if "errors" in response_json:
+        error_message = f"Wiz API error details: {get_error_output(response_json)}"
 
-    elif "data" in result.json() and "issues" in result.json()['data'] and len(result.json()['data']['issues'].get('nodes')) == 0:
+    elif "data" in response_json and "issues" in response_json["data"] and len(response_json["data"]["issues"].get("nodes")) == 0:
         demisto.info("No Issue(/s) available to fetch.")
 
     if error_message:
-        demisto.error("An error has occurred using:\n"
-                      f"\tQuery: {query}\n"
-                      f"\tVariables: {variables}\n"
-                      f"\t{error_message}")
+        demisto.error("An error has occurred using:\n" f"\tQuery: {query}\n" f"\tVariables: {variables}\n" f"\t{error_message}")
         demisto.error(error_message)
         raise Exception(f"{error_message}\nCheck 'server.log' instance file to get additional information")
-    return result.json()
+    return response_json
+
+
+FETCH_ALL_ISSUES_BUDGET_SECONDS = 240  # 5-min Docker timeout - 60s safety margin
+
+
+def _fetch_all_issue_nodes(query, variables, deadline_seconds=FETCH_ALL_ISSUES_BUDGET_SECONDS, max_records=None):
+    """
+    Fetch all issue nodes from a paginated issues query.
+
+    Bounded by `deadline_seconds` (default 240) to avoid the 5-min Docker
+    script timeout that hard-kills the process. On budget exhaustion, returns
+    the partial result accumulated so far and logs a warning. Callers that
+    require completeness should narrow their filter; callers that tolerate
+    partial results (mirror is the exception — it has its own single-page
+    code path) get an actionable signal instead of a script crash.
+
+    When `max_records` is set, pagination stops once that many nodes are
+    accumulated and the result is truncated to exactly `max_records`. This
+    gives callers a deterministic ceiling regardless of how many issues match,
+    independent of the time budget. `None` keeps the fetch-everything behavior.
+    """
+    variables = dict(variables)
+    started = time.monotonic()
+
+    response_json = checkAPIerrors(query, variables)
+    nodes = list(response_json.get("data", {}).get("issues", {}).get("nodes", []))
+
+    while response_json.get("data", {}).get("issues", {}).get("pageInfo", {}).get("hasNextPage"):
+        if max_records is not None and len(nodes) >= max_records:
+            break
+        if time.monotonic() - started > deadline_seconds:
+            demisto.info(
+                f"_fetch_all_issue_nodes: hit {deadline_seconds}s budget after {len(nodes)} nodes; "
+                "returning partial result. Narrow your filter to retrieve more."
+            )
+            break
+        variables["after"] = response_json["data"]["issues"]["pageInfo"]["endCursor"]
+        response_json = checkAPIerrors(query, variables)
+        page_nodes = response_json.get("data", {}).get("issues", {}).get("nodes", [])
+        if page_nodes:
+            nodes += page_nodes
+
+    if max_records is not None and len(nodes) > max_records:
+        nodes = nodes[:max_records]
+
+    return nodes
 
 
 def translate_severity(issue):
@@ -1701,29 +1830,271 @@ def translate_severity(issue):
     Might take risk grade into account in the future
     """
     severity = demisto.get(issue, WizInputParam.SEVERITY)
-    if severity == 'CRITICAL':
+    if severity == "CRITICAL":
         return 4
-    if severity == 'HIGH':
+    if severity == "HIGH":
         return 3
-    if severity == 'MEDIUM':
+    if severity == "MEDIUM":
         return 2
-    if severity == 'LOW':
+    if severity == "LOW":
         return 1
-    if severity == 'INFORMATIONAL':
+    if severity == "INFORMATIONAL":
         return 0.5
     return None
 
 
 def build_incidents(issue):
     if issue is None:
+        demisto.debug("build_incidents: Received None issue")
         return {}
 
-    return {
-        'name': issue.get('sourceRule', {}).get('name', 'No sourceRule') + ' - ' + issue.get('id'),
-        'occurred': issue['createdAt'],
-        'rawJSON': json.dumps(issue),
-        'severity': translate_severity(issue)
+    try:
+        issue_id = issue.get("id", "unknown")
+
+        source_rule = issue.get("sourceRule")
+
+        if source_rule is None:
+            demisto.debug("build_incidents: sourceRule is None")
+            rule_name = "No sourceRule"
+        else:
+            rule_name = source_rule.get("name", "No sourceRule")
+            demisto.debug(f"build_incidents: rule_name: {rule_name}")
+
+        incident_name = f"{rule_name or 'Unknown Rule'} - {issue_id}"
+        created_at = issue.get("createdAt", "")
+        severity = translate_severity(issue)
+
+        _attach_mirror_metadata(issue)
+
+        incident = {
+            "name": incident_name,
+            "occurred": created_at,
+            "rawJSON": json.dumps(issue),
+            "severity": severity,
+        }
+
+        demisto.debug(f"build_incidents: Successfully created incident for {issue_id} " f"using {incident}")
+        return incident
+
+    except Exception as e:
+        issue_id = issue.get("id", "unknown") if issue else "unknown"
+        raise Exception(f"build_incidents: Error processing issue {issue_id}: {str(e)}")
+
+
+def validate_wiz_enum_parameter(parameter_value, enum_class, parameter_name):
+    """
+    Generic validation function for Wiz enum parameters
+
+    Args:
+        parameter_value (str or list): The parameter value(s) to validate
+        enum_class: The enum class that contains valid values (e.g., WizIssueType)
+        parameter_name (str): The human-readable parameter name for error messages (e.g., "issue type")
+
+    Returns:
+        ValidationResponse: Response with validation results
+    """
+    if not parameter_value:
+        return ValidationResponse.create_success()
+
+    values = argToList(parameter_value)
+
+    valid_values = enum_class.values()
+    invalid_values = [v for v in values if v not in valid_values]
+
+    if invalid_values:
+        error_msg = (
+            f"Invalid {parameter_name}(s): {', '.join(invalid_values)}. Valid {parameter_name}s are: {', '.join(valid_values)}"
+        )
+        demisto.error(error_msg)
+        return ValidationResponse.create_error(error_msg)
+
+    return ValidationResponse.create_success(values)
+
+
+def validate_issue_type(issue_type):
+    """
+    Validates if the issue type is supported
+
+    Args:
+        issue_type (str or list): The issue_type(s) to validate
+
+    Returns:
+        ValidationResponse: Response with validation results
+    """
+    return validate_wiz_enum_parameter(issue_type, WizIssueType, "issue type")
+
+
+def validate_severity(severity):
+    """
+    Validates if the severity is supported
+
+    Args:
+        severity (str or list): The severity(s) to validate
+
+    Returns:
+        ValidationResponse: Response with validation results
+    """
+    return validate_wiz_enum_parameter(severity, WizSeverity, "severity")
+
+
+def validate_status(status):
+    """
+    Validates if the status is supported
+
+    Args:
+        status (str or list): The status(es) to validate
+
+    Returns:
+        ValidationResponse: Response with validation results
+    """
+    return validate_wiz_enum_parameter(status, WizStatus, "status")
+
+
+def validate_all_issues_parameters(parameters_dict):
+    """
+    Validates all parameters in a centralized function
+
+    Args:
+        parameters_dict (dict): Dictionary containing all parameters to validate
+
+    Returns:
+        tuple: (success, error_message, validated_values)
+            - success (bool): True if all validations pass
+            - error_message (str): Error message if validation fails
+            - validated_values (dict): Dictionary of validated values
+    """
+    validated_values = {}
+
+    # Extract parameters from dictionary
+    issue_type = parameters_dict.get(WizInputParam.ISSUE_TYPE)
+    status = parameters_dict.get(WizInputParam.STATUS)
+    severity = parameters_dict.get(WizInputParam.SEVERITY)
+
+    issue_type_validation = validate_issue_type(issue_type)
+    if not issue_type_validation.is_valid:
+        return False, issue_type_validation.error_message, None
+    validated_values[WizInputParam.ISSUE_TYPE] = issue_type_validation.value
+
+    status_validation = validate_status(status)
+    if not status_validation.is_valid:
+        return False, status_validation.error_message, None
+    validated_values[WizInputParam.STATUS] = status_validation.value
+
+    severity_validation = validate_severity(severity)
+    if not severity_validation.is_valid:
+        return False, severity_validation.error_message, None
+    validated_values[WizInputParam.SEVERITY] = severity_validation.value
+
+    return True, None, validated_values
+
+
+def apply_wiz_filter(variables, filter_value, api_field, equals_wrapper=True, nested_path=None):
+    """
+    Generic function to apply filters to Wiz API query variables
+
+    Args:
+        variables (dict): The query variables to modify
+        filter_value (str or list): The filter value(s) to apply
+        api_field (str): The API field name (e.g., WizApiVariables.ORIGIN)
+        equals_wrapper (bool): Whether to wrap the value in {"equals": [values]} structure
+        nested_path (str): Additional nested path for complex filters (e.g., "relatedEntity")
+
+    Returns:
+        dict: Updated variables with the filter applied
+    """
+    if not filter_value:
+        return variables
+
+    # Initialize filterBy if it doesn't exist
+    if "filterBy" not in variables:
+        variables["filterBy"] = {}
+
+    # Convert single values to list for consistency
+    if isinstance(filter_value, str):
+        value_list = [filter_value]
+    elif isinstance(filter_value, list):
+        value_list = filter_value
+    else:
+        value_list = [filter_value]
+
+    # Handle nested paths (e.g., for threats that use relatedEntity.cloudPlatform)
+    filter_target = variables["filterBy"]
+    if nested_path:
+        if nested_path not in filter_target:
+            filter_target[nested_path] = {}
+        filter_target = filter_target[nested_path]
+
+    # Apply the filter with or without equals wrapper
+    if equals_wrapper:
+        filter_target[api_field] = {"equals": value_list}
+    else:
+        filter_target[api_field] = value_list
+
+    return variables
+
+
+def apply_severity_filter(variables, severity_list, is_detection=True):
+    """Adds the severity filter to the query variables"""
+    return apply_wiz_filter(variables, severity_list, "severity", equals_wrapper=False)
+
+
+def apply_status_filter(variables, status_list):
+    """Adds the status filter to the query variables"""
+    return apply_wiz_filter(variables, status_list, "status", equals_wrapper=False)
+
+
+def apply_issue_type_filter(variables, type_list):
+    """Adds the status filter to the query variables"""
+    return apply_wiz_filter(variables, type_list, "type", equals_wrapper=False)
+
+
+def apply_all_issue_filters(variables, validated_values):
+    """
+    Applies all filters to the query variables in a centralized function
+
+    Args:
+        variables (dict): Base query variables
+        validated_values (dict): Dictionary of validated values
+
+    Returns:
+        dict: Updated query variables with all filters applied
+    """
+    variables = apply_severity_filter(variables, validated_values.get(WizInputParam.SEVERITY))
+    variables = apply_status_filter(variables, validated_values.get(WizInputParam.STATUS))
+    variables = apply_issue_type_filter(variables, validated_values.get(WizInputParam.ISSUE_TYPE))
+
+    return variables
+
+
+def get_fetch_issues_variables(max_fetch, last_run):
+    demisto_params = demisto.params()
+    parameters_dict = {
+        WizInputParam.ISSUE_TYPE: demisto_params.get(WizInputParam.ISSUE_TYPE),
+        WizInputParam.STATUS: demisto_params.get(WizInputParam.STATUS),
+        WizInputParam.SEVERITY: demisto_params.get(WizInputParam.SEVERITY),
     }
+
+    # Using default fetch parameters
+    if (
+        not parameters_dict[WizInputParam.ISSUE_TYPE]
+        and not parameters_dict[WizInputParam.STATUS]
+        and not parameters_dict[WizInputParam.SEVERITY]
+    ):
+        demisto.info("No issue type, status or severity provided, fetching default issues")
+        parameters_dict = {
+            WizInputParam.STATUS: DEFAULT_FETCH_ISSUE_STATUS,
+        }
+
+    validation_success, error_message, validated_values = validate_all_issues_parameters(parameters_dict)
+    if not validation_success or error_message:
+        return_error(error_message)
+        return None
+
+    issue_variables: Dict[str, Any] = PULL_ISSUES_DEFAULT_VARIABLES.copy()
+    issue_variables["first"] = max_fetch
+    issue_variables["filterBy"] = {"createdAt": {"after": last_run}, "relatedEntity": {}}
+
+    return apply_all_issue_filters(issue_variables, validated_values)
 
 
 def fetch_issues(max_fetch):
@@ -1734,52 +2105,31 @@ def fetch_issues(max_fetch):
     if max_fetch > 500:
         max_fetch = 500
 
-    last_run = demisto.getLastRun().get('time')
+    last_run = demisto.getLastRun().get("time")
     if not last_run:  # first time fetch
-        last_run = dateparser.parse(demisto.params().get('first_fetch', '7 days').strip())
-        last_run = (last_run.isoformat()[:-3] + 'Z')
+        last_run = dateparser.parse(demisto.params().get("first_fetch", "7 days").strip())
+        last_run = last_run.isoformat()[:-3] + "Z"
 
     query = PULL_ISSUES_QUERY
-    variables = {
-        "first": max_fetch,
-        "filterBy": {
-            "status": [
-                "OPEN",
-                "IN_PROGRESS"
-            ],
+    variables = get_fetch_issues_variables(max_fetch, last_run)
+    demisto.info(f"Fetching Issues for {variables}")
 
-            "createdAt": {
-                "after":
-                    last_run
-            },
-            "relatedEntity":
-                {}
-        },
-        "orderBy": {
-            "field":
-                "SEVERITY",
-            "direction":
-                "DESC"
-        }
-    }
-
-    response_json = checkAPIerrors(query, variables)
-
-    issues = response_json['data']['issues']['nodes']
-    while response_json['data']['issues']['pageInfo']['hasNextPage']:
-        variables['after'] = response_json['data']['issues']['pageInfo']['endCursor']
-        response_json = checkAPIerrors(query, variables)
-        if response_json['data']['issues']['nodes'] != []:
-            issues += (response_json['data']['issues']['nodes'])
+    api_start_run_time = datetime.now().strftime(DEMISTO_OCCURRED_FORMAT)
+    issues = _fetch_all_issue_nodes(query, variables)
 
     incidents = []
     for issue in issues:
         incident = build_incidents(issue=issue)
+        demisto.debug(f"Preparing to add incident: {incident}")
         incidents.append(incident)
 
     demisto.incidents(incidents)
-    demisto.setLastRun(
-        {'time': datetime.now().strftime(DEMISTO_OCCURRED_FORMAT)})
+    demisto.setLastRun({"time": api_start_run_time})
+
+    if incidents:
+        demisto.info(f"Successfully fetched and created {len(incidents)} incidents - Set last run time to {api_start_run_time}.")
+    else:
+        demisto.info(f"No new incidents to fetch - Set last run time to {api_start_run_time}.")
 
 
 def get_issue(issue_id):
@@ -1790,87 +2140,79 @@ def get_issue(issue_id):
         demisto.debug(message)
         return message
 
-    issue_variables = {
-        "first": 5,
-        "filterBy": {
-            "id": issue_id
-        }
-    }
+    issue_variables = {"first": 5, "filterBy": {"id": issue_id}}
 
     response_json = checkAPIerrors(PULL_ISSUES_QUERY, issue_variables)
 
     demisto.debug(f"The API response is {response_json}")
 
     issues = {}
-    if response_json['data']['issues']['nodes'] != []:
-        issues = response_json['data']['issues']['nodes']
+    if response_json["data"]["issues"]["nodes"] != []:
+        issues = response_json["data"]["issues"]["nodes"]
     else:
         demisto.info(f"There was no result for Issue ID: {issue_id}")
 
     return issues
 
 
-def get_filtered_issues(entity_type, resource_id, severity, issue_type, limit):
+def get_filtered_issues(entity_type, resource_id, severity, issue_type, limit, created_after=None, created_before=None):
     """
     Retrieves Filtered Issues
-    """
-    demisto.info(f"Entity type is {entity_type}\n"
-                 f"Resource ID is {resource_id}\n"
-                 f"Severity is {severity}\n"
-                 f"Issue type is {issue_type}")
-    error_msg = ''
 
-    if not severity and not entity_type and not resource_id and not issue_type:
-        error_msg = "You should pass (at least) one of the following parameters:\n\tentity_type\n\tresource_id" \
-                    "\n\tseverity\n\tissue_type\n"
+    `limit` caps the total number of issues returned. When None, all matching
+    issues are fetched (bounded only by the time budget in _fetch_all_issue_nodes).
+    `created_after` / `created_before` are ISO 8601 timestamps mapped to the Wiz
+    `createdAt` filter, letting callers bound heavy queries (e.g. TOXIC_COMBINATION)
+    up front instead of relying on the time-budget safety net.
+    """
+    demisto.info(
+        f"Entity type is {entity_type}\n"
+        f"Resource ID is {resource_id}\n"
+        f"Severity is {severity}\n"
+        f"Issue type is {issue_type}\n"
+        f"Created after is {created_after}\n"
+        f"Created before is {created_before}\n"
+        f"Limit is {limit}"
+    )
+    error_msg = ""
+
+    if not severity and not entity_type and not resource_id and not issue_type and not created_after and not created_before:
+        error_msg = (
+            "You should pass (at least) one of the following parameters:\n\tentity_type\n\tresource_id"
+            "\n\tseverity\n\tissue_type\n\tcreated_after\n\tcreated_before\n"
+        )
 
     if entity_type and resource_id:
         error_msg = f"{error_msg}You cannot pass entity_type and resource_id together\n"
+
+    if limit is not None and limit < 1:
+        error_msg = f"{error_msg}limit must be a positive integer\n"
 
     if error_msg:
         demisto.error(error_msg)
         return error_msg
 
-    issue_variables = {}
+    # `first` is the per-page size (API max WIZ_API_LIMIT); `limit` is the total cap.
+    page_size = WIZ_API_LIMIT if limit is None else min(limit, WIZ_API_LIMIT)
+
+    issue_variables: Dict[str, Any] = {}
     query = PULL_ISSUES_QUERY
 
     if entity_type:
         issue_variables = {
-            "first": limit,
+            "first": page_size,
             "filterBy": {
-                "status": [
-                    "OPEN",
-                    "IN_PROGRESS"
-                ],
-                "relatedEntity": {
-                    "type": [
-                        entity_type
-                    ]
-                },
+                "status": ["OPEN", "IN_PROGRESS"],
+                "relatedEntity": {"type": [entity_type]},
             },
-            "orderBy": {
-                "field":
-                    "SEVERITY",
-                "direction":
-                    "DESC"
-            }
+            "orderBy": {"field": "SEVERITY", "direction": "DESC"},
         }
     elif resource_id:
         get_resource_graph_id_helper_variables = {
             "projectId": "*",
-            "query": {
-                "type": [
-                    "CLOUD_RESOURCE"
-                ],
-                "where": {
-                    "providerUniqueId": {
-                        "EQUALS":
-                            resource_id
-                    }
-                }
-            }
+            "query": {"type": ["CLOUD_RESOURCE"], "where": {"providerUniqueId": {"EQUALS": resource_id}}},
         }
-        get_resource_graph_id_helper_query = ("""
+        get_resource_graph_id_helper_query = """
             query GraphEntityResourceFilterAutosuggest(
                 $query: GraphEntityQueryInput
                 $projectId: String!
@@ -1887,66 +2229,158 @@ def get_filtered_issues(entity_type, resource_id, severity, issue_type, limit):
                     }
                 }
             }
-        """)
-        graph_resource_response_json = checkAPIerrors(get_resource_graph_id_helper_query,
-                                                      get_resource_graph_id_helper_variables)
-        if graph_resource_response_json['data']['graphSearch']['nodes'] != []:
-            graph_resource_id = graph_resource_response_json['data']['graphSearch']['nodes'][0]['entities'][0]['id']
-            issue_variables = \
-                {"first": limit,
-                 "filterBy": {"status": ["OPEN", "IN_PROGRESS"],
-                              "relatedEntity":
-                                  {"id": graph_resource_id}},
-                 "orderBy": {"field": "SEVERITY", "direction": "DESC"}}
+        """
+        graph_resource_response_json = checkAPIerrors(get_resource_graph_id_helper_query, get_resource_graph_id_helper_variables)
+        if graph_resource_response_json["data"]["graphSearch"]["nodes"] != []:
+            graph_resource_id = graph_resource_response_json["data"]["graphSearch"]["nodes"][0]["entities"][0]["id"]
+            issue_variables = {
+                "first": page_size,
+                "filterBy": {"status": ["OPEN", "IN_PROGRESS"], "relatedEntity": {"id": graph_resource_id}},
+                "orderBy": {"field": "SEVERITY", "direction": "DESC"},
+            }
         else:
             demisto.info("Resource not found.")
             return "Resource not found."
 
     if severity:
-        if 'filterBy' not in issue_variables.keys():
-            issue_variables['filterBy'] = {"severity": []}
-            issue_variables['first'] = limit
-        if severity.upper() == 'CRITICAL':
-            issue_variables['filterBy']['severity'] = ['CRITICAL']
-        elif severity.upper() == 'HIGH':
-            issue_variables['filterBy']['severity'] = ['CRITICAL', 'HIGH']
-        elif severity.upper() == 'MEDIUM':
-            issue_variables['filterBy']['severity'] = ['CRITICAL', 'HIGH', 'MEDIUM']
-        elif severity.upper() == 'LOW':
-            issue_variables['filterBy']['severity'] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']
-        elif severity.upper() == 'INFORMATIONAL':
-            issue_variables['filterBy']['severity'] = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFORMATIONAL']
+        if "filterBy" not in issue_variables:
+            issue_variables["filterBy"] = {"severity": []}
+            issue_variables["first"] = page_size
+        if severity.upper() == "CRITICAL":
+            issue_variables["filterBy"]["severity"] = ["CRITICAL"]
+        elif severity.upper() == "HIGH":
+            issue_variables["filterBy"]["severity"] = ["CRITICAL", "HIGH"]
+        elif severity.upper() == "MEDIUM":
+            issue_variables["filterBy"]["severity"] = ["CRITICAL", "HIGH", "MEDIUM"]
+        elif severity.upper() == "LOW":
+            issue_variables["filterBy"]["severity"] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+        elif severity.upper() == "INFORMATIONAL":
+            issue_variables["filterBy"]["severity"] = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFORMATIONAL"]
         else:
-            demisto.info("You should only use these severity types: CRITICAL, HIGH, MEDIUM, LOW or INFORMATIONAL "
-                         "in upper or lower case.")
-            return ("You should only use these severity types: CRITICAL, HIGH, MEDIUM, LOW or INFORMATIONAL in "
-                    "upper or lower case.")
+            demisto.info(
+                "You should only use these severity types: CRITICAL, HIGH, MEDIUM, LOW or INFORMATIONAL "
+                "in upper or lower case."
+            )
+            return (
+                "You should only use these severity types: CRITICAL, HIGH, MEDIUM, LOW or INFORMATIONAL in "
+                "upper or lower case."
+            )
 
     if issue_type:
-        if 'filterBy' not in issue_variables.keys():
-            issue_variables['filterBy'] = {}
-            issue_variables['first'] = limit
+        if "filterBy" not in issue_variables:
+            issue_variables["filterBy"] = {}
+            issue_variables["first"] = page_size
 
-        issue_variables['filterBy']['type'] = [issue_type]
+        issue_variables["filterBy"]["type"] = [issue_type]
+
+    if created_after or created_before:
+        if "filterBy" not in issue_variables:
+            issue_variables["filterBy"] = {}
+            issue_variables["first"] = page_size
+        created_at: Dict[str, str] = {}
+        if created_after:
+            created_at["after"] = created_after
+        if created_before:
+            created_at["before"] = created_before
+        issue_variables["filterBy"]["createdAt"] = created_at
+
+    # Order by severity so a `limit` truncation keeps the most severe issues, not an arbitrary page.
+    issue_variables.setdefault("orderBy", {"field": "SEVERITY", "direction": "DESC"})
 
     demisto.info(f"Query is {query}")
     demisto.info(f"Issue variables is {issue_variables}")
 
-    response_json = checkAPIerrors(query, issue_variables)
-
-    demisto.info(f"The API response is {response_json}")
-
-    issues = {}
-    if response_json['data']['issues']['nodes'] != []:
-        issues = response_json['data']['issues']['nodes']
-    while response_json['data']['issues']['pageInfo']['hasNextPage']:
-
-        issue_variables['after'] = response_json['data']['issues']['pageInfo']['endCursor']
-        response_json = checkAPIerrors(query, issue_variables)
-        if response_json['data']['issues']['nodes'] != []:
-            issues += (response_json['data']['issues']['nodes'])
-
+    issues = _fetch_all_issue_nodes(query, issue_variables, max_records=limit)
     return issues
+
+
+def get_resources(
+    search,
+    entity_type,
+    subscription_external_ids,
+    provider_unique_ids,
+    project_ids=None,
+    native_types=None,
+    updated_at_before=None,
+    updated_at_after=None,
+):
+    """
+    Retrieves Resources
+    """
+    demisto.info(
+        f"Entity type is {entity_type}\n"
+        f"Search is {search}\n"
+        f"Subscription External IDs is {subscription_external_ids}\n"
+        f"Provider Unique IDs is {provider_unique_ids}\n"
+        f"Project IDs is {project_ids}\n"
+        f"Native Types is {native_types}\n"
+        f"Updated At Before is {updated_at_before}\n"
+        f"Updated At After is {updated_at_after}"
+    )
+    error_msg = ""
+
+    if (
+        not search
+        and not entity_type
+        and not subscription_external_ids
+        and not provider_unique_ids
+        and not project_ids
+        and not native_types
+        and not updated_at_before
+        and not updated_at_after
+    ):
+        error_msg = (
+            f"You should pass (at least) one of the following parameters:\n\t{WizInputParam.SEARCH}\n\t"
+            f"{WizInputParam.ENTITY_TYPE}\n\t{WizInputParam.SUBSCRIPTION_EXTERNAL_IDS}\n\t"
+            f"{WizInputParam.PROVIDER_UNIQUE_IDS}\n\t{WizInputParam.PROJECT_IDS}\n\t"
+            f"{WizInputParam.NATIVE_TYPES}\n\t{WizInputParam.UPDATED_AT_BEFORE}\n\t"
+            f"{WizInputParam.UPDATED_AT_AFTER}\n"
+        )
+
+    if error_msg:
+        demisto.error(error_msg)
+        return error_msg
+
+    variables: Dict[str, Any] = {"first": WIZ_API_LIMIT, "filterBy": {}}
+
+    if search:
+        variables["filterBy"]["search"] = search
+    if entity_type:
+        variables["filterBy"]["type"] = [entity_type]
+    if subscription_external_ids:
+        subscription_external_ids_formatted = [str(x) for x in re.split(r"[,\s]+", subscription_external_ids.strip())]
+        variables["filterBy"]["subscriptionExternalId"] = subscription_external_ids_formatted
+    if provider_unique_ids:
+        provider_unique_ids_formatted = [str(x) for x in re.split(r"[,\s]+", provider_unique_ids.strip())]
+        variables["filterBy"]["providerUniqueId"] = provider_unique_ids_formatted
+    if project_ids:
+        project_ids_formatted = [str(x) for x in re.split(r"[,\s]+", project_ids.strip())]
+        variables["filterBy"]["projectId"] = project_ids_formatted
+    if native_types:
+        native_types_formatted = [str(x) for x in re.split(r"[,\s]+", native_types.strip())]
+        variables["filterBy"]["nativeType"] = native_types_formatted
+    if updated_at_before or updated_at_after:
+        updated_at: Dict[str, str] = {}
+        if updated_at_before:
+            updated_at["before"] = updated_at_before
+        if updated_at_after:
+            updated_at["after"] = updated_at_after
+        variables["filterBy"]["updatedAt"] = updated_at
+
+    try:
+        response_json = checkAPIerrors(PULL_CLOUD_RESOURCES_NATIVE_QUERY, variables)
+    except DemistoException:
+        demisto.debug(
+            f"could not find resources with this entity_type {entity_type}, search {search}, "
+            f"subscription_external_ids {subscription_external_ids}, provider_unique_ids {provider_unique_ids}"
+        )
+        return {}
+
+    if response_json["data"]["cloudResources"]["nodes"] is None or not response_json["data"]["cloudResources"]["nodes"]:
+        demisto.info("Resources Not Found")
+        return "Resources Not Found"
+    else:
+        return response_json
 
 
 def get_resource(resource_id, resource_name):
@@ -1964,83 +2398,54 @@ def get_resource(resource_id, resource_name):
         demisto.error("You must pass either resource_name or resource_id")
         return "You should pass exactly one of resource_name or resource_id"
 
-    if resource_name:
-        variables = {
-            "first": WIZ_API_LIMIT,
-            "filterBy": {
-                "search": resource_name
-            }
-        }
-        try:
-            response_json = checkAPIerrors(PULL_CLOUD_RESOURCES_NATIVE_QUERY, variables)
-        except DemistoException:
-            demisto.debug(f"could not find resource with this resource_name {resource_name}")
-            return {}
-
-        if response_json['data']['cloudResources']['nodes'] is None or not response_json['data']['cloudResources']['nodes']:
-            demisto.info("Resource Not Found")
-            return "Resource Not Found"
-        else:
-            return response_json
-    # to get resource by resource_id
-    variables = {
-        "fetchPublicExposurePaths": True,
-        "fetchInternalExposurePaths": False,
-        "fetchIssueAnalytics": False,
-        "first": 50,
-        "query": {
-            "type": [
-                "CLOUD_RESOURCE"
-            ],
-            "select": True,
-            "where": {
-                "providerUniqueId": {
-                    "EQUALS": [resource_id]
-                }
-            }
-        },
-        "projectId": "*",
-        "fetchTotalCount": True,
-        "quick": True
-    }
-
+    resource_search = resource_name if resource_name else resource_id
+    variables = {"first": WIZ_API_LIMIT, "filterBy": {"search": resource_search}}
     try:
-        response_json = checkAPIerrors(PULL_RESOURCES_QUERY, variables)
+        response_json = checkAPIerrors(PULL_CLOUD_RESOURCES_NATIVE_QUERY, variables)
     except DemistoException:
-        demisto.debug(f"could not find resource with ID {resource_id}")
+        demisto.debug(f"could not find resource with this resource_name {resource_name}")
         return {}
 
-    if response_json['data']['graphSearch']['nodes'] is None or not response_json['data']['graphSearch']['nodes']:
+    if response_json["data"]["cloudResources"]["nodes"] is None or not response_json["data"]["cloudResources"]["nodes"]:
         demisto.info("Resource Not Found")
-        return {}
+        return "Resource Not Found"
     else:
-        return response_json['data']['graphSearch']['nodes'][0]['entities'][0]
+        return response_json
 
 
 def reject_issue(issue_id, reject_reason, reject_comment):
     """
     Reject a Wiz Issue
     """
-    return reject_or_resolve_issue(issue_id, reject_reason, reject_comment, 'REJECTED')
+    return reject_or_resolve_issue(issue_id, reject_reason, reject_comment, "REJECTED")
 
 
 def resolve_issue(issue_id, resolution_reason, resolution_note):
     """
-    Reject a Wiz Issue
+    Resolve a Wiz Threat Detection Issue.
+
+    `status=RESOLVED` is only valid for Threat Detection issues. Non-Threat-Detection
+    types (Toxic Combination, Cloud Configuration, Attack Surface) are auto-resolved
+    when the underlying problem is fixed; use wiz-reject-issue for those types.
     """
     is_valid_id, message = is_valid_issue_id(issue_id)
     if not is_valid_id:
         return message
 
-    issue_object = _get_issue(issue_id, is_evidence=False)
+    issue_type = _get_issue_type(issue_id)
+    if issue_type is None:
+        return f"Issue not found: {issue_id}"
 
-    issue_type = issue_object['data']['issues']['nodes'][0]['type']
+    if issue_type != WizIssueType.THREAT_DETECTION:
+        msg = (
+            f"Only a Threat Detection Issue can be resolved.\n"
+            f"Received an Issue of type {issue_type}.\n"
+            f"Use wiz-reject-issue for non-Threat-Detection issues."
+        )
+        demisto.error(msg)
+        return msg
 
-    if issue_type != 'THREAT_DETECTION':
-        demisto.error(f"Only a Threat Detection Issue can be resolved.\nReceived an Issue of type {issue_type}.")
-        return f"Only a Threat Detection Issue can be resolved.\nReceived an Issue of type {issue_type}."
-
-    return reject_or_resolve_issue(issue_id, resolution_reason, resolution_note, 'RESOLVED')
+    return reject_or_resolve_issue(issue_id, resolution_reason, resolution_note, "RESOLVED")
 
 
 def reject_or_resolve_issue(issue_id, reject_or_resolve_reason, reject_or_resolve_comment, status):
@@ -2048,7 +2453,7 @@ def reject_or_resolve_issue(issue_id, reject_or_resolve_reason, reject_or_resolv
     Reject a Wiz Issue
     """
     demisto.debug(f"reject_issue with status: {status}, enter")
-    operation = "reject" if status == 'REJECTED' else "resolution"
+    operation = "reject" if status == "REJECTED" else "resolution"
 
     is_valid_id, message = is_valid_issue_id(issue_id)
     if not is_valid_id:
@@ -2059,17 +2464,40 @@ def reject_or_resolve_issue(issue_id, reject_or_resolve_reason, reject_or_resolv
         return f"You should pass all of: Issue ID, {operation} reason and {operation} note."
 
     variables = {
-        'issueId': issue_id,
-        'patch': {
-            'status': status,
-            'note': reject_or_resolve_comment,
-            'resolutionReason': reject_or_resolve_reason
-        }
+        "issueId": issue_id,
+        "patch": {
+            "status": status,
+            "resolutionReason": reject_or_resolve_reason,
+        },
     }
     query = UPDATE_ISSUE_QUERY
 
-    response = checkAPIerrors(query, variables)
+    try:
+        response = checkAPIerrors(query, variables)
+    except Exception as e:
+        if status != "REJECTED" or "A note is required for rejection" not in str(e):
+            raise
+        # Only the legacy `note` field satisfies a required rejection note.
+        variables["patch"]["note"] = truncate_note(reject_or_resolve_comment)
+        try:
+            return checkAPIerrors(query, variables)
+        except Exception as retry_error:
+            raise Exception(
+                "This Wiz tenant requires a note to reject issues, and the note could not be added. "
+                "If the Wiz Issue Notes API is retired, disable 'Require note on rejection' in Wiz Issue settings "
+                f"or reject the issue in Wiz. Wiz API error: {retry_error}"
+            ) from retry_error
 
+    return _add_note_after_status_update(issue_id, reject_or_resolve_comment, response)
+
+
+def _add_note_after_status_update(issue_id: str, note: str, response: dict) -> dict:
+    try:
+        set_issue_comment(issue_id, note)
+    except Exception as e:
+        warning = f"The issue status was updated, but the note could not be added: {e}"
+        demisto.error(f"[add_note_after_status_update] {warning}\n{traceback.format_exc()}")
+        response["warning"] = warning
     return response
 
 
@@ -2084,18 +2512,13 @@ def reopen_issue(issue_id, reopen_note):
     if not is_valid_id:
         return message
 
-    variables = {
-        'issueId': issue_id,
-        'patch': {
-            'status': 'OPEN'
-        }
-    }
+    variables = {"issueId": issue_id, "patch": {"status": "OPEN"}}
     query = UPDATE_ISSUE_QUERY
 
     response = checkAPIerrors(query, variables)
 
     if reopen_note:
-        set_issue_comment(issue_id, reopen_note)
+        return _add_note_after_status_update(issue_id, reopen_note, response)
 
     return response
 
@@ -2119,12 +2542,7 @@ def _set_status(issue_id, status):
     if not is_valid_id:
         return message
 
-    variables = {
-        'issueId': issue_id,
-        'patch': {
-            'status': status
-        }
-    }
+    variables = {"issueId": issue_id, "patch": {"status": status}}
     query = UPDATE_ISSUE_QUERY
 
     response = checkAPIerrors(query, variables)
@@ -2138,10 +2556,8 @@ def _get_issue(issue_id, is_evidence=False):
         return message
 
     issue_variables = {
-        'first': 1,
-        'filterBy': {
-            'id': issue_id
-        },
+        "first": 1,
+        "filterBy": {"id": issue_id},
     }
 
     issue_query = PULL_ISSUE_WITH_EVIDENCE_PARAM_QUERY if is_evidence else PULL_ISSUES_QUERY
@@ -2149,6 +2565,68 @@ def _get_issue(issue_id, is_evidence=False):
     issue_response = checkAPIerrors(issue_query, issue_variables)
 
     return issue_response
+
+
+def get_issue_comments(issue_id: str) -> list[dict]:
+    """Needs read:comments, so keep it off the fetch and get paths."""
+    comments: list[dict] = []
+    after = None
+    for _ in range(MAX_COMMENT_PAGES):
+        data = checkAPIerrors(ISSUE_COMMENTS_QUERY, {"id": issue_id, "after": after})
+        page = (data["data"]["issue"]["commentThread"] or {}).get("comments") or {}
+        comments.extend(page.get("nodes") or [])
+        if not (page.get("pageInfo") or {}).get("hasNextPage"):
+            return comments
+        after = page["pageInfo"]["endCursor"]
+    raise DemistoException(f"Issue {issue_id} has more than {MAX_COMMENT_PAGES} pages of comments.")
+
+
+def _get_issue_type(issue_id):
+    """
+    Return the Wiz Issue `type` (e.g. THREAT_DETECTION, TOXIC_COMBINATION) for an
+    issue id, or None if the issue can't be found / has no type. Used to guard
+    status mutations that are only valid for certain issue types.
+    """
+    issue_object = _get_issue(issue_id, is_evidence=False)
+    if not isinstance(issue_object, dict):
+        return None
+    nodes = issue_object.get("data", {}).get("issues", {}).get("nodes") or []
+    if not nodes:
+        return None
+    return nodes[0].get("type")
+
+
+def _can_resolve_issue(issue_id):
+    """
+    Return True only when the issue may be manually set to RESOLVED in Wiz.
+
+    Only Threat Detection issues can be manually resolved; all other types
+    (Toxic Combination, Cloud Configuration, Attack Surface) auto-resolve when
+    the underlying problem is remediated, and the backend rejects an explicit
+    RESOLVED for them. The outgoing-mirror paths use this to skip the RESOLVED
+    push for non-Threat-Detection issues (letting Wiz auto-resolve) instead of
+    firing a mutation the backend will reject and silently swallowing the error.
+    """
+    issue_type = _get_issue_type(issue_id)
+    if issue_type != WizIssueType.THREAT_DETECTION:
+        demisto.info(
+            f"Skipping RESOLVED mirror for issue {issue_id}: type {issue_type} cannot be manually resolved "
+            f"(only Threat Detection issues can; other types auto-resolve when remediated)."
+        )
+        return False
+    return True
+
+
+def truncate_note(text):
+    """
+    Truncate a note to MAX_NOTE_LENGTH characters.
+    If truncated, appends '... [truncated]' within the limit.
+    """
+    if not text or len(text) <= MAX_NOTE_LENGTH:
+        return text
+
+    suffix = "... [truncated]"
+    return text[: MAX_NOTE_LENGTH - len(suffix)] + suffix
 
 
 def set_issue_comment(issue_id, comment):
@@ -2160,12 +2638,8 @@ def set_issue_comment(issue_id, comment):
     if not is_valid_id:
         return message
 
-    issue_variables = {
-        "input": {
-            "issueId": issue_id,
-            "text": comment
-        }
-    }
+    comment = truncate_note(comment)
+    issue_variables = {"input": {"subjectId": issue_id, "subjectType": "ISSUE", "body": comment}}
     issue_query = CREATE_COMMENT_QUERY
 
     response = checkAPIerrors(issue_query, issue_variables)
@@ -2174,12 +2648,12 @@ def set_issue_comment(issue_id, comment):
 
 
 def get_error_output(wiz_api_response):
-    error_output_message = ''
-    first_error_message = ''
-    if 'errors' in wiz_api_response:
-        for error_dict in wiz_api_response['errors']:
-            if 'message' in error_dict:
-                error_message = error_dict['message']
+    error_output_message = ""
+    first_error_message = ""
+    if "errors" in wiz_api_response:
+        for error_dict in wiz_api_response["errors"]:
+            if "message" in error_dict:
+                error_message = error_dict["message"]
 
                 # Do not print duplicate errors
                 if first_error_message and first_error_message == error_message:
@@ -2187,7 +2661,7 @@ def get_error_output(wiz_api_response):
                 if not first_error_message:
                     first_error_message = error_message
 
-                error_output_message = error_output_message + error_message + '\n'
+                error_output_message = error_output_message + error_message + "\n"
 
     return error_output_message if error_output_message else wiz_api_response
 
@@ -2203,20 +2677,9 @@ def clear_issue_note(issue_id):
     if not is_valid_id:
         return message
 
-    issue_object = _get_issue(issue_id)
-
-    issue_notes = issue_object['data']['issues']['nodes'][0]['notes']
-    demisto.info(f"The issue notes are: {issue_notes}")
-
-    query = DELETE_NOTE_QUERY
-    for note in issue_notes:
-        variables = {
-            "input": {
-                "id": note['id']
-            }
-        }
-
-        response = checkAPIerrors(query, variables)
+    response = None
+    for comment in get_issue_comments(issue_id):
+        response = checkAPIerrors(DELETE_COMMENT_QUERY, {"input": {"id": comment["id"]}})
 
     return response
 
@@ -2243,14 +2706,9 @@ def set_issue_due_date(issue_id, due_at):
     except ValueError:
         demisto.error("This is the incorrect. It should be YYYY-MM-DD")
         return "The date format is the incorrect. It should be YYYY-MM-DD"
-    due_at = due_at + 'T00:00:00.000Z'
+    due_at = due_at + "T00:00:00.000Z"
 
-    variables = {
-        'issueId': issue_id,
-        'patch': {
-            'dueAt': due_at
-        }
-    }
+    variables = {"issueId": issue_id, "patch": {"dueAt": due_at}}
     query = UPDATE_ISSUE_QUERY
 
     try:
@@ -2274,12 +2732,7 @@ def clear_issue_due_date(issue_id):
         return message
 
     issue_query = UPDATE_ISSUE_QUERY
-    issue_variables = {
-        'issueId': issue_id,
-        'override': {
-            'dueAt': None
-        }
-    }
+    issue_variables = {"issueId": issue_id, "override": {"dueAt": None}}
 
     issue_response = checkAPIerrors(issue_query, issue_variables)
 
@@ -2300,18 +2753,18 @@ def get_issue_evidence(issue_id):
     # Getting the Issue Evidence Query
     issue_object = _get_issue(issue_id, is_evidence=True)
 
-    if not issue_object['data']['issues']['nodes']:
+    if not issue_object["data"]["issues"]["nodes"]:
         return f"Issue not found: {issue_id}"
 
-    issue_type = issue_object['data']['issues']['nodes'][0]['type']
+    issue_type = issue_object["data"]["issues"]["nodes"][0]["type"]
 
-    if issue_type == 'THREAT_DETECTION':
-        if issue_object['data']['issues']['nodes'][0]['threatDetectionDetails'] is not None:
-            return issue_object['data']['issues']['nodes'][0]['threatDetectionDetails']
+    if issue_type == "THREAT_DETECTION":
+        if issue_object["data"]["issues"]["nodes"][0]["threatDetectionDetails"] is not None:
+            return issue_object["data"]["issues"]["nodes"][0]["threatDetectionDetails"]
         else:
             return f"No issue threat detection details evidence for Issue ID: {issue_id}"
 
-    query_for_evidence = issue_object['data']['issues']['nodes'][0]['evidenceQuery']
+    query_for_evidence = issue_object["data"]["issues"]["nodes"][0]["evidenceQuery"]
 
     if not query_for_evidence:
         return f"No issue evidence for Issue ID: {issue_id}"
@@ -2319,7 +2772,7 @@ def get_issue_evidence(issue_id):
     # Creating the query/variables to get the Issue Evidence
     query = PULL_ISSUE_EVIDENCE_QUERY
     variables = PULL_ISSUE_EVIDENCE_PARAMS
-    variables['query'] = query_for_evidence
+    variables["query"] = query_for_evidence
 
     try:
         response = checkAPIerrors(query, variables)
@@ -2328,12 +2781,12 @@ def get_issue_evidence(issue_id):
         demisto.error(error_message)
         raise Exception(error_message)
 
-    if response.get('data', {}).get('graphSearch', {}).get('nodes') is None:
+    if response.get("data", {}).get("graphSearch", {}).get("nodes") is None:
         return "Resource Not Found"
-    elif len(response.get('data', {}).get('graphSearch', {}).get('nodes')) == 0:
+    elif len(response.get("data", {}).get("graphSearch", {}).get("nodes")) == 0:
         return "No Evidence Found"
     else:
-        return response['data']['graphSearch']['nodes'][0].get('entities', {})
+        return response["data"]["graphSearch"]["nodes"][0].get("entities", {})
 
 
 def get_project_team(project_name):
@@ -2350,91 +2803,23 @@ def get_project_team(project_name):
     # find VM on the graph
     project_variables = {
         "first": 20,
-        "filterBy": {
-            "search": project_name
-        },
-        "orderBy": {
-            "field": "SECURITY_SCORE",
-            "direction": "ASC"
-        },
-        "analyticsSelection": {}
+        "filterBy": {"search": project_name, "includeArchived": False},
+        "orderBy": {"field": "SECURITY_SCORE", "direction": "ASC"},
     }
-    project_query = (  # pragma: no cover
-        """
-    query ProjectsTable(
-        $filterBy: ProjectFilters
-        $first: Int
-        $after: String
-        $orderBy: ProjectOrder
-        $analyticsSelection: ProjectIssueAnalyticsSelection
-    ) {
-        projects(
-        filterBy: $filterBy
-        first: $first
-        after: $after
-        orderBy: $orderBy
-        ) {
-        nodes {
-            id
-            name
-            description
-            businessUnit
-            archived
-            slug
-            projectOwners {
-            id
-            name
-            email
-            }
-            securityChampions {
-            id
-            name
-            email
-            }
-            cloudAccountCount
-            repositoryCount
-            securityScore
-            riskProfile {
-            businessImpact
-            }
-            teamMemberCount
-            issueAnalytics(selection: $analyticsSelection) {
-            issueCount
-            scopeSize
-            informationalSeverityCount
-            lowSeverityCount
-            mediumSeverityCount
-            highSeverityCount
-            criticalSeverityCount
-            }
-        }
-        pageInfo {
-            hasNextPage
-            endCursor
-        }
-        }
-    }
-    """)
 
     try:
-        response_json = checkAPIerrors(project_query, project_variables)
+        response_json = checkAPIerrors(PULL_PROJECTS_QUERY, project_variables)
     except DemistoException:
         demisto.debug(f"Error with finding Project with name {project_name}")
         return {}
 
-    project_response = response_json.get('data', {}).get('projects', {}).get('nodes')
+    nodes = response_json.get("data", {}).get("projects", {}).get("nodes", [])
 
-    demisto.info(f"Validating if Project with name \"{project_name}\" exists.")
-    if not project_response:
-        demisto.debug(f"Project with name {project_name} does not exist")
+    if not nodes:
+        demisto.error(f"Project with name {project_name} does not exist")
         return {}
 
-    else:
-        project_team = {
-            "projectOwners": project_response[0]['projectOwners'],
-            "securityChampions": project_response[0]['securityChampions']
-        }
-        return project_team
+    return nodes
 
 
 def copy_to_forensics_account(resource_id):
@@ -2445,24 +2830,15 @@ def copy_to_forensics_account(resource_id):
     demisto.debug("copy_to_forensics_account, enter")
 
     if not is_valid_uuid(resource_id):
-        variables = {
-            "first": 1,
-            "filterBy": {
-                "providerUniqueId": [resource_id]
-            }
-        }
+        variables = {"first": 1, "filterBy": {"providerUniqueId": [resource_id]}}
         resource_id_response = checkAPIerrors(PULL_RESOURCES_ID_NATIVE_QUERY, variables)
-        if resource_id_response['data'] is None or not resource_id_response['data']['cloudResources']['nodes']:
+        if resource_id_response["data"] is None or not resource_id_response["data"]["cloudResources"]["nodes"]:
             demisto.error(f"Resource with ID {resource_id} not found.")
             return f"Resource with ID {resource_id} not found."
         else:
-            resource_id = resource_id_response['data']['cloudResources']['nodes'][0]['id']
+            resource_id = resource_id_response["data"]["cloudResources"]["nodes"][0]["id"]
 
-    copy_to_forensics_account_variables = {
-        "input": {
-            "id": resource_id
-        }
-    }
+    copy_to_forensics_account_variables = {"input": {"id": resource_id}}
 
     response_json = checkAPIerrors(COPY_TO_FORENSICS_ACCOUNT_MUTATION, copy_to_forensics_account_variables)
     demisto.debug(f"The API response is {response_json}")
@@ -2475,6 +2851,283 @@ def copy_to_forensics_account(resource_id):
         return {}
     else:
         return response_json
+
+
+def get_mapping_fields_command():
+    mapping_response = GetMappingFieldsResponse()
+    incident_type_scheme = SchemeTypeMapping(type_name="Wiz Issue")
+    for field in WIZ_MIRRORED_FIELDS:
+        incident_type_scheme.add_field(field)
+    mapping_response.add_scheme_type(incident_type_scheme)
+    return mapping_response
+
+
+MIRROR_CURSOR_KEY = "mirror_cursor"
+
+
+def get_modified_remote_data_command(args):
+    """
+    Returns IDs of issues whose status changed since `last_update`.
+
+    Single-page-per-call to stay under the 5-min Docker timeout. A persistent
+    cursor in integration context (`mirror_cursor`) lets us drain large backlogs
+    across consecutive mirror cycles instead of one giant call.
+
+    Filter semantics:
+      - filterBy.statusChangedAt.after is exclusive
+      - When filterBy.statusChangedAt is set, results auto-order by statusChangedAt ASC
+      - Issues with no statusChangedAt are filtered out automatically
+
+    Known limitation: if multiple issues share the same microsecond-precision
+    status_changed_at and a page boundary splits them, the trailing tied issues
+    on the next page are skipped (the `>` filter excludes the cursor value). In
+    practice rare; would require simultaneous bulk status changes from multiple
+    writers. Documented test: test_get_modified_remote_data_microsecond_tie_known_loss.
+    """
+    remote_args = GetModifiedRemoteDataArgs(args)
+    last_update = remote_args.last_update or ""
+
+    raw_limit = demisto.params().get(WizMirrorParam.LIMIT, WizMirrorParam.LIMIT_DEFAULT)
+    try:
+        raw_limit = int(raw_limit)
+    except (ValueError, TypeError):
+        raw_limit = WizMirrorParam.LIMIT_DEFAULT
+    mirror_limit = max(WizMirrorParam.LIMIT_MIN, min(raw_limit, WizMirrorParam.LIMIT_MAX))
+
+    ctx = demisto.getIntegrationContext() or {}
+    saved_cursor = ctx.get(MIRROR_CURSOR_KEY, "") or ""
+
+    # Compare via datetime, not lex: XSOAR's lastUpdate is second-precision while
+    # saved_cursor is microsecond-precision (Wiz). Lex-max would pick bare-Z over
+    # the chronologically-later microsecond value (`Z` > `.`), rewinding the cursor.
+    last_update_dt = _parse_iso_timestamp(last_update)
+    saved_cursor_dt = _parse_iso_timestamp(saved_cursor)
+    if saved_cursor_dt and (not last_update_dt or saved_cursor_dt >= last_update_dt):
+        cursor = saved_cursor
+    else:
+        cursor = last_update or saved_cursor
+
+    demisto.debug(
+        f"get_modified_remote_data: cursor={cursor} "
+        f"(last_update={last_update}, saved_cursor={saved_cursor}, limit={mirror_limit})"
+    )
+
+    variables = {
+        "first": mirror_limit,
+        "filterBy": {"statusChangedAt": {"after": cursor}},
+        "orderBy": {"field": "STATUS_CHANGED_AT", "direction": "ASC"},
+    }
+
+    response_json = checkAPIerrors(MODIFIED_ISSUE_IDS_QUERY, variables)
+    nodes = response_json.get("data", {}).get("issues", {}).get("nodes", []) or []
+
+    modified_ids = [n["id"] for n in nodes if n.get("id")]
+
+    if nodes:
+        page_max = max((n["statusChangedAt"] for n in nodes if n.get("statusChangedAt")), default="")
+        if page_max:
+            page_max_dt = _parse_iso_timestamp(page_max)
+            saved_dt = _parse_iso_timestamp(saved_cursor)
+            if not saved_dt or (page_max_dt and page_max_dt > saved_dt):
+                ctx[MIRROR_CURSOR_KEY] = page_max
+                demisto.setIntegrationContext(ctx)
+                demisto.debug(f"get_modified_remote_data: cursor advanced to {page_max}")
+
+    has_next_page = response_json.get("data", {}).get("issues", {}).get("pageInfo", {}).get("hasNextPage", False)
+    demisto.debug(
+        f"get_modified_remote_data: returned {len(modified_ids)} ids, hasNextPage={has_next_page}, "
+        f"new cursor={ctx.get(MIRROR_CURSOR_KEY, '')}"
+    )
+
+    return GetModifiedRemoteDataResponse(modified_ids)
+
+
+def get_remote_data_command(args):
+    parsed_args = GetRemoteDataArgs(args)
+    issue_id = parsed_args.remote_incident_id
+    last_update = parsed_args.last_update
+
+    demisto.debug(f"get_remote_data: issue_id={issue_id}, last_update={last_update}")
+
+    issues = get_issue(issue_id)
+    if not issues or isinstance(issues, str):
+        return GetRemoteDataResponse({}, [])
+
+    issue = issues[0]
+    _attach_mirror_metadata(issue)
+
+    entries: list[dict] = []
+    if last_update:  # first sync: don't back-fill the comment history
+        try:
+            entries = _build_new_note_entries(get_issue_comments(issue_id), last_update)
+        except Exception as e:
+            # Other errors must re-raise so lastUpdate is not advanced.
+            if "read:comments" not in str(e):
+                raise
+            demisto.info(f"[get_remote_data] skipping comments for issue {issue_id}: {e}")
+    return GetRemoteDataResponse(issue, entries)
+
+
+def _attach_mirror_metadata(issue):
+    """Add mirror metadata fields to issue dict."""
+    mirror_direction = WizMirrorDirection.from_params()
+    if mirror_direction:
+        issue[WizMirrorField.DIRECTION] = mirror_direction
+        issue[WizMirrorField.INSTANCE] = demisto.integrationInstance()
+        issue[WizMirrorField.ID] = issue.get("id")
+        issue[WizMirrorField.TAGS] = [demisto.params().get(WizMirrorParam.COMMENT_TAG, "comments")]
+
+
+def _parse_iso_timestamp(value):
+    """Parse an ISO-8601 timestamp tolerating `Z` suffix and fractional seconds.
+
+    Lex-comparison of ISO strings is unsafe across precisions: `.` (0x2E) sorts
+    before `Z` (0x5A), so `"2025-01-01T00:00:00.500000Z" < "2025-01-01T00:00:00Z"`
+    even though it's chronologically later. Wiz returns microsecond precision
+    while XSOAR's lastUpdate is second-precision — comparing them as strings
+    silently drops notes added in the sub-second window.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _build_new_note_entries(comments, last_update):
+    entries: list[dict] = []
+    last_update_dt = _parse_iso_timestamp(last_update)
+    for note in comments:
+        if XSOAR_MIRROR_MARKER.lower() in note.get("body", "").lower():
+            continue
+        note_time = note.get("updatedAt") or note.get("createdAt", "")
+        note_dt = _parse_iso_timestamp(note_time)
+        is_newer = (note_dt and last_update_dt and note_dt > last_update_dt) or (
+            not (note_dt and last_update_dt) and note_time > last_update
+        )
+        if is_newer:
+            author = ""
+            if note.get("author"):
+                author = note["author"].get("name", "")
+            elif note.get("serviceAccount"):
+                author = f"[SA] {note['serviceAccount'].get('name', '')}"
+
+            entries.append(
+                {
+                    "Type": entryTypes["note"],
+                    "Contents": f"**{author}** ({note_time}):\n{note.get('body', '')}",
+                    "ContentsFormat": formats["markdown"],
+                    "Note": True,
+                }
+            )
+
+    return entries
+
+
+def update_remote_system_command(args):
+    parsed_args = UpdateRemoteSystemArgs(args)
+    remote_id = parsed_args.remote_incident_id
+
+    if not remote_id:
+        demisto.debug("update_remote_system: no remote_id, skipping")
+        return remote_id
+
+    demisto.debug(f"update_remote_system: remote_id={remote_id}")
+
+    incident_closed = parsed_args.inc_status == IncidentStatus.DONE
+
+    if parsed_args.incident_changed and parsed_args.delta:
+        _handle_field_changes(remote_id, parsed_args.delta, data=parsed_args.data, skip_status=incident_closed)
+
+    if incident_closed:
+        resolution_reason = _resolve_wiz_reason(parsed_args.delta, parsed_args.data)
+        _handle_incident_closed(remote_id, resolution_reason=resolution_reason)
+
+    if parsed_args.entries:
+        _handle_outgoing_entries(remote_id, parsed_args.entries)
+
+    return remote_id
+
+
+def _handle_field_changes(remote_id, delta, data=None, skip_status=False):
+    """Push field-level changes (status, due date) to Wiz."""
+    new_status = delta.get("status")
+    if new_status and not skip_status:
+        _mirror_status_to_wiz(remote_id, new_status, delta, data=data)
+
+    if "dueAt" in delta:
+        new_due_date = delta.get("dueAt")
+    elif "wizissueduedate" in delta:
+        new_due_date = delta.get("wizissueduedate")
+    else:
+        new_due_date = None
+    if new_due_date is not None:
+        if new_due_date:
+            set_issue_due_date(issue_id=remote_id, due_at=new_due_date)
+        else:
+            clear_issue_due_date(issue_id=remote_id)
+
+
+def _mirror_status_to_wiz(issue_id, xsoar_status, delta, data=None):
+    """Map XSOAR status string to Wiz issue status mutation."""
+    status_lower = str(xsoar_status).lower()
+
+    try:
+        if status_lower in ("resolved", "done", "closed"):
+            if not _can_resolve_issue(issue_id):
+                return
+            resolution_reason = _resolve_wiz_reason(delta, data) or DEFAULT_RESOLUTION_REASON
+            reject_or_resolve_issue(issue_id, resolution_reason, XSOAR_STATUS_NOTE, "RESOLVED")
+        elif status_lower in ("rejected",):
+            reject_reason = _resolve_wiz_reason(delta, data) or DEFAULT_RESOLUTION_REASON
+            reject_or_resolve_issue(issue_id, reject_reason, XSOAR_STATUS_NOTE, "REJECTED")
+        elif status_lower in ("active", "open", "reopened"):
+            reopen_issue(issue_id=issue_id, reopen_note="")
+        elif status_lower in ("in_progress", "in progress"):
+            issue_in_progress(issue_id=issue_id)
+        else:
+            demisto.debug(f"_mirror_status_to_wiz: unmapped status '{xsoar_status}'")
+    except Exception as e:
+        demisto.error(f"_mirror_status_to_wiz: failed to update status to '{xsoar_status}': {e}")
+
+
+def _handle_incident_closed(remote_id, resolution_reason=None):
+    """Handle XSOAR incident closed → resolve Wiz issue."""
+    reason = resolution_reason or DEFAULT_RESOLUTION_REASON
+    demisto.debug(f"_handle_incident_closed: resolving {remote_id} with reason={reason}")
+    try:
+        if not _can_resolve_issue(remote_id):
+            return
+        reject_or_resolve_issue(remote_id, reason, XSOAR_STATUS_NOTE, "RESOLVED")
+    except Exception as e:
+        demisto.info(f"_handle_incident_closed: failed (may already be resolved): {e}")
+
+
+def _handle_outgoing_entries(remote_id, entries):
+    """Push tagged XSOAR entries as Wiz issue notes.
+
+    Defense-in-depth: even though XSOAR's mirror engine only forwards entries
+    matching `dbotMirrorTags` (set from `comment_tag`), we re-check the tag here
+    to prevent leaking arbitrary war-room content to Wiz if a customer renames
+    `comment_tag` mid-flight (old incidents still carry the prior tag value) or
+    if XSOAR's tag-filtering behavior changes in a future version.
+    """
+    comment_tag = demisto.params().get(WizMirrorParam.COMMENT_TAG, "comments")
+    for entry in entries:
+        contents = entry.get("contents", "")
+        if not contents:
+            continue
+        entry_tags = entry.get("tags") or []
+        if comment_tag not in entry_tags:
+            demisto.debug(f"_handle_outgoing_entries: skipping entry without '{comment_tag}' tag (tags={entry_tags})")
+            continue
+        user = entry.get("user", "XSOAR") or "XSOAR"
+        text = f"({user}): {contents}\n\n{XSOAR_MIRROR_MARKER}"
+        try:
+            set_issue_comment(issue_id=remote_id, comment=text)
+        except Exception as e:
+            demisto.error(f"_handle_outgoing_entries: failed to add comment: {e}")
 
 
 def is_valid_uuid(uuid_string):
@@ -2503,100 +3156,110 @@ def is_valid_issue_id(issue_id):
 
 def main():
     params = demisto.params()
-    set_authentication_endpoint(params.get('auth_endpoint'))
-    set_api_endpoint(params.get('api_endpoint', ''))
+    demisto_args = demisto.args()
+    set_authentication_endpoint(params.get("auth_endpoint"))
+    set_api_endpoint(params.get("api_endpoint", ""))
     try:
         command = demisto.command()
-        if command == 'test-module':
+        if command == "test-module":
             auth_token = get_token()
-            if 'error' not in auth_token:
+            if "error" not in auth_token:
                 test_response = checkAPIerrors(PULL_ISSUES_QUERY, PULL_ISSUES_TEST_VARIABLES)
 
-                if 'errors' not in test_response:
-                    demisto.results('ok')
+                if "errors" not in test_response:
+                    demisto.results("ok")
                 else:
                     demisto.results(test_response)
             else:
                 demisto.results("Invalid token")
 
-        elif command == 'fetch-incidents':
-            max_fetch = int(demisto.params().get('max_fetch'))
-            fetch_issues(
-                max_fetch=max_fetch
-            )
+        elif command == "fetch-incidents":
+            max_fetch = int(params.get("max_fetch", "200"))
+            fetch_issues(max_fetch=max_fetch)
 
-        elif command == 'wiz-get-issues':
-            demisto_args = demisto.args()
+        elif command == "wiz-get-issues":
             issue_type = demisto_args.get(WizInputParam.ISSUE_TYPE)
             resource_id = demisto_args.get(WizInputParam.RESOURCE_ID)
             severity = demisto_args.get(WizInputParam.SEVERITY)
             entity_type = demisto_args.get(WizInputParam.ENTITY_TYPE)
+            created_after = demisto_args.get(WizInputParam.CREATED_AFTER)
+            created_before = demisto_args.get(WizInputParam.CREATED_BEFORE)
+            # No limit arg => None => fetch all (preserves prior behavior, where the
+            # passed value only sized pages and pagination drained every match).
+            limit = arg_to_number(demisto_args.get(WizInputParam.LIMIT), arg_name=WizInputParam.LIMIT)
             issues = get_filtered_issues(
                 issue_type=issue_type,
                 resource_id=resource_id,
                 severity=severity,
                 entity_type=entity_type,
-                limit=WIZ_API_LIMIT,
+                limit=limit,
+                created_after=created_after,
+                created_before=created_before,
             )
             if isinstance(issues, str):
                 #  this means the Issue is an error
                 command_result = CommandResults(readable_output=issues, raw_response=issues)
             else:
-                command_result = CommandResults(outputs_prefix="Wiz.Manager.Issues", outputs=issues,
-                                                raw_response=issues)
+                command_result = CommandResults(outputs_prefix="Wiz.Manager.Issues", outputs=issues, raw_response=issues)
             return_results(command_result)
 
         elif command == "wiz-get-resource":
-            demisto_args = demisto.args()
             resource_id = demisto_args.get(WizInputParam.RESOURCE_ID)
             resource_name = demisto_args.get(WizInputParam.RESOURCE_NAME)
             resource = get_resource(resource_id=resource_id, resource_name=resource_name)
-            if resource_id:
-                command_result = CommandResults(outputs_prefix="Wiz.Manager.Resource", outputs=resource,
-                                                raw_response=resource)
-            else:
-                command_result = CommandResults(readable_output=resource, raw_response=resource)
+            command_result = CommandResults(
+                outputs_prefix="Wiz.Manager.Resource", readable_output=resource, outputs=resource, raw_response=resource
+            )
             return_results(command_result)
 
-        elif command == 'wiz-reject-issue':
-            demisto_args = demisto.args()
+        elif command == "wiz-get-resources":
+            resources_search = demisto_args.get(WizInputParam.SEARCH)
+            resources_entity_type = demisto_args.get(WizInputParam.ENTITY_TYPE)
+            resources_subscription_external_ids = demisto_args.get(WizInputParam.SUBSCRIPTION_EXTERNAL_IDS)
+            resources_provider_unique_ids = demisto_args.get(WizInputParam.PROVIDER_UNIQUE_IDS)
+            resources_project_ids = demisto_args.get(WizInputParam.PROJECT_IDS)
+            resources_native_types = demisto_args.get(WizInputParam.NATIVE_TYPES)
+            resources_updated_at_before = demisto_args.get(WizInputParam.UPDATED_AT_BEFORE)
+            resources_updated_at_after = demisto_args.get(WizInputParam.UPDATED_AT_AFTER)
+            resources = get_resources(
+                search=resources_search,
+                entity_type=resources_entity_type,
+                subscription_external_ids=resources_subscription_external_ids,
+                provider_unique_ids=resources_provider_unique_ids,
+                project_ids=resources_project_ids,
+                native_types=resources_native_types,
+                updated_at_before=resources_updated_at_before,
+                updated_at_after=resources_updated_at_after,
+            )
+            command_result = CommandResults(readable_output=resources, raw_response=resources)
+            return_results(command_result)
+
+        elif command == "wiz-reject-issue":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
             resolution_reason = demisto_args.get(WizInputParam.REJECT_REASON)
             resolution_note = demisto_args.get(WizInputParam.REJECT_NOTE)
-            issue_response = reject_issue(
-                issue_id=issue_id,
-                reject_reason=resolution_reason,
-                reject_comment=resolution_note
-            )
+            issue_response = reject_issue(issue_id=issue_id, reject_reason=resolution_reason, reject_comment=resolution_note)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-reopen-issue':
-            demisto_args = demisto.args()
+        elif command == "wiz-reopen-issue":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
             reopen_note = demisto_args.get(WizInputParam.REOPEN_NOTE)
-            issue_response = reopen_issue(
-                issue_id=issue_id,
-                reopen_note=reopen_note
-            )
+            issue_response = reopen_issue(issue_id=issue_id, reopen_note=reopen_note)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-resolve-issue':
-            demisto_args = demisto.args()
+        elif command == "wiz-resolve-issue":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
             resolution_reason = demisto_args.get(WizInputParam.RESOLUTION_REASON)
             resolution_note = demisto_args.get(WizInputParam.RESOLUTION_NOTE)
             issue_response = resolve_issue(
-                issue_id=issue_id,
-                resolution_reason=resolution_reason,
-                resolution_note=resolution_note
+                issue_id=issue_id, resolution_reason=resolution_reason, resolution_note=resolution_note
             )
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-get-issue':
-            demisto_args = demisto.args()
+        elif command == "wiz-get-issue":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
             issue_result = get_issue(
                 issue_id=issue_id,
@@ -2604,92 +3267,79 @@ def main():
             command_result = CommandResults(readable_output=issue_result, raw_response=issue_result)
             return_results(command_result)
 
-        elif command == 'wiz-issue-in-progress':
-            demisto_args = demisto.args()
+        elif command == "wiz-issue-in-progress":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
-            issue_response = issue_in_progress(
-                issue_id=issue_id
-            )
+            issue_response = issue_in_progress(issue_id=issue_id)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-set-issue-note':
-            demisto_args = demisto.args()
+        elif command == "wiz-set-issue-note":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
             note = demisto_args.get(WizInputParam.NOTE)
-            issue_response = set_issue_comment(
-                issue_id=issue_id,
-                comment=note
-            )
+            issue_response = set_issue_comment(issue_id=issue_id, comment=note)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-clear-issue-note':
-            demisto_args = demisto.args()
+        elif command == "wiz-clear-issue-note":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
-            issue_response = clear_issue_note(
-                issue_id=issue_id
-            )
+            issue_response = clear_issue_note(issue_id=issue_id)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-get-issue-evidence':
-            demisto_args = demisto.args()
+        elif command == "wiz-get-issue-evidence":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
-            issue_response = get_issue_evidence(
-                issue_id=issue_id
-            )
+            issue_response = get_issue_evidence(issue_id=issue_id)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-set-issue-due-date':
-            demisto_args = demisto.args()
+        elif command == "wiz-set-issue-due-date":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
-            due_at = demisto_args.get('due_at')
-            issue_response = set_issue_due_date(
-                issue_id=issue_id,
-                due_at=due_at
-            )
+            due_at = demisto_args.get("due_at")
+            issue_response = set_issue_due_date(issue_id=issue_id, due_at=due_at)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-clear-issue-due-date':
-            demisto_args = demisto.args()
+        elif command == "wiz-clear-issue-due-date":
             issue_id = demisto_args.get(WizInputParam.ISSUE_ID)
-            issue_response = clear_issue_due_date(
-                issue_id=issue_id
-            )
+            issue_response = clear_issue_due_date(issue_id=issue_id)
             command_result = CommandResults(readable_output=issue_response, raw_response=issue_response)
             return_results(command_result)
 
-        elif command == 'wiz-get-project-team':
-            demisto_args = demisto.args()
+        elif command == "wiz-get-project-team":
             project_name = demisto_args.get(WizInputParam.PROJECT_NAME)
-            projects_response = get_project_team(
-                project_name=project_name
-            )
+            projects_response = get_project_team(project_name=project_name)
             command_result = CommandResults(readable_output=projects_response, raw_response=projects_response)
             return_results(command_result)
 
-        elif command == 'wiz-rescan-machine-disk':
-            return_results(CommandResults(readable_output="This command is deprecated",
-                           raw_response="This command is deprecated"))
-
-        elif command == 'wiz-copy-to-forensics-account':
-            demisto_args = demisto.args()
-            resource_id = demisto_args.get(WizInputParam.RESOURCE_ID)
-            copy_mutation_response = copy_to_forensics_account(
-                resource_id=resource_id
+        elif command == "wiz-rescan-machine-disk":
+            return_results(
+                CommandResults(readable_output="This command is deprecated", raw_response="This command is deprecated")
             )
+
+        elif command == "wiz-copy-to-forensics-account":
+            resource_id = demisto_args.get(WizInputParam.RESOURCE_ID)
+            copy_mutation_response = copy_to_forensics_account(resource_id=resource_id)
             command_result = CommandResults(readable_output=copy_mutation_response, raw_response=copy_mutation_response)
             return_results(command_result)
 
+        elif command == "get-mapping-fields":
+            return_results(get_mapping_fields_command())
+
+        elif command == "get-modified-remote-data":
+            return_results(get_modified_remote_data_command(demisto_args))
+
+        elif command == "get-remote-data":
+            return_results(get_remote_data_command(demisto_args))
+
+        elif command == "update-remote-system":
+            return_results(update_remote_system_command(demisto_args))
+
         else:
-            raise Exception('Unrecognized command: ' + command)
+            raise Exception("Unrecognized command: " + command)
     except Exception as err:
         demisto.error(traceback.format_exc())
         return_error(f"An error occurred: {str(err)}")
 
 
-if __name__ in ('__main__', '__builtin__', 'builtins'):
+if __name__ in ("__main__", "__builtin__", "builtins"):
     main()

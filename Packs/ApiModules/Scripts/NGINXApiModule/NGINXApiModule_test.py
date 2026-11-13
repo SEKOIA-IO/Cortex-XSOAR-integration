@@ -1,16 +1,16 @@
-from CommonServerPython import DemistoException
+import os
+import subprocess
+from pathlib import Path
+from time import sleep
+
+import demistomock as demisto
+import NGINXApiModule as module
 import pytest
 import requests
-import demistomock as demisto
-from pathlib import Path
-import os
+from CommonServerPython import DemistoException
 from pytest_mock import MockerFixture
-from time import sleep
-import subprocess
-from typing import Optional
 
-
-SSL_TEST_KEY = '''-----BEGIN PRIVATE KEY-----
+SSL_TEST_KEY = """-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDd5FcvCKgtXjkY
 aiDdqpFAYKw6WxNEpZIGjzD9KhEqr7OZjpPoLeyGh1U6faAcN6XpkQugFA/2Gq+Z
 j/pe1abiTCbctdE978FYVjXxbEEAtEn4x28s/bKah/xjjw+RjUyQB9DsioFkV1eN
@@ -38,9 +38,9 @@ fCRUIbRyUH/PCN/VvsuKFs+BWbFTnqBXRDQetzTyuUvNKiL7GmWQuR/QpgYjLd9W
 jxAayhtcVKeL96dqimK9twmw/NC5DveOVoReXx7io4gicmQi7AGq5WRkm8NUZRVE
 1dH1Hhp7kjnPlUOUBvKf8mfFxQ==
 -----END PRIVATE KEY-----
-'''
+"""
 
-SSL_TEST_CRT = '''-----BEGIN CERTIFICATE-----
+SSL_TEST_CRT = """-----BEGIN CERTIFICATE-----
 MIIDeTCCAmGgAwIBAgIUaam3vV40bjLs7mabludFi6dRsxkwDQYJKoZIhvcNAQEL
 BQAwTDELMAkGA1UEBhMCSUwxEzARBgNVBAgMClNvbWUtU3RhdGUxEzARBgNVBAoM
 ClhTT0FSIFRlc3QxEzARBgNVBAMMCnhzb2FyLXRlc3QwHhcNMjEwNTE2MTQzNDU0
@@ -61,40 +61,161 @@ bwa5YsCF+qzBiWPMUs5s/el8AHTnUQdU/CKLMI7ZL2IpyTpfW4PERw2HiOBdgCbl
 k+cVw239GwbLsYkRg5BpkQF4IC6a4+Iz9fpvpUc/g6jpxtGU0kE2DVWOEAyPOOWC
 C/t/GFcoOUze68WuI/BqMAiWhPJ1ioL7RI2ZPvI=
 -----END CERTIFICATE-----
-'''
+"""
 
 
 def test_nginx_conf(tmp_path: Path, mocker):
-    from NGINXApiModule import create_nginx_server_conf
     conf_file = str(tmp_path / "nginx-test-server.conf")
-    mocker.patch.object(demisto, 'callingContext', return_value={'context': {}})
-    create_nginx_server_conf(conf_file, 12345, params={})
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    module.create_nginx_server_conf(conf_file, 12345, params={})
     with open(conf_file) as f:
         conf = f.read()
-        assert 'listen 12345 default_server' in conf
+        assert "listen 12345 default_server" in conf
 
 
 def test_nginx_conf_taxii2(tmp_path: Path, mocker):
-    from NGINXApiModule import create_nginx_server_conf
-    mocker.patch.object(demisto, 'callingContext', {'context': {'IntegrationBrand': 'TAXII2 Server'}})
+    mocker.patch.object(demisto, "callingContext", {"context": {"IntegrationBrand": "TAXII2 Server"}})
     conf_file = str(tmp_path / "nginx-test-server.conf")
-    create_nginx_server_conf(conf_file, 12345, params={'version': '2.0', 'credentials': {'identifier': 'identifier'}})
+    module.create_nginx_server_conf(conf_file, 12345, params={"version": "2.0", "credentials": {"identifier": "identifier"}})
     with open(conf_file) as f:
         conf = f.read()
-        assert '$http_authorization' in conf
-        assert '$http_accept' in conf
-        assert 'proxy_set_header Range $http_range;' in conf
-        assert '$http_range' in conf
+        assert "$http_authorization" in conf
+        assert "$http_accept" in conf
+        assert "proxy_set_header Range $http_range;" in conf
+        assert "$http_range" in conf
 
 
-NGINX_PROCESS: Optional[subprocess.Popen] = None
+NGINX_PROCESS: subprocess.Popen | None = None
+
+
+def _create_test_nginx_main_conf(tmp_path: Path):
+    """Create a custom nginx main config that includes our test conf directory.
+
+    Uses tmp_path for all writable resources so tests can run as non-root and ensure isolation.
+    """
+    nginx_test_conf_dir = tmp_path / "nginx-test-conf.d"
+    nginx_test_cache_dir = tmp_path / "nginx-test-cache"
+    nginx_test_tmp_dir = tmp_path / "nginx-test-tmp"
+    nginx_test_pid_file = tmp_path / "nginx-test.pid"
+    nginx_test_error_log = tmp_path / "nginx-test-error.log"
+    nginx_test_access_log = tmp_path / "nginx-test-access.log"
+    nginx_test_main_conf = tmp_path / "nginx-test-main.conf"
+
+    nginx_test_conf_dir.mkdir(parents=True, exist_ok=True)
+    nginx_test_cache_dir.mkdir(parents=True, exist_ok=True)
+    nginx_test_tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    main_conf = f"""
+pid {nginx_test_pid_file};
+pcre_jit on;
+error_log {nginx_test_error_log} crit;
+include /etc/nginx/modules/*.conf;
+events {{
+    worker_connections 1024;
+}}
+http {{
+    include /etc/nginx/mime.types;
+    root /var/lib/nginx/html;
+    server_tokens off;
+    client_max_body_size 1m;
+    keepalive_timeout 65;
+    sendfile on;
+    tcp_nodelay on;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:2m;
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 512;
+    gzip_types text/javascript text/xml text/plain application/javascript application/x-javascript application/json;
+    gzip_proxied any;
+    proxy_http_version 1.1;
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+        '$status $body_bytes_sent "$http_referer" '
+        '"$http_user_agent" "$http_x_forwarded_for"';
+    access_log {nginx_test_access_log} main;
+    client_body_temp_path {nginx_test_tmp_dir}/client_body;
+    proxy_temp_path {nginx_test_tmp_dir}/proxy;
+    fastcgi_temp_path {nginx_test_tmp_dir}/fastcgi;
+    uwsgi_temp_path {nginx_test_tmp_dir}/uwsgi;
+    scgi_temp_path {nginx_test_tmp_dir}/scgi;
+    proxy_cache_path {nginx_test_cache_dir} levels=1:2 keys_zone=mycache:5m max_size=2g inactive=60m use_temp_path=off;
+    proxy_cache mycache;
+    proxy_cache_valid 5m;
+    proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504 http_429;
+    proxy_cache_background_update on;
+    proxy_cache_lock on;
+    proxy_cache_lock_age 60s;
+    proxy_cache_lock_timeout 60s;
+    proxy_cache_revalidate on;
+    proxy_read_timeout 300s;
+    include {nginx_test_conf_dir}/*.conf;
+}}
+"""
+    with open(nginx_test_main_conf, "w") as f:
+        f.write(main_conf)
+    return {
+        "main_conf": str(nginx_test_main_conf),
+        "conf_dir": str(nginx_test_conf_dir),
+        "access_log": str(nginx_test_access_log),
+        "error_log": str(nginx_test_error_log),
+    }
 
 
 @pytest.fixture
-def nginx_cleanup():
-    yield
-    from NGINXApiModule import NGINX_SERVER_CONF_FILE
-    Path(NGINX_SERVER_CONF_FILE).unlink(missing_ok=True)
+def nginx_cleanup(monkeypatch, tmp_path):
+    # Create writable directories for nginx config and SSL files
+    nginx_test_ssl_dir = tmp_path / "nginx-test-ssl"
+    nginx_test_ssl_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create custom nginx main config pointing to our test conf directory
+    paths = _create_test_nginx_main_conf(tmp_path)
+    nginx_test_main_conf = paths["main_conf"]
+    nginx_test_conf_dir = paths["conf_dir"]
+    nginx_test_access_log = paths["access_log"]
+    nginx_test_error_log = paths["error_log"]
+
+    test_conf_file = f"{nginx_test_conf_dir}/default.conf"
+    test_ssl_crt = str(nginx_test_ssl_dir / "ssl.crt")
+    test_ssl_key = str(nginx_test_ssl_dir / "ssl.key")
+
+    # Patch module constants to use writable paths
+    monkeypatch.setattr(module, "NGINX_SERVER_CONF_FILE", test_conf_file)
+    monkeypatch.setattr(module, "NGINX_SSL_CRT_FILE", test_ssl_crt)
+    monkeypatch.setattr(module, "NGINX_SSL_KEY_FILE", test_ssl_key)
+    monkeypatch.setattr(
+        module,
+        "NGINX_SSL_CERTS",
+        f"\n    ssl_certificate {test_ssl_crt};\n    ssl_certificate_key {test_ssl_key};\n",
+    )
+    monkeypatch.setattr(module, "NGINX_SERVER_ACCESS_LOG", nginx_test_access_log)
+    monkeypatch.setattr(module, "NGINX_SERVER_ERROR_LOG", nginx_test_error_log)
+
+    # Wrap start_nginx_server to use our custom main config via -c flag
+    def _patched_start_nginx_server(port: int, params: dict | None = None) -> subprocess.Popen:
+        params = params if params is not None else demisto.params()
+        module.create_nginx_server_conf(module.NGINX_SERVER_CONF_FILE, port, params)
+        nginx_global_directives = "daemon off;"
+        global_directives_conf = params.get("nginx_global_directives")
+        if global_directives_conf:
+            nginx_global_directives = f"{nginx_global_directives} {global_directives_conf}"
+        directive_args = ["-g", nginx_global_directives]
+        try:
+            nginx_test_command = ["nginx", "-c", nginx_test_main_conf, "-T"]
+            nginx_test_command.extend(directive_args)
+            test_output = subprocess.check_output(nginx_test_command, stderr=subprocess.STDOUT, text=True)
+            demisto.info(f"ngnix test passed. command: [{nginx_test_command}]")
+            demisto.debug(f"nginx test ouput:\n{test_output}")
+        except subprocess.CalledProcessError as err:
+            raise ValueError(f"Failed testing nginx conf. Return code: {err.returncode}. Output: {err.output}")
+        nginx_command = ["nginx", "-c", nginx_test_main_conf]
+        nginx_command.extend(directive_args)
+        res = subprocess.Popen(nginx_command, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        demisto.info(f"done starting nginx with pid: {res.pid}")
+        return res
+
+    monkeypatch.setattr(module, "start_nginx_server", _patched_start_nginx_server)
+
+    yield paths
     global NGINX_PROCESS
     if NGINX_PROCESS:
         NGINX_PROCESS.terminate()
@@ -103,104 +224,1033 @@ def nginx_cleanup():
         NGINX_PROCESS = None
 
 
-docker_only = pytest.mark.skipif('flask-nginx' not in os.getenv('DOCKER_IMAGE', ''), reason='test should run only within docker')
+docker_only = pytest.mark.skipif("flask-nginx" not in os.getenv("DOCKER_IMAGE", ""), reason="test should run only within docker")
 
 
 @docker_only
 def test_nginx_start_fail(mocker: MockerFixture, nginx_cleanup):
-    """Test that nginx fails when config is invalid
-    """
+    """Test that nginx fails when config is invalid"""
+
+    nginx_test_main_conf = nginx_cleanup["main_conf"]
+
     def nginx_bad_conf(file_path: str, port: int, params: dict):
         with open(file_path, "w") as f:
-            f.write('server {bad_stuff test;}')
-    import NGINXApiModule as module
-    mocker.patch.object(module, 'create_nginx_server_conf', side_effect=nginx_bad_conf)
+            f.write("server {bad_stuff test;}")
+
+    # Override create_nginx_server_conf to write bad config, but keep the patched start_nginx_server
+    def _start_with_bad_conf(port: int, params: dict | None = None) -> subprocess.Popen:
+        params = params if params is not None else {}
+        nginx_bad_conf(module.NGINX_SERVER_CONF_FILE, port, params)
+        nginx_global_directives = "daemon off;"
+        directive_args = ["-g", nginx_global_directives]
+        try:
+            nginx_test_command = ["nginx", "-c", nginx_test_main_conf, "-T"]
+            nginx_test_command.extend(directive_args)
+            subprocess.check_output(nginx_test_command, stderr=subprocess.STDOUT, text=True)
+        except subprocess.CalledProcessError as err:
+            raise ValueError(f"Failed testing nginx conf. Return code: {err.returncode}. Output: {err.output}")
+        nginx_command = ["nginx", "-c", nginx_test_main_conf]
+        nginx_command.extend(directive_args)
+        return subprocess.Popen(nginx_command, text=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    mocker.patch.object(module, "start_nginx_server", side_effect=_start_with_bad_conf)
     with pytest.raises(ValueError) as e:
         module.start_nginx_server(12345, {})
-        assert 'bad_stuff' in str(e)
+        assert "bad_stuff" in str(e)
 
 
 @docker_only
 def test_nginx_start_fail_directive(nginx_cleanup, mocker):
-    """Test that nginx fails when invalid global directive is passed
-    """
-    import NGINXApiModule as module
+    """Test that nginx fails when invalid global directive is passed"""
+
     with pytest.raises(ValueError) as e:
-        mocker.patch.object(demisto, 'callingContext', return_value={'context': {}})
-        module.start_nginx_server(12345, {'nginx_global_directives': 'bad_directive test;'})
-        assert 'bad_directive' in str(e)
+        mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+        module.start_nginx_server(12345, {"nginx_global_directives": "bad_directive test;"})
+        assert "bad_directive" in str(e)
 
 
 @docker_only
-@pytest.mark.filterwarnings('ignore::urllib3.exceptions.InsecureRequestWarning')
-@pytest.mark.parametrize('params', [
-    {},
-    {'certificate': SSL_TEST_CRT, 'key': SSL_TEST_KEY},
-])
+@pytest.mark.filterwarnings("ignore::urllib3.exceptions.InsecureRequestWarning")
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"certificate": SSL_TEST_CRT, "key": SSL_TEST_KEY},
+    ],
+)
 def test_nginx_test_start_valid(nginx_cleanup, params, mocker):
-    import NGINXApiModule as module
-    mocker.patch.object(demisto, 'callingContext', return_value={'context': {}})
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
     module.test_nginx_server(11300, params)
     # check that nginx process is not up
     sleep(0.5)
-    ps_out = subprocess.check_output(['ps', 'aux'], text=True)
-    assert 'nginx' not in ps_out
+    ps_out = subprocess.check_output(["ps", "aux"], text=True)
+    assert "nginx" not in ps_out
 
 
 @docker_only
 def test_nginx_log_process(nginx_cleanup, mocker: MockerFixture):
-    import NGINXApiModule as module
     # clear logs for test
     Path(module.NGINX_SERVER_ACCESS_LOG).unlink(missing_ok=True)
     Path(module.NGINX_SERVER_ERROR_LOG).unlink(missing_ok=True)
     global NGINX_PROCESS
-    mocker.patch.object(demisto, 'callingContext', return_value={'context': {}})
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
     NGINX_PROCESS = module.start_nginx_server(12345, {})
     sleep(0.5)  # give nginx time to start
     # create a request to get a log line
-    requests.get('http://localhost:12345/nginx-test?unit_testing')
-    sleep(0.2)
-    mocker.patch.object(demisto, 'info')
-    mocker.patch.object(demisto, 'error')
+    requests.get("http://localhost:12345/nginx-test?unit_testing")
+    # Poll until nginx has flushed the access-log line to the (test-redirected)
+    # log before invoking nginx_log_process. A fixed short sleep is racy: if the
+    # line isn't on disk yet, nginx_log_process sees an empty log, logs nothing,
+    # and demisto.debug.call_args is None.
+    for _ in range(50):
+        if Path(module.NGINX_SERVER_ACCESS_LOG).exists() and Path(module.NGINX_SERVER_ACCESS_LOG).stat().st_size:
+            break
+        sleep(0.1)
+    mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "error")
     module.nginx_log_process(NGINX_PROCESS)
+    # The nginx access log line is emitted via demisto.debug.
     # call_args is tuple (args list, kwargs). we only need the args
-    arg = demisto.info.call_args[0][0]
-    assert 'nginx access log' in arg
-    assert 'unit_testing' in arg
+    arg = demisto.debug.call_args[0][0]
+    assert "nginx access log" in arg
+    assert "unit_testing" in arg
     # make sure old file was removed
-    assert not Path(module.NGINX_SERVER_ACCESS_LOG + '.old').exists()
-    assert not Path(module.NGINX_SERVER_ERROR_LOG + '.old').exists()
-    # make sure log was rolled over files should be of size 0
+    assert not Path(module.NGINX_SERVER_ACCESS_LOG + ".old").exists()
+    assert not Path(module.NGINX_SERVER_ERROR_LOG + ".old").exists()
+    # make sure access log was rolled over (should be of size 0). The error log
+    # is not asserted as empty because nginx may emit alert/emerg messages
+    # (e.g. when reopening files as a non-root worker) that bypass the `crit`
+    # filter and are written to the new file immediately after rollover.
     assert not Path(module.NGINX_SERVER_ACCESS_LOG).stat().st_size
-    assert not Path(module.NGINX_SERVER_ERROR_LOG).stat().st_size
 
 
 def test_nginx_web_server_is_down(requests_mock, capfd):
-    import NGINXApiModule as module
     with capfd.disabled():
-        requests_mock.get('http://localhost:9009/nginx-test', status_code=404)
-        with pytest.raises(DemistoException,
-                           match='Testing nginx server: 404 Client Error: None for url: http://localhost:9009/nginx-test'):
+        requests_mock.get("http://localhost:9009/nginx-test", status_code=404)
+        with pytest.raises(
+            DemistoException, match="Testing nginx server: 404 Client Error: None for url: http://localhost:9009/nginx-test"
+        ):
             module.test_nginx_web_server(9009, {})
 
 
 def test_nginx_web_server_is_up_running(requests_mock):
-    import NGINXApiModule as module
-    requests_mock.get('http://localhost:9009/nginx-test', status_code=200, text='Welcome to nginx')
+    requests_mock.get("http://localhost:9009/nginx-test", status_code=200, text="Welcome to nginx")
     try:
         module.test_nginx_web_server(9009, {})
     except DemistoException as ex:
-        pytest.fail(f'Failed to test nginx server. {ex}')
+        pytest.fail(f"Failed to test nginx server. {ex}")
 
 
 def test_lost_connection_engine_to_server(mocker):
-    import NGINXApiModule as module
     from flask import Flask
-    module.APP = Flask('demisto-edl')
 
-    mocker.patch.object(demisto, 'info', side_effect=ValueError("Try to write when connection closed"))
-    mocker.patch.object(demisto, 'error', side_effect=ValueError("Try to write when connection closed"))
-    mocker.patch.object(demisto, 'params', return_value={'longRunningPort': '8080'})
+    module.APP = Flask("demisto-edl")
+
+    mocker.patch.object(demisto, "info", side_effect=ValueError("Try to write when connection closed"))
+    mocker.patch.object(demisto, "error", side_effect=ValueError("Try to write when connection closed"))
+    mocker.patch.object(demisto, "params", return_value={"longRunningPort": "8080"})
+    mocker.patch.object(module, "start_nginx_server", side_effect=ValueError("Try to write when connection closed"))
     with pytest.raises(SystemExit) as e:
         module.run_long_running()
         assert e.value.code == 1
+
+
+def test_is_port_in_use_port_free(mocker):
+    """
+    Given:
+        - A port that can be bound successfully.
+    When:
+        - Calling is_port_in_use.
+    Then:
+        - False is returned.
+    """
+
+    mock_socket = mocker.patch.object(module.socket, "socket")
+    mock_socket.return_value.__enter__.return_value.bind.return_value = None
+
+    assert module.is_port_in_use(1111) is False
+    mock_socket.return_value.__enter__.return_value.bind.assert_called_once_with(("127.0.0.1", 1111))
+
+
+def test_is_port_in_use_port_taken(mocker):
+    """
+    Given:
+        - A port whose bind fails with EADDRINUSE.
+    When:
+        - Calling is_port_in_use.
+    Then:
+        - True is returned.
+    """
+    import errno
+
+    mock_socket = mocker.patch.object(module.socket, "socket")
+    mock_socket.return_value.__enter__.return_value.bind.side_effect = OSError(errno.EADDRINUSE, "Address in use")
+
+    assert module.is_port_in_use(1111) is True
+
+
+def test_is_port_in_use_unexpected_error_treated_as_free(mocker):
+    """
+    Given:
+        - A port whose bind fails with an unrelated OSError (EACCES).
+    When:
+        - Calling is_port_in_use.
+    Then:
+        - False is returned (unexpected errors don't block the test).
+    """
+    import errno
+
+    mock_socket = mocker.patch.object(module.socket, "socket")
+    mock_socket.return_value.__enter__.return_value.bind.side_effect = OSError(errno.EACCES, "Permission denied")
+
+    assert module.is_port_in_use(1111) is False
+
+
+def _nginx_test_response(headers: dict | None = None) -> requests.Response:
+    """Build a successful /nginx-test response with the given headers (no X-Instance-Name by default)."""
+    response = requests.Response()
+    response.status_code = 200
+    response._content = b"Welcome to nginx"
+    response.headers.update(headers or {})
+    return response
+
+
+def _mock_running_instance(mocker, requests_mock, running_instance_name: str | None, app_status: int = 401) -> None:
+    """Mock an already-running instance answering /nginx-test (with an optional X-Instance-Name header) and "/".
+
+    Args:
+        running_instance_name: The raw name of the answering instance, or None to omit the header.
+        app_status: The HTTP status of the app route.
+    """
+    import urllib.parse
+
+    mocker.patch.object(module.time, "sleep")
+    mocker.patch.object(module, "is_port_in_use", return_value=True)
+    headers = {} if running_instance_name is None else {"X-Instance-Name": urllib.parse.quote(running_instance_name, safe="")}
+    requests_mock.get("http://localhost:1111/nginx-test", text="Welcome to nginx", headers=headers)
+    requests_mock.get("http://localhost:1111/", status_code=app_status)
+
+
+def test_long_running_check_ports_in_use_matching_instance_header_passes(mocker, requests_mock):
+    """
+    Given:
+        - The ports are in use, and the nginx answering /nginx-test returns an X-Instance-Name header
+          that matches the current instance name.
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - The check passes (no exception), the test is not re-run and the app route is probed.
+    """
+
+    mocker.patch.object(demisto, "integrationInstance", return_value="EDL A")
+    _mock_running_instance(mocker, requests_mock, running_instance_name="EDL A")
+    run_mock = mocker.patch.object(module, "run_long_running")
+
+    module.test_long_running_with_running_instance_check({"longRunningPort": "1111"})
+
+    run_mock.assert_not_called()
+    assert [request.path for request in requests_mock.request_history] == ["/nginx-test", "/"]
+
+
+def test_long_running_check_ports_in_use_mismatched_instance_header_raises(mocker, requests_mock):
+    """
+    Given:
+        - The ports are in use, and the nginx answering /nginx-test belongs to another instance
+          (its X-Instance-Name header names a different instance) on the same network and Listen Port.
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - A DemistoException matching "already in use" is raised, the test is not re-run, the app route
+          is not probed, and the decoded name of the answering instance is logged.
+    """
+
+    mocker.patch.object(demisto, "integrationInstance", return_value="EDL B")
+    _mock_running_instance(mocker, requests_mock, running_instance_name="EDL A")
+    run_mock = mocker.patch.object(module, "run_long_running")
+    debug_mock = mocker.patch.object(demisto, "debug")
+
+    with pytest.raises(DemistoException, match="already in use"):
+        module.test_long_running_with_running_instance_check({"longRunningPort": "1111"})
+
+    run_mock.assert_not_called()
+    assert [request.path for request in requests_mock.request_history] == ["/nginx-test"]
+    assert any("'EDL A'" in call.args[0] for call in debug_mock.call_args_list)
+
+
+def test_is_long_running_instance_healthy_missing_instance_header_is_lenient(mocker, requests_mock):
+    """
+    Given:
+        - The nginx answering /nginx-test does not return an X-Instance-Name header (custom nginx_server_conf
+          without it, or an instance not yet restarted onto the new config).
+    When:
+        - Calling is_long_running_instance_healthy.
+    Then:
+        - True is returned (lenient, previous behavior) and the missing header is logged.
+    """
+
+    mocker.patch.object(demisto, "integrationInstance", return_value="EDL B")
+    _mock_running_instance(mocker, requests_mock, running_instance_name=None)
+    debug_mock = mocker.patch.object(demisto, "debug")
+
+    assert module.is_long_running_instance_healthy(1111, {}) is True
+    assert any("no X-Instance-Name header" in call.args[0] for call in debug_mock.call_args_list)
+
+
+def _read_nginx_test_location(conf: str) -> str:
+    """Return the body of the `location = /nginx-test { ... }` block of a rendered server conf."""
+    import re
+
+    match = re.search(r"location = /nginx-test \{(.*?)\n    \}", conf, re.DOTALL)
+    assert match, "location = /nginx-test block not found"
+    return match.group(1)
+
+
+def test_create_nginx_server_conf_adds_instance_name_header_to_nginx_test(tmp_path: Path, mocker):
+    """
+    Given:  the current instance is named "EDL A" and the default server conf template is used.
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   the /nginx-test location (and only it) carries the always-sent X-Instance-Name header with the
+            encoded instance name, and no placeholder is left unrendered.
+    """
+
+    mocker.patch.object(demisto, "integrationInstance", return_value="EDL A")
+    conf_file = tmp_path / "nginx-test-server.conf"
+    module.create_nginx_server_conf(str(conf_file), 12345, params={})
+    conf = conf_file.read_text()
+
+    expected_line = 'add_header X-Instance-Name "EDL%20A" always;'
+    assert expected_line in _read_nginx_test_location(conf)
+    assert conf.count("X-Instance-Name") == 1
+    assert "$instance_name" not in conf
+
+
+def test_instance_name_with_special_characters_is_encoded_and_round_trips(tmp_path: Path, mocker):
+    """
+    Given:  an instance name containing a space, double quotes, `$` (an nginx variable) and a backslash.
+    When:   create_nginx_server_conf renders the conf, and a /nginx-test response carrying the rendered
+            header value is compared against the current instance.
+    Then:   the header value in the conf is percent-encoded (no raw `"`, `$`, `\\` or space inside the quoted
+            value), decodes back to the original name, and the identity comparison matches.
+    """
+    import re
+    import urllib.parse
+
+    instance_name = 'My "EDL" $host \\ x'
+    mocker.patch.object(demisto, "integrationInstance", return_value=instance_name)
+    conf_file = tmp_path / "nginx-test-server.conf"
+    module.create_nginx_server_conf(str(conf_file), 12345, params={})
+
+    match = re.search(r'add_header X-Instance-Name "([^"]*)" always;', conf_file.read_text())
+    assert match
+    header_value = match.group(1)
+    assert not set(header_value) & {'"', "$", "\\", " "}
+    assert urllib.parse.unquote(header_value) == instance_name
+    assert header_value == module.get_encoded_instance_name()
+    response = _nginx_test_response({module.INSTANCE_NAME_HEADER: header_value})
+    assert module.is_answering_instance_this_instance(response, 12345) is True
+
+
+def test_create_nginx_server_conf_custom_template_without_instance_placeholder(tmp_path: Path, mocker):
+    """
+    Given:  a custom nginx_server_conf template that does not reference $instance_name / $instance_name_header.
+    When:   create_nginx_server_conf renders it.
+    Then:   the template renders as before (known placeholders substituted) and no instance header is added.
+    """
+
+    mocker.patch.object(demisto, "integrationInstance", return_value="EDL A")
+    conf_file = tmp_path / "nginx-test-server.conf"
+    custom_template = "server {\n    listen $port default_server $ssl;\n    location = /nginx-test { return 200; }\n}\n"
+    module.create_nginx_server_conf(str(conf_file), 12345, params={"nginx_server_conf": custom_template})
+
+    conf = conf_file.read_text()
+    assert conf == "server {\n    listen 12345 default_server ;\n    location = /nginx-test { return 200; }\n}\n"
+
+
+@pytest.mark.parametrize("status_code", [200, 401, 404, 429, 503])
+def test_is_long_running_instance_healthy_healthy(mocker, requests_mock, status_code):
+    """
+    Given:
+        - nginx health check passes, and the app route answers through nginx with any HTTP status.
+    When:
+        - Calling is_long_running_instance_healthy with a custom app_path.
+    Then:
+        - True is returned and the app route is probed through nginx (nginx_port, not nginx_port + 1)
+          without proxies, without TLS verification, with the (connect, read) probe timeout and
+          without waiting for the body (stream=True).
+    """
+
+    mocker.patch.object(module, "test_nginx_web_server", return_value=_nginx_test_response())
+    requests_mock.get("http://localhost:1111/taxii2/", status_code=status_code)
+
+    assert module.is_long_running_instance_healthy(1111, {}, app_path="/taxii2/") is True
+    assert requests_mock.call_count == 1
+    assert requests_mock.last_request.url == "http://localhost:1111/taxii2/"
+    assert requests_mock.last_request.verify is False
+    assert requests_mock.last_request.timeout == (5, 3)
+    assert requests_mock.last_request.stream is True
+
+
+def test_is_long_running_instance_healthy_default_path_https(mocker, requests_mock):
+    """
+    Given:
+        - A certificate key is configured (nginx serves https), and nginx health check passes.
+    When:
+        - Calling is_long_running_instance_healthy with the default app_path.
+    Then:
+        - True is returned and "/" is probed over https on the nginx port (same URL EDL used).
+    """
+
+    mocker.patch.object(module, "test_nginx_web_server", return_value=_nginx_test_response())
+    requests_mock.get("https://localhost:1111/", status_code=401)
+
+    assert module.is_long_running_instance_healthy(1111, {"key": "some-key"}) is True
+    assert requests_mock.last_request.url == "https://localhost:1111/"
+
+
+def test_is_long_running_instance_healthy_nginx_unhealthy(mocker, requests_mock):
+    """
+    Given:
+        - nginx health check fails.
+    When:
+        - Calling is_long_running_instance_healthy.
+    Then:
+        - False is returned and the app route is not probed.
+    """
+
+    mocker.patch.object(module, "test_nginx_web_server", side_effect=DemistoException("Testing nginx server: boom"))
+
+    assert module.is_long_running_instance_healthy(1111, {}) is False
+    assert not requests_mock.called
+
+
+def test_is_long_running_instance_healthy_connection_error(mocker, requests_mock):
+    """
+    Given:
+        - nginx health check passes, but the app route through nginx refuses the connection.
+    When:
+        - Calling is_long_running_instance_healthy.
+    Then:
+        - False is returned.
+    """
+
+    mocker.patch.object(module, "test_nginx_web_server", return_value=_nginx_test_response())
+    requests_mock.get("http://localhost:1111/", exc=requests.exceptions.ConnectionError("refused"))
+
+    assert module.is_long_running_instance_healthy(1111, {}) is False
+
+
+def test_is_long_running_instance_healthy_read_timeout_is_healthy(mocker, requests_mock):
+    """
+    Given:
+        - nginx health check passes, and the app route accepts the connection but does not answer
+          within the read timeout (the list is still being generated).
+    When:
+        - Calling is_long_running_instance_healthy.
+    Then:
+        - True is returned and the slow response is logged.
+    """
+
+    mocker.patch.object(module, "test_nginx_web_server", return_value=_nginx_test_response())
+    requests_mock.get("http://localhost:1111/", exc=requests.exceptions.ReadTimeout("read timed out"))
+    debug_mock = mocker.patch.object(demisto, "debug")
+
+    assert module.is_long_running_instance_healthy(1111, {}) is True
+    assert any("did not answer within" in call.args[0] for call in debug_mock.call_args_list)
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        requests.exceptions.ConnectionError("refused"),
+        requests.exceptions.ConnectTimeout("connect timed out"),
+        requests.exceptions.SSLError("handshake failure"),
+        requests.exceptions.RequestException("unexpected"),
+    ],
+)
+def test_is_long_running_instance_healthy_connection_level_failure_is_unhealthy(mocker, requests_mock, exception):
+    """
+    Given:
+        - nginx health check passes, but the app route fails at the connection level (refused,
+          connect timeout, TLS handshake failure) or with another RequestException.
+    When:
+        - Calling is_long_running_instance_healthy.
+    Then:
+        - False is returned (a ConnectTimeout is not treated as a ReadTimeout).
+    """
+
+    mocker.patch.object(module, "test_nginx_web_server", return_value=_nginx_test_response())
+    requests_mock.get("http://localhost:1111/", exc=exception)
+
+    assert module.is_long_running_instance_healthy(1111, {}) is False
+
+
+def test_long_running_check_ports_in_use_slow_app_route_passes(mocker, requests_mock):
+    """
+    Given:
+        - The ports are in use, /nginx-test returns a matching X-Instance-Name header, and the app route
+          accepts the connection but does not answer within the read timeout (slow list generation).
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - No exception is raised and the test is not re-run.
+    """
+
+    mocker.patch.object(demisto, "integrationInstance", return_value="EDL A")
+    _mock_running_instance(mocker, requests_mock, running_instance_name="EDL A")
+    requests_mock.get("http://localhost:1111/", exc=requests.exceptions.ReadTimeout("read timed out"))
+    run_mock = mocker.patch.object(module, "run_long_running")
+
+    module.test_long_running_with_running_instance_check({"longRunningPort": "1111"})
+
+    run_mock.assert_not_called()
+    assert [request.path for request in requests_mock.request_history] == ["/nginx-test", "/"]
+
+
+def test_get_long_running_ports():
+    """
+    Given:
+        - A Listen Port.
+    When:
+        - Calling get_long_running_ports.
+    Then:
+        - The nginx, WSGI (port + 1) and internal cache-fetch (port + 2) ports are returned.
+    """
+
+    assert module.get_long_running_ports(1111) == (1111, 1112, 1113)
+
+
+def test_long_running_check_ports_free_runs_test(mocker):
+    """
+    Given:
+        - nginx_port, nginx_port + 1 and nginx_port + 2 (the internal cache-fetch port) are all free.
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - All three ports are checked, run_long_running is called with is_test=True and no health check is performed.
+    """
+
+    params = {"longRunningPort": "1111"}
+    port_check = mocker.patch.object(module, "is_port_in_use", return_value=False)
+    run_mock = mocker.patch.object(module, "run_long_running")
+    health_mock = mocker.patch.object(module, "is_long_running_instance_healthy")
+
+    module.test_long_running_with_running_instance_check(params)
+
+    assert [call.args[0] for call in port_check.call_args_list] == [1111, 1112, 1113]
+    run_mock.assert_called_once_with(params, is_test=True)
+    health_mock.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "ports_in_use, expected_ports_text",
+    [
+        pytest.param([False, False, True], "Port(s) 1113 are already in use", id="only fetch port (port + 2) in use"),
+        pytest.param([False, True, False], "Port(s) 1112 are already in use", id="only WSGI port (port + 1) in use"),
+        pytest.param([False, True, True], "Port(s) 1112, 1113 are already in use", id="WSGI and fetch ports in use"),
+    ],
+)
+def test_long_running_check_listen_port_free_other_ports_in_use_raises(mocker, ports_in_use, expected_ports_text):
+    """
+    Given:
+        - The Listen Port is free but another port the instance binds (port + 1 and/or port + 2) is taken,
+          e.g. by another instance whose Listen Port range overlaps on the shared network.
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - A DemistoException naming the occupied ports and the required port range is raised,
+          the health check is skipped (nothing of ours can be serving) and the test is not run.
+    """
+
+    params = {"longRunningPort": "1111"}
+    mocker.patch.object(module, "is_port_in_use", side_effect=ports_in_use)
+    run_mock = mocker.patch.object(module, "run_long_running")
+    health_mock = mocker.patch.object(module, "is_long_running_instance_healthy")
+
+    with pytest.raises(DemistoException) as exc_info:
+        module.test_long_running_with_running_instance_check(params)
+
+    message = str(exc_info.value)
+    assert expected_ports_text in message
+    assert "1111 (Listen Port), 1112 (Listen Port + 1) and 1113 (Listen Port + 2)" in message
+    run_mock.assert_not_called()
+    health_mock.assert_not_called()
+
+
+def test_long_running_check_ports_in_use_healthy_returns(mocker):
+    """
+    Given:
+        - The ports are in use and a healthy instance answers on them.
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - The function returns without running the test or raising.
+    """
+
+    params = {"longRunningPort": "1111"}
+    mocker.patch.object(module, "is_port_in_use", return_value=True)
+    run_mock = mocker.patch.object(module, "run_long_running")
+    health_mock = mocker.patch.object(module, "is_long_running_instance_healthy", return_value=True)
+
+    module.test_long_running_with_running_instance_check(params, app_path="/taxii2/")
+
+    run_mock.assert_not_called()
+    health_mock.assert_called_once_with(1111, params, "/taxii2/")
+
+
+def test_long_running_check_ports_in_use_unhealthy_raises(mocker):
+    """
+    Given:
+        - All the instance ports are in use and no healthy instance answers.
+    When:
+        - Calling test_long_running_with_running_instance_check.
+    Then:
+        - The health check runs, and a DemistoException listing all the occupied ports is raised without running the test.
+    """
+
+    params = {"longRunningPort": "1111"}
+    mocker.patch.object(module, "is_port_in_use", return_value=True)
+    run_mock = mocker.patch.object(module, "run_long_running")
+    health_mock = mocker.patch.object(module, "is_long_running_instance_healthy", return_value=False)
+
+    with pytest.raises(DemistoException, match=r"Port\(s\) 1111, 1112, 1113 are already in use"):
+        module.test_long_running_with_running_instance_check(params)
+
+    health_mock.assert_called_once_with(1111, params, "/")
+    run_mock.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "time_str, expected_seconds",
+    [
+        ("3600", 3600),
+        ("1s", 1),
+        ("30m", 1800),
+        ("1h", 3600),
+        ("1d", 86400),
+        ("1w", 604800),
+        ("1M", 2592000),
+        ("1y", 31536000),
+    ],
+)
+def test_parse_nginx_time_to_seconds(time_str, expected_seconds):
+    assert module.parse_nginx_time_to_seconds(time_str) == expected_seconds
+
+
+@pytest.mark.parametrize(
+    "time_str, expected_seconds",
+    [
+        ("5 minutes", 300),
+        ("30 minutes", 1800),
+        ("1 hour", 3600),
+        ("2 hours", 7200),
+        ("1 day", 86400),
+        ("3 days", 259200),
+    ],
+)
+def test_parse_nginx_time_to_seconds_human_readable(time_str, expected_seconds):
+    """
+    Given:  a human-readable relative time string used by integrations such as EDL
+            (e.g. "5 minutes", "1 hour", "3 days").
+    When:   parse_nginx_time_to_seconds is called with that string.
+    Then:   the value is converted to the corresponding number of seconds
+            (allowing a small tolerance because dateparser computes against "now").
+    """
+
+    result = module.parse_nginx_time_to_seconds(time_str)
+    # Allow ~2s tolerance for the live now() computation done inside the function.
+    assert abs(result - expected_seconds) <= 2
+
+
+@pytest.mark.parametrize(
+    "time_str",
+    [
+        "",
+        "   ",
+        "invalid",
+        None,
+    ],
+)
+def test_parse_nginx_time_to_seconds_fail(time_str):
+    with pytest.raises(DemistoException, match="Invalid NGINX time format"):
+        module.parse_nginx_time_to_seconds(time_str)
+
+
+def test_normalize_nginx_time_integer_string():
+    """
+    Given:  the pure-integer string "300".
+    When:   _normalize_nginx_time is called with it.
+    Then:   it returns the canonical "<int>s" form ("300s").
+    """
+
+    assert module._normalize_nginx_time("300", default="1m", param_name="cache_404_ttl") == "300s"
+
+
+def test_normalize_nginx_time_integer_int():
+    """
+    Given:  an actual Python int (300).
+    When:   _normalize_nginx_time is called with it.
+    Then:   it is coerced through str() and returned as "300s".
+    """
+
+    assert module._normalize_nginx_time(300, default="1m", param_name="cache_404_ttl") == "300s"
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("12h", "43200s"),
+        ("30m", "1800s"),
+        ("1d", "86400s"),
+        ("2w", "1209600s"),
+        ("1M", "2592000s"),
+        ("1y", "31536000s"),
+        ("60s", "60s"),
+    ],
+)
+def test_normalize_nginx_time_nginx_native_single_token(value, expected):
+    """
+    Given:  an nginx-native single-token time string (e.g. "12h", "30m", "1M").
+    When:   _normalize_nginx_time is called with it.
+    Then:   it is converted to the equivalent "<seconds>s" form.
+    """
+
+    assert module._normalize_nginx_time(value, default="1m", param_name="cache_refresh_rate") == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected_seconds",
+    [
+        ("12 hours", 43200),
+        ("30 minutes", 1800),
+        ("2 days", 172800),
+        ("2 weeks", 1209600),
+    ],
+)
+def test_normalize_nginx_time_human_readable_plural(value, expected_seconds):
+    """
+    Given:  a plural human-readable time string (e.g. "12 hours", "30 minutes").
+    When:   _normalize_nginx_time is called with it.
+    Then:   the returned "<int>s" token equals the expected number of seconds
+            (allowing ±2s tolerance for the live now() computation inside
+            parse_nginx_time_to_seconds — mirrors the pattern at L407-L408).
+    """
+
+    result = module._normalize_nginx_time(value, default="1m", param_name="cache_refresh_rate")
+    assert result.endswith("s")
+    assert abs(int(result[:-1]) - expected_seconds) <= 2
+
+
+@pytest.mark.parametrize(
+    "value, expected_seconds",
+    [
+        ("1 hour", 3600),
+        ("1 minute", 60),
+        ("1 day", 86400),
+    ],
+)
+def test_normalize_nginx_time_human_readable_singular(value, expected_seconds):
+    """
+    Given:  a singular human-readable time string (e.g. "1 hour", "1 minute").
+    When:   _normalize_nginx_time is called with it.
+    Then:   the returned "<int>s" token equals the expected number of seconds
+            (±2s tolerance, same rationale as the plural case).
+    """
+
+    result = module._normalize_nginx_time(value, default="1m", param_name="cache_refresh_rate")
+    assert result.endswith("s")
+    assert abs(int(result[:-1]) - expected_seconds) <= 2
+
+
+@pytest.mark.parametrize(
+    "value, default, expected",
+    [
+        (None, "1m", "60s"),
+        ("", "300", "300s"),
+        ("   ", "12h", "43200s"),
+    ],
+)
+def test_normalize_nginx_time_empty_uses_default(value, default, expected):
+    """
+    Given:  an empty / whitespace-only / None value plus a non-empty default.
+    When:   _normalize_nginx_time is called.
+    Then:   the default is normalized and returned in "<int>s" form.
+    """
+
+    assert module._normalize_nginx_time(value, default=default, param_name="cache_404_ttl") == expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "hours",
+        "12 hours and 5 minutes",
+        "abc",
+        "-5",
+    ],
+)
+def test_normalize_nginx_time_invalid_raises(value):
+    """
+    Given:  a non-empty but unparseable / non-positive time value.
+    When:   _normalize_nginx_time is called.
+    Then:   a DemistoException is raised whose message names the offending
+            parameter so users can pinpoint the misconfigured field.
+    """
+
+    with pytest.raises(DemistoException, match="cache_refresh_rate"):
+        module._normalize_nginx_time(value, default="1m", param_name="cache_refresh_rate")
+
+
+def test_create_nginx_server_conf_renders_seconds_for_all_five_params(tmp_path: Path, mocker):
+    """
+    Given:  a params dict that mixes nginx-native, human-readable and bare-integer
+            forms across the cache_* time params (plus a "timeout" of 3600s that
+            should floor-bump cache_refresh_rate).
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   every rendered cache-time directive is in the safe "<int>s" form, and no
+            occurrence of any human-readable unit word or original input token
+            survives into the rendered conf.
+
+    Note:   the two-tier design NO LONGER emits proxy_cache_lock_timeout /
+            proxy_cache_lock_age (concurrency is controlled by Tier-2 limit_conn,
+            not by a cache lock), so those directives must be ABSENT.
+    """
+
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    module.create_nginx_server_conf(
+        conf_file,
+        12345,
+        params={
+            "timeout": "3600",
+            "cache_refresh_rate": "12 hours",
+            "cache_404_ttl": "5 minutes",
+            "cache_default_ttl": "300",
+        },
+    )
+    with open(conf_file) as f:
+        conf = f.read()
+
+    # cache_refresh_rate = "12 hours" -> 43200s (>= timeout, not floor-bumped)
+    assert "proxy_cache_valid 200 301 302 43200s;" in conf
+    # cache_404_ttl = "5 minutes" -> 300s
+    assert "proxy_cache_valid 404 300s;" in conf
+    # cache_default_ttl = "300" -> 300s
+    assert "proxy_cache_valid any 300s;" in conf
+
+    # The cache-lock tuning directives are no longer part of the two-tier design.
+    assert "proxy_cache_lock_timeout" not in conf
+    assert "proxy_cache_lock_age" not in conf
+
+    # Hardening: none of the original unit words / non-normalized tokens may
+    # survive into the rendered conf — those are exactly the failure surfaces
+    # that crashed `nginx -T` in the documented incident.
+    for forbidden in ("hours", "minutes", "12h", "5 minutes"):
+        assert forbidden not in conf, f"Rendered conf must not contain non-normalized substring {forbidden!r}: {conf}"
+
+
+def test_create_nginx_server_conf_renders_two_tier_fail_fast(tmp_path: Path, mocker):
+    """
+    Given:  a default params dict.
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   the rendered conf implements the TWO-TIER fail-fast design:
+              * a per-URI limit_conn zone keyed on $request_uri,
+              * Tier 2 rejects concurrent same-URI cold-miss fetches (limit_conn 1
+                + limit_conn_status 429) and does NOT cache,
+              * Tier 1 turns OFF the inherited cache lock so misses fall through to
+                Tier 2 instead of queueing.
+    """
+
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    module.create_nginx_server_conf(conf_file, 12345, params={})
+    with open(conf_file) as f:
+        conf = f.read()
+
+    # Per-URI concurrency zone (keyed on the resource, not the client).
+    assert "limit_conn_zone $request_uri zone=concurrent_conn_zone:1m;" in conf
+    # Tier 2 fail-fast: one build per URI, extras rejected with 429, no caching.
+    assert "limit_conn concurrent_conn_zone 1;" in conf
+    assert "limit_conn_status 429;" in conf
+    assert "proxy_cache off;" in conf
+    # Tier 1 must DISABLE the inherited cache lock so cold misses reach Tier 2
+    # (the fail-fast limiter) instead of queueing behind proxy_cache_lock.
+    assert "proxy_cache_lock off;" in conf
+    # The queueing lock must NOT be enabled anywhere as a directive.
+    assert "proxy_cache_lock on;" not in conf
+
+
+def test_create_nginx_server_conf_never_caches_transient_statuses(tmp_path: Path, mocker):
+    """
+    Given:  a default params dict.
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   transient responses are excluded from caching so a slow/failed build
+            cannot poison the URI: the fail-fast 429 and the upstream 5xx/504
+            family both get "0s" validity (overriding the `any` catch-all), while
+            proxy_cache_use_stale + background_update still allow serving a GOOD
+            stale copy on timeout.
+    """
+
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    module.create_nginx_server_conf(conf_file, 12345, params={})
+    with open(conf_file) as f:
+        conf = f.read()
+
+    # Never cache the fail-fast rejection or upstream errors/timeouts.
+    assert "proxy_cache_valid 429 0s;" in conf
+    assert "proxy_cache_valid 500 502 503 504 0s;" in conf
+    # Stale-serving of a previously-cached GOOD copy is still enabled.
+    assert "proxy_cache_use_stale" in conf
+    assert "proxy_cache_background_update on;" in conf
+
+
+def test_create_nginx_server_conf_two_server_blocks_and_ports(tmp_path: Path, mocker):
+    """
+    Given:  a listening port of 12345.
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   two server blocks are emitted — Tier 1 public on the given port, and
+            Tier 2 internal on loopback at fetchport (= serverport + 1 = port + 2)
+            — and Tier 2 proxies on to the gevent app at serverport (= port + 1).
+    """
+
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    port = 12345
+    module.create_nginx_server_conf(conf_file, port, params={})
+    with open(conf_file) as f:
+        conf = f.read()
+
+    serverport = port + 1  # gevent app
+    fetchport = serverport + 1  # Tier-2 internal fetch server
+
+    # Exactly two `server {` blocks (Tier 1 + Tier 2).
+    assert conf.count("server {") == 2
+    # Tier 1 listens on the public port; Tier 2 on loopback:fetchport.
+    assert f"listen {port} default_server" in conf
+    assert f"listen localhost:{fetchport};" in conf
+    # Tier 1 proxies misses to Tier 2; Tier 2 proxies to the gevent app.
+    assert f"proxy_pass http://localhost:{fetchport}/;" in conf
+    assert f"proxy_pass http://localhost:{serverport}/;" in conf
+
+
+def test_create_nginx_server_conf_never_forwards_empty_host(tmp_path: Path, mocker):
+    """
+    Given:  a default params dict.
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   an http-level `map` falls back to `localhost` when the client's $host is
+            empty (e.g. health checks sending no Host header), and BOTH tiers forward
+            that mapped value instead of the raw $host - so Tier 2 never receives an
+            empty `Host:` over HTTP/1.1 and never answers 400 (XSUP-80151).
+    """
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    module.create_nginx_server_conf(conf_file, 12345, params={})
+    with open(conf_file) as f:
+        conf = f.read()
+
+    assert "map $host $upstream_host_header {" in conf
+    assert '""      localhost;' in conf
+    assert "default $host;" in conf
+    # The map must be at http level, i.e. before the first server block.
+    assert conf.index("map $host $upstream_host_header") < conf.index("server {")
+    assert conf.count("proxy_set_header Host $upstream_host_header;") == 2
+    assert "proxy_set_header Host $host;" not in conf
+
+
+def test_create_nginx_server_conf_never_caches_client_errors(tmp_path: Path, mocker):
+    """
+    Given:  a default params dict.
+    When:   create_nginx_server_conf renders the nginx server config.
+    Then:   400/401/403 get a "0s" validity that is declared BEFORE the `any`
+            catch-all, so a single bad request cannot poison the cache for every
+            client of that URI (the cache key does not include the Host header).
+    """
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    module.create_nginx_server_conf(conf_file, 12345, params={})
+    with open(conf_file) as f:
+        conf = f.read()
+
+    assert "proxy_cache_valid 400 401 403 0s;" in conf
+    assert conf.index("proxy_cache_valid 400 401 403 0s;") < conf.index("proxy_cache_valid any ")
+
+
+def test_nginx_log_process_tolerates_non_utf8_bytes(tmp_path: Path, mocker: MockerFixture):
+    """
+    Given:  nginx access and error logs containing bytes that are not valid UTF-8
+            (0xb3 / 0x80, e.g. from client-supplied URIs or user agents).
+    When:   nginx_log_process rolls and dumps the logs.
+    Then:   no UnicodeDecodeError is raised, the undecodable bytes are replaced,
+            the valid content is still logged, and the rolled `.old` files are removed.
+    """
+    access_log = tmp_path / "access.log"
+    error_log = tmp_path / "error.log"
+    access_log.write_bytes(b'request_uri="/\xb3bad" response_status=200\n')
+    error_log.write_bytes(b"error line \x80 here\n")
+    mocker.patch.object(module, "NGINX_SERVER_ACCESS_LOG", str(access_log))
+    mocker.patch.object(module, "NGINX_SERVER_ERROR_LOG", str(error_log))
+    mocker.patch.object(module.gevent, "sleep")
+    debug_mock = mocker.patch.object(demisto, "debug")
+    error_mock = mocker.patch.object(demisto, "error")
+    nginx_process = mocker.MagicMock()
+
+    module.nginx_log_process(nginx_process)
+
+    nginx_process.send_signal.assert_called_once()
+    access_dump = debug_mock.call_args[0][0]
+    assert "response_status=200" in access_dump
+    assert "\ufffd" in access_dump
+    error_dump = error_mock.call_args[0][0]
+    assert "error line" in error_dump
+    assert "\ufffd" in error_dump
+    assert not Path(f"{access_log}.old").exists()
+    assert not Path(f"{error_log}.old").exists()
+
+
+def test_nginx_log_monitor_loop_survives_iteration_failure(mocker: MockerFixture):
+    """
+    Given:  nginx_log_process raises on its first iteration.
+    When:   nginx_log_monitor_loop runs.
+    Then:   the error is logged and the loop keeps running, so the next iteration
+            is still executed (the monitor greenlet is not killed permanently).
+    """
+
+    class StopLoop(Exception):
+        pass
+
+    # 3rd sleep breaks out of the endless loop after two iterations.
+    mocker.patch.object(module.gevent, "sleep", side_effect=[None, None, StopLoop()])
+    log_process_mock = mocker.patch.object(
+        module, "nginx_log_process", side_effect=[UnicodeDecodeError("utf-8", b"\xb3", 0, 1, "invalid start byte"), None]
+    )
+    error_mock = mocker.patch.object(demisto, "error")
+
+    with pytest.raises(StopLoop):
+        module.nginx_log_monitor_loop(mocker.MagicMock())
+
+    assert log_process_mock.call_count == 2
+    error_mock.assert_called_once()
+    assert "nginx log monitor iteration failed" in error_mock.call_args[0][0]
+
+
+def test_create_nginx_server_conf_rejects_invalid_param(tmp_path: Path, mocker, monkeypatch):
+    """
+    Given:  a params dict with an unparseable value for cache_404_ttl.
+    When:   create_nginx_server_conf is called.
+    Then:   a DemistoException naming the offending param is raised BEFORE any
+            subprocess (i.e. before `nginx -T`) is invoked — the failure is
+            surfaced fast and pointed at the right field.
+    """
+
+    mocker.patch.object(demisto, "callingContext", return_value={"context": {}})
+
+    # If create_nginx_server_conf ever drifted to invoke subprocess on bad input,
+    # this fail-loud monkeypatch surfaces the regression instead of hiding it.
+    def _fail_loudly(*_args, **_kwargs):
+        raise AssertionError("subprocess.check_output must not be called for invalid params")
+
+    monkeypatch.setattr(subprocess, "check_output", _fail_loudly)
+
+    conf_file = str(tmp_path / "nginx-test-server.conf")
+    with pytest.raises(DemistoException, match="cache_404_ttl"):
+        module.create_nginx_server_conf(conf_file, 12345, params={"cache_404_ttl": "garbage"})

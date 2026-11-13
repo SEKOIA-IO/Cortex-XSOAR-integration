@@ -1,4 +1,5 @@
 category: Data Enrichment & Threat Intelligence
+provider: Open Source
 sectionorder:
 - Connect
 - Collect
@@ -22,12 +23,6 @@ configuration:
   - "2.1"
   required: true
   type: 15
-  section: Connect
-- additionalinfo: Will run the TAXII2 Server on this port from within Cortex XSOAR. Requires a unique port for each long-running integration instance. Do not use the same port for multiple instances. (For Cortex XSOAR 8 and Cortex XSIAM) If you do not enter a Listen Port, an unused port for TAXII2 Server will automatically be generated when the instance is saved. However, if using an engine, you must enter a Listen Port.
-  display: Listen Port
-  name: longRunningPort
-  required: true
-  type: 0
   section: Connect
 - display: Username
   additionalinfo: Credentials to use for the basic authentication.
@@ -78,12 +73,19 @@ configuration:
   type: 8
   required: false
   defaultvalue: 'false'
+  section: Connect
 - additionalinfo: "Full URL address to set in the TAXII2 service response. If not set, the integration will try to auto-detect the URL."
   display: TAXII2 Service URL Address
   name: service_address
   type: 0
   section: Connect
   required: false
+- additionalinfo: Will run the TAXII2 Server on this port from within Cortex XSOAR. Requires a unique port for each long-running integration instance. Do not use the same port for multiple instances. (For Cortex XSOAR 8 and Cortex XSIAM) If you do not enter a Listen Port, an unused port for TAXII2 Server will automatically be generated when the instance is saved. However, if using an engine, you must enter a Listen Port.
+  display: Listen Port
+  name: longRunningPort
+  required: true
+  type: 0
+  section: Connect
 - additionalinfo: "NGINX global directives to be passed on the command line using the -g option. Each directive should end with `;`. For example: `worker_processes 4; timer_resolution 100ms;`. Advanced configuration to be used only if instructed by Cortex XSOAR Support."
   display: NGINX Global Directives
   name: nginx_global_directives
@@ -95,6 +97,46 @@ configuration:
   name: nginx_server_conf
   type: 12
   additionalinfo: "NGINX server configuration. To be used instead of the default NGINX_SERVER_CONF used in the integration code. Advanced configuration to be used only if instructed by Cortex XSOAR Support."
+  section: Connect
+- additionalinfo: How often to refresh the list (e.g., less than 1 minute, 5 minutes, 12 hours, 7 days, 3 months, 1 year). For performance reasons, we do not recommend setting this value at less than 1 minute.
+  defaultvalue: 30 minutes
+  display: Refresh Rate
+  name: cache_refresh_rate
+  type: 0
+  section: Collect
+  advanced: true
+  required: false
+- additionalinfo: 'The parameter is deprecated and no longer used. Cache locking was replaced by a two-tier fail-fast design that rejects excess concurrent cache-building requests instead of queuing them.'
+  defaultvalue: 1h
+  display: Cache Lock Timeout (Deprecated)
+  name: cache_lock_timeout
+  type: 0
+  section: Connect
+  advanced: true
+  required: false
+  hidden: true
+- additionalinfo: 'The parameter is deprecated and no longer used. Cache locking was replaced by a two-tier fail-fast design that rejects excess concurrent cache-building requests instead of queuing them.'
+  defaultvalue: 1h
+  display: Cache Lock Age (Deprecated)
+  name: cache_lock_age
+  type: 0
+  section: Connect
+  advanced: true
+  required: false
+  hidden: true
+- additionalinfo: The TTL for 404 responses in the cache.
+  defaultvalue: 1m
+  display: Cache 404 TTL
+  name: cache_404_ttl
+  type: 0
+  section: Connect
+  advanced: true
+  required: false
+- additionalinfo: The default TTL for responses in the cache.
+  defaultvalue: 1m
+  display: Cache Default TTL
+  name: cache_default_ttl
+  type: 0
   section: Connect
   advanced: true
   required: false
@@ -111,10 +153,18 @@ configuration:
   - file
   - url
   - x509-certificate
-  additionalinfo: Choose which STIX Cyber Observable Object provides as STIX Domain Object of 'indicator'
+  additionalinfo: The selected types will be outputted as a "STIX Indicator type" with a STIX pattern instead of an SCO. This may be necessary based on the tool you use to ingest data.
   section: Collect
   advanced: true
   required: false
+- display: Search-after cache duration hours
+  additionalinfo: Defines how many hours the search-after values is kept in cache so pagination can be faster.
+  name: cache_duration_hours
+  required: true
+  type: 0
+  section: Collect
+  advanced: true
+  defaultvalue: "48"
 description: This integration provides TAXII2 Services for system indicators (Outbound feed).
 display: TAXII2 Server
 name: TAXII2 Server
@@ -150,7 +200,7 @@ script:
     - contextPath: TAXIIServer.ServerInfo.description
       description: The server description.
       type: String
-  dockerimage: demisto/flask-nginx:1.0.0.110620
+  dockerimage: demisto/flask-nginx:1.0.0.14169403
   longRunning: true
   longRunningPort: true
   script: '-'
@@ -159,3 +209,15 @@ script:
 tests:
 - TAXII2 Server Performance Test
 fromversion: 6.1.0
+triggers:
+- conditions:
+  - name: engine
+    operator: not_exists
+  - name: isEngineGroup
+    operator: not_exists
+  effects:
+  - name: longRunningPort
+    action:
+      hidden: true
+      required: false
+excludefromtightlycoupled: true

@@ -43,6 +43,9 @@
                         "transformers": []
                     }
                 },
+                "SekoiaXDR MirrorOut": {
+                    "simple": "mirrorOut"
+                },
                 "Source Create time": {
                     "complex": {
                         "filters": [],
@@ -57,8 +60,17 @@
                 "Source IP": {
                     "simple": "source"
                 },
+                "dbotMirrorDirection": {
+                    "simple": "mirror_direction"
+                },
+                "dbotMirrorId": {
+                    "simple": "mirrored_id"
+                },
                 "dbotMirrorInstance": {
                     "simple": "mirror_instance"
+                },
+                "SekoiaXDR Events": {
+                    "simple": "events"
                 }
             }
         },
@@ -112,6 +124,12 @@
                 },
                 "Source IP": {
                     "simple": "source"
+                },
+                "dbotMirrorDirection": {
+                    "simple": "mirror_direction"
+                },
+                "dbotMirrorId": {
+                    "simple": "mirrored_id"
                 },
                 "dbotMirrorInstance": {
                     "simple": "mirror_instance"

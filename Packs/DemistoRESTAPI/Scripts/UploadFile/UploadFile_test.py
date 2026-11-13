@@ -1,5 +1,6 @@
 import pytest
-from UploadFile import upload_file_command
+from CommonServerPython import EntryType
+from UploadFile import is_transient_error, upload_file, upload_file_command
 
 RAW_RESPONSE = [
     {
@@ -38,10 +39,10 @@ RAW_RESPONSE = [
                             "sha1": "29f4d33b0895aa46a1dad97b54096d4e68e3d91a",
                             "sha256": "6577fb6b9a5f4779f835fec594d21267aedf3c7f3ee183c4bc2fd3f9fca52df4",
                             "sha512": "174c4574cbe429bb646e19ed1973b2ccfc314bc951f251684591105d1d0f5fe8aa9f67beae0d742"
-                                      "0becec61bcfd51e17d270683242b77dc552e58b2f95a0625b",
+                            "0becec61bcfd51e17d270683242b77dc552e58b2f95a0625b",
                             "size": 250301,
                             "ssdeep": "6144:IwUbC/ok4IeyUvtRCRvhp2h8C+GYPcX6PorXMido+vWap81:z7ok4XjtIaxrKArXBoqw",
-                            "type": "application/pdf"
+                            "type": "application/pdf",
                         },
                         "format": "",
                         "hasRole": False,
@@ -73,12 +74,10 @@ RAW_RESPONSE = [
                         "timezoneOffset": 0,
                         "type": 3,
                         "user": "admin",
-                        "version": 2
+                        "version": 2,
                     }
                 ],
-                "entryUsers": [
-                    "admin"
-                ],
+                "entryUsers": ["admin"],
                 "hasRole": False,
                 "highPriority": False,
                 "id": "899",
@@ -98,16 +97,11 @@ RAW_RESPONSE = [
                 "sortValues": None,
                 "status": 0,
                 "systems": None,
-                "tags": [
-                    "Automation"
-                ],
+                "tags": ["Automation"],
                 "totalEntries": 0,
                 "type": 0,
-                "users": [
-                    "admin",
-                    "analyst"
-                ],
-                "version": 8
+                "users": ["admin", "analyst"],
+                "version": 8,
             }
         },
         "ContentsFormat": "json",
@@ -147,7 +141,7 @@ RAW_RESPONSE = [
             "mirrored": False,
             "modified": "0001-01-01T00:00:00Z",
             "note": False,
-            "parentContent": "!core-api-multipart uri=\"entry/upload/899\" entryID=\"722@737\" body=\"test_bark\"",
+            "parentContent": '!core-api-multipart uri="entry/upload/899" entryID="722@737" body="test_bark"',
             "parentEntryTruncated": False,
             "parentId": "726@737",
             "pinned": False,
@@ -169,7 +163,7 @@ RAW_RESPONSE = [
             "timezoneOffset": 0,
             "type": 1,
             "user": "",
-            "version": 0
+            "version": 0,
         },
         "ModuleName": "Core REST API_instance_1",
         "Note": False,
@@ -177,7 +171,7 @@ RAW_RESPONSE = [
         "System": "",
         "Tags": None,
         "Type": 1,
-        "Version": 0
+        "Version": 0,
     }
 ]
 
@@ -193,8 +187,8 @@ def test_upload_file(mocker):
     - run the upload_file
     Validate the content of the HumanReadable.
     """
-    mocker.patch('UploadFile.upload_file', return_value=RAW_RESPONSE)
-    command_results = upload_file_command({'incidentId': '1', 'entryID': '12@12', 'body': "test_bark"})
+    mocker.patch("UploadFile.upload_file", return_value=RAW_RESPONSE)
+    command_results = upload_file_command({"incidentId": "1", "entryID": "12@12", "body": "test_bark"})
     assert "test_bark" in command_results[0].readable_output
 
 
@@ -207,10 +201,10 @@ def test_upload_file_multiple_entry_ids(mocker):
     Then
     - Validate that the API request was called for each entry ID.
     """
-    execute_command_mocker = mocker.patch('UploadFile.demisto.executeCommand')
-    upload_file_command({'incidentId': '1', 'entryID': '1,2'})
-    assert execute_command_mocker.call_args_list[0][0][1]['entryID'] == '1'
-    assert execute_command_mocker.call_args_list[1][0][1]['entryID'] == '2'
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand")
+    upload_file_command({"incidentId": "1", "entryID": "1,2"})
+    assert execute_command_mocker.call_args_list[0][0][1]["entryID"] == "1"
+    assert execute_command_mocker.call_args_list[1][0][1]["entryID"] == "2"
 
 
 def test_upload_file_one_entry_id(mocker):
@@ -222,10 +216,10 @@ def test_upload_file_one_entry_id(mocker):
     Then
     - Validate that the API request was called only one entry ID.
     """
-    execute_command_mocker = mocker.patch('UploadFile.demisto.executeCommand')
-    upload_file_command({'incidentId': '1', 'entryID': '1'})
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand")
+    upload_file_command({"incidentId": "1", "entryID": "1"})
     assert len(execute_command_mocker.call_args_list) == 1
-    assert execute_command_mocker.call_args_list[0][0][1]['entryID'] == '1'
+    assert execute_command_mocker.call_args_list[0][0][1]["entryID"] == "1"
 
 
 RAW_RESPONSE_ERROR = [
@@ -265,10 +259,10 @@ RAW_RESPONSE_ERROR = [
                             "sha1": "29f4d33b0895aa46a1dad97b54096d4e68e3d91a",
                             "sha256": "6577fb6b9a5f4779f835fec594d21267aedf3c7f3ee183c4bc2fd3f9fca52df4",
                             "sha512": "174c4574cbe429bb646e19ed1973b2ccfc314bc951f251684591105d1d0f5fe8aa9f67beae0d7420"
-                                      "becec61bcfd51e17d270683242b77dc552e58b2f95a0625b",
+                            "becec61bcfd51e17d270683242b77dc552e58b2f95a0625b",
                             "size": 250301,
                             "ssdeep": "6144:IwUbC/ok4IeyUvtRCRvhp2h8C+GYPcX6PorXMido+vWap81:z7ok4XjtIaxrKArXBoqw",
-                            "type": "application/pdf"
+                            "type": "application/pdf",
                         },
                         "format": "",
                         "hasRole": False,
@@ -300,12 +294,10 @@ RAW_RESPONSE_ERROR = [
                         "timezoneOffset": 0,
                         "type": 3,
                         "user": "admin",
-                        "version": 2
+                        "version": 2,
                     }
                 ],
-                "entryUsers": [
-                    "admin"
-                ],
+                "entryUsers": ["admin"],
                 "hasRole": False,
                 "highPriority": False,
                 "id": "899",
@@ -325,16 +317,11 @@ RAW_RESPONSE_ERROR = [
                 "sortValues": None,
                 "status": 0,
                 "systems": None,
-                "tags": [
-                    "Automation"
-                ],
+                "tags": ["Automation"],
                 "totalEntries": 0,
                 "type": 0,
-                "users": [
-                    "admin",
-                    "analyst"
-                ],
-                "version": 8
+                "users": ["admin", "analyst"],
+                "version": 8,
             }
         },
         "ContentsFormat": "json",
@@ -374,7 +361,7 @@ RAW_RESPONSE_ERROR = [
             "mirrored": False,
             "modified": "0001-01-01T00:00:00Z",
             "note": False,
-            "parentContent": "!core-api-multipart uri=\"entry/upload/899\" entryID=\"722@737\" body=\"test_bark\"",
+            "parentContent": '!core-api-multipart uri="entry/upload/899" entryID="722@737" body="test_bark"',
             "parentEntryTruncated": False,
             "parentId": "726@737",
             "pinned": False,
@@ -396,7 +383,7 @@ RAW_RESPONSE_ERROR = [
             "timezoneOffset": 0,
             "type": 1,
             "user": "",
-            "version": 0
+            "version": 0,
         },
         "ModuleName": "Core REST API_instance_1",
         "Note": False,
@@ -404,7 +391,7 @@ RAW_RESPONSE_ERROR = [
         "System": "",
         "Tags": None,
         "Type": 4,
-        "Version": 0
+        "Version": 0,
     }
 ]
 
@@ -421,15 +408,21 @@ def test_demisto_upload_file_error(mocker):
     - run the upload_file
     Validate that the correct error was raised
     """
-    mocker.patch('UploadFile.upload_file', return_value=RAW_RESPONSE_ERROR)
+    mocker.patch("UploadFile.upload_file", return_value=RAW_RESPONSE_ERROR)
 
-    with pytest.raises(Exception,
-                       match="There was an issue uploading the file. Check your API key and input argument."):
-        upload_file_command({'incidentId': '1', 'entryID': '12@12', 'body': "test_bark"})
+    with pytest.raises(Exception, match="There was an issue uploading the file."):
+        upload_file_command({"incidentId": "1", "entryID": "12@12", "body": "test_bark"})
 
 
-@pytest.mark.parametrize(argnames='target, service', argvalues=[('incident attachment', 'incident'),
-                                                                ('war room entry', 'entry')])
+@pytest.mark.parametrize(
+    argnames="target, service",
+    argvalues=[
+        ("incident attachment", "incident"),
+        ("war room entry", "entry"),
+        ("alert attachment", "incident"),
+        ("issue attachment", "incident"),
+    ],
+)
 def test_demisto_upload_file_as_attachment(mocker, target, service):
     """
     Given:
@@ -440,9 +433,10 @@ def test_demisto_upload_file_as_attachment(mocker, target, service):
         - Validate the correct Uri was sent to the executeCommand
     """
     import UploadFile
-    mocker.patch('UploadFile.demisto.executeCommand')
-    upload_file_command({'target': target, 'entryID': '1'})
-    assert f'{service}/upload/' in UploadFile.demisto.executeCommand.call_args[0][1]['uri']
+
+    mocker.patch("UploadFile.demisto.executeCommand")
+    upload_file_command({"target": target, "entryID": "1"})
+    assert f"{service}/upload/" in UploadFile.demisto.executeCommand.call_args[0][1]["uri"]
 
 
 def test_upload_with_using_argument(mocker):
@@ -454,7 +448,187 @@ def test_upload_with_using_argument(mocker):
     Then
     - Validate that the API request was called only one entry ID.
     """
-    execute_command_mocker = mocker.patch('UploadFile.demisto.executeCommand')
-    upload_file_command({'incidentId': '1', 'entryID': '1', 'using': 'instance_1'})
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand")
+    upload_file_command({"incidentId": "1", "entryID": "1", "using": "instance_1"})
     assert len(execute_command_mocker.call_args_list) == 1
-    assert execute_command_mocker.call_args_list[0][0][1]['using'] == 'instance_1'
+    assert execute_command_mocker.call_args_list[0][0][1]["using"] == "instance_1"
+
+
+SUCCESS_ENTRY = [{"Type": EntryType.NOTE, "Contents": {"response": {"entries": [{"id": "1@1"}]}}}]
+
+
+def _transient_entry(message: str) -> list:
+    """Build an error entry whose contents match a transient error marker."""
+    return [{"Type": EntryType.ERROR, "Contents": message}]
+
+
+def _permanent_entry(message: str = "Item not found (8) - incident does not exist") -> list:
+    """Build an error entry that is NOT transient (should not be retried)."""
+    return [{"Type": EntryType.ERROR, "Contents": message}]
+
+
+TRANSIENT_MESSAGES = [
+    'Post "https://api/xsoar/incident/upload/1": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
+    "502 Bad Gateway",
+    "The service is Under Maintenance, please try again later",
+    "read tcp 1.2.3.4->5.6.7.8: connection reset by peer",
+]
+
+
+def test_is_transient_error_transient_markers():
+    """
+    Given: error entries whose contents contain a known transient marker (any case).
+    When: calling is_transient_error.
+    Then: it returns True.
+    """
+    for message in TRANSIENT_MESSAGES:
+        assert is_transient_error({"Type": EntryType.ERROR, "Contents": message}) is True
+    # case-insensitive check
+    assert is_transient_error({"Type": EntryType.ERROR, "Contents": "CONTEXT DEADLINE EXCEEDED"}) is True
+
+
+def test_is_transient_error_non_transient():
+    """
+    Given: a permanent error entry, a success entry, and a None entry.
+    When: calling is_transient_error.
+    Then: it returns False for all of them.
+    """
+    assert is_transient_error({"Type": EntryType.ERROR, "Contents": "incident does not exist"}) is False
+    assert is_transient_error(SUCCESS_ENTRY[0]) is False
+    assert is_transient_error(None) is False
+
+
+def test_upload_file_success_first_try(mocker):
+    """
+    Given: executeCommand succeeds on the first attempt.
+    When: calling upload_file.
+    Then: executeCommand is called once, no sleep occurs, and the success response is returned.
+    """
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand", return_value=SUCCESS_ENTRY)
+    sleep_mocker = mocker.patch("UploadFile.time.sleep")
+
+    result = upload_file("1", "1@1")
+
+    assert result == SUCCESS_ENTRY
+    assert execute_command_mocker.call_count == 1
+    assert sleep_mocker.call_count == 0
+
+
+@pytest.mark.parametrize("num_failures", [1, 2, 3])
+def test_upload_file_success_after_transient_failures(mocker, num_failures):
+    """
+    Given: executeCommand returns N transient errors then succeeds.
+    When: calling upload_file.
+    Then: executeCommand is called N+1 times, sleep is called N times, and success is returned.
+    """
+    side_effects = [_transient_entry("context deadline exceeded")] * num_failures + [SUCCESS_ENTRY]
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand", side_effect=side_effects)
+    sleep_mocker = mocker.patch("UploadFile.time.sleep")
+
+    result = upload_file("1", "1@1")
+
+    assert result == SUCCESS_ENTRY
+    assert execute_command_mocker.call_count == num_failures + 1
+    assert sleep_mocker.call_count == num_failures
+
+
+@pytest.mark.parametrize("message", TRANSIENT_MESSAGES)
+def test_upload_file_retries_each_transient_marker(mocker, message):
+    """
+    Given: executeCommand returns a specific transient marker once, then succeeds.
+    When: calling upload_file.
+    Then: the call is retried and ultimately succeeds.
+    """
+    execute_command_mocker = mocker.patch(
+        "UploadFile.demisto.executeCommand", side_effect=[_transient_entry(message), SUCCESS_ENTRY]
+    )
+    mocker.patch("UploadFile.time.sleep")
+
+    result = upload_file("1", "1@1")
+
+    assert result == SUCCESS_ENTRY
+    assert execute_command_mocker.call_count == 2
+
+
+def test_upload_file_permanent_error_not_retried(mocker):
+    """
+    Given: executeCommand returns a permanent (non-transient) error.
+    When: calling upload_file.
+    Then: it is NOT retried - executeCommand is called once, no sleep, and the error is returned.
+    """
+    permanent = _permanent_entry()
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand", return_value=permanent)
+    sleep_mocker = mocker.patch("UploadFile.time.sleep")
+
+    result = upload_file("1", "1@1")
+
+    assert result == permanent
+    assert execute_command_mocker.call_count == 1
+    assert sleep_mocker.call_count == 0
+
+
+def test_upload_file_retries_exhausted(mocker):
+    """
+    Given: executeCommand always returns a transient error.
+    When: calling upload_file.
+    Then: it retries MAX_RETRIES times (4 total calls, 3 sleeps) and returns the last error response.
+    """
+    from UploadFile import MAX_RETRIES
+
+    transient = _transient_entry("502 Bad Gateway")
+    execute_command_mocker = mocker.patch("UploadFile.demisto.executeCommand", return_value=transient)
+    sleep_mocker = mocker.patch("UploadFile.time.sleep")
+
+    result = upload_file("1", "1@1")
+
+    assert result == transient
+    assert execute_command_mocker.call_count == MAX_RETRIES + 1
+    assert sleep_mocker.call_count == MAX_RETRIES
+
+
+def test_upload_file_exponential_backoff_values(mocker):
+    """
+    Given: executeCommand always returns a transient error.
+    When: calling upload_file.
+    Then: sleep is called with exponentially increasing, capped delays (2, 4, 8).
+    """
+    from UploadFile import BASE_BACKOFF, MAX_BACKOFF, MAX_RETRIES
+
+    mocker.patch("UploadFile.demisto.executeCommand", return_value=_transient_entry("connection reset by peer"))
+    sleep_mocker = mocker.patch("UploadFile.time.sleep")
+
+    upload_file("1", "1@1")
+
+    expected_delays = [min(BASE_BACKOFF * 2**i, MAX_BACKOFF) for i in range(MAX_RETRIES)]
+    actual_delays = [call.args[0] for call in sleep_mocker.call_args_list]
+    assert actual_delays == expected_delays
+
+
+def test_upload_file_command_transient_then_success(mocker):
+    """
+    Given: the first upload attempt hits a transient error, the retry succeeds.
+    When: running upload_file_command.
+    Then: no error is raised and a success readable output is returned.
+    """
+    mocker.patch(
+        "UploadFile.demisto.executeCommand",
+        side_effect=[_transient_entry("context deadline exceeded"), SUCCESS_ENTRY],
+    )
+    mocker.patch("UploadFile.time.sleep")
+
+    command_results = upload_file_command({"incID": "1", "entryID": "1@1"})
+
+    assert "File uploaded successfully." in command_results[0].readable_output
+
+
+def test_upload_file_command_transient_exhausted_raises(mocker):
+    """
+    Given: every upload attempt hits a transient error and retries are exhausted.
+    When: running upload_file_command.
+    Then: the original upload error is raised (error surface preserved).
+    """
+    mocker.patch("UploadFile.demisto.executeCommand", return_value=_transient_entry("502 Bad Gateway"))
+    mocker.patch("UploadFile.time.sleep")
+
+    with pytest.raises(Exception, match="There was an issue uploading the file."):
+        upload_file_command({"incID": "1", "entryID": "1@1"})

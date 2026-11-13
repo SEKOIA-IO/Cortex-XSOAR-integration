@@ -1,0 +1,53 @@
+{
+    "associatedToAll": false,
+    "associatedTypes": [
+        "Doppel Alert Crypto",
+        "Doppel Alert Domains",
+        "Doppel Alert Ecommerce",
+        "Doppel Alert Email",
+        "Doppel Alert Mobile_Apps",
+        "Doppel Alert Paid_Ads",
+        "Doppel Alert Social_Media",
+        "Doppel Alert Telco"
+    ],
+    "caseInsensitive": true,
+    "cliName": "doppelproduct",
+    "closeForm": false,
+    "content": true,
+    "editForm": true,
+    "group": 0,
+    "hidden": false,
+    "id": "incident_doppelproduct",
+    "isReadOnly": false,
+    "locked": false,
+    "name": "Doppel Product",
+    "neverSetAsRequired": false,
+    "openEnded": false,
+    "ownerOnly": true,
+    "required": false,
+    "selectValues": [
+        "",
+        "crypto",
+        "darkweb",
+        "domains",
+        "ecommerce",
+        "email",
+        "mobile_apps",
+        "paid_ads",
+        "social_media",
+        "telco"
+    ],
+    "sla": 0,
+    "system": false,
+    "threshold": 72,
+    "type": "singleSelect",
+    "unmapped": false,
+    "unsearchable": true,
+    "useAsKpi": false,
+    "version": -1,
+    "fromVersion": "6.10.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
+}

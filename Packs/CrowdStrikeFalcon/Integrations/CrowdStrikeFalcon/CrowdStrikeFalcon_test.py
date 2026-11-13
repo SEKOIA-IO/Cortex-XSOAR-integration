@@ -1,20 +1,45 @@
-import pytest
-import os
 import json
+import os
+import asyncio
+from unittest.mock import ANY
 from urllib.parse import unquote
-from _pytest.python_api import raises
 
 import demistomock as demisto
-from CommonServerPython import (outputPaths, entryTypes, DemistoException, IncidentStatus, ScheduledCommand,
-                                CommandResults, requests)
-from test_data import input_data
+import pytest
+from CommonServerPython import (
+    CommandResults,
+    DemistoException,
+    IncidentStatus,
+    ScheduledCommand,
+    entryTypes,
+    outputPaths,
+    requests,
+)
 from freezegun import freeze_time
-from typing import Any
 from pytest_mock import MockerFixture
-from unittest.mock import ANY
+from test_data import input_data
 
-RETURN_ERROR_TARGET = 'CrowdStrikeFalcon.return_error'
-SERVER_URL = 'https://4.4.4.4'
+RETURN_ERROR_TARGET = "CrowdStrikeFalcon.return_error"
+SERVER_URL = "https://4.4.4.4"
+
+
+def create_empty_last_run(length: int) -> list[dict]:
+    """
+    Creates an empty last_run data structure for fetch operations.
+
+    The last_run object is defined as a list of dictionaries.
+    Each index in the list represents a different fetch type.
+
+    The length parameter varies depending on the platform:
+    - XSOAR length constant - TOTAL_FETCH_TYPE_XSOAR
+    - XSIAM length constant - TOTAL_FETCH_TYPE_XSIAM
+    Args:
+        length (int): Number of fetch types to initialize
+
+    Returns:
+        list[dict]: A list of empty dictionaries representing the last_run state
+    """
+    return [{} for _ in range(length)]
 
 
 def load_json(file: str):
@@ -26,95 +51,88 @@ def load_json(file: str):
 def get_access_token(requests_mock, mocker):
     mocker.patch.object(
         demisto,
-        'params',
+        "params",
         return_value={
-            'url': SERVER_URL,
-            'proxy': True,
-            'incidents_per_fetch': 2,
-            'fetch_incidents_or_detections': ['Detections', 'Incidents'],
-            'fetch_time': '3 days',
-        }
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/oauth2/token',
-        json={
-            'access_token': 'token'
+            "url": SERVER_URL,
+            "proxy": True,
+            "incidents_per_fetch": 2,
+            "fetch_incidents_or_detections": ["Detections"],
+            "fetch_time": "3 days",
         },
-        status_code=200
     )
+    requests_mock.post(f"{SERVER_URL}/oauth2/token", json={"access_token": "token"}, status_code=200)
 
 
-incident_context = {'name': 'Incident ID: inc:afb5d1512a00480f53e9ad91dc3e4b55:1cf23a95678a421db810e11b5db693bd',
-                    'occurred': '2020-05-17T17:30:38Z',
-                    'rawJSON':
-                        '{"incident_id": "inc:afb5d1512a00480f53e9ad91dc3e4b55:1cf23a95678a421db810e11b5db693bd", '
-                        '"cid": "24ab288b109b411aba970e570d1ddf58", "host_ids": ["afb5d1512a00480f53e9ad91dc3e4b55"], '
-                        '"hosts": [{"device_id": "afb5d1512a00480f53e9ad91dc3e4b55", '
-                        '"cid": "24ab288b109b411aba970e570d1ddf58", "agent_load_flags": "0", '
-                        '"agent_local_time": "2020-05-06T23:36:34.594Z", "agent_version": "5.28.10902.0", '
-                        '"bios_manufacturer": "Apple Inc.", '
-                        '"bios_version": "1037.100.359.0.0 (iBridge: 17.16.14263.0.0,0)", '
-                        '"config_id_base": "65994753", "config_id_build": "10902", "config_id_platform": "4", '
-                        '"external_ip": "1.1.1.1", "hostname": "SFO-M-Y81WHJ", '
-                        '"first_seen": "2019-05-10T17:20:39Z", "last_seen": "2020-05-17T16:59:42Z", '
-                        '"local_ip": "1.1.1.1", "mac_address": "86-89-ad-65-d0-30", "major_version": "18", '
-                        '"minor_version": "7", "os_version": "Mojave (10.14)", "platform_id": "1", '
-                        '"platform_name": "Mac", "product_type_desc": "Workstation", "status": "normal", '
-                        '"system_manufacturer": "Apple Inc.", "system_product_name": "MacBookPro15,1", '
-                        '"modified_timestamp": "2020-05-17T16:59:56Z"}], "created": "2020-05-17T17:30:38Z", '
-                        '"start": "2020-05-17T17:30:38Z", "end": "2020-05-17T17:30:38Z", "state": "closed", '
-                        '"status": "New", "name": "Incident on SFO-M-Y81WHJ at 2020-05-17T17:30:38Z", '
-                        '"description": "Objectives in this incident: Keep Access. '
-                        'Techniques: External Remote Services. Involved hosts and end users: SFO-M-Y81WHJ.", '
-                        '"tags": ["Objective/Keep Access"], "fine_score": 38, '
-                        '"mirror_direction": null, "mirror_instance": ""}'}
-
-IOCS_JSON_LIST = [{'type': 'ipv4', 'value': '4.4.4.4', 'source': 'cortex xsoar', 'action': 'no_action',
-                   'severity': 'informational', 'description': 'lala', 'platforms': ['linux'],
-                   'tags': ['test'], 'expiration': '2022-02-15T15:55:09Z', 'applied_globally': True,
-                   }, {'type': 'ipv4', 'value': '5.5.5.5', 'source': 'cortex xsoar',
-                       'action': 'no_action', 'severity': 'informational',
-                       'description': 'lala',
-                       'platforms': ['linux'], 'tags': ['test'],
-                       'expiration': '2022-02-15T15:55:09Z', 'applied_globally': True,
-                       }]
-
-
-def test_incident_to_incident_context():
-    from CrowdStrikeFalcon import incident_to_incident_context
-    res = incident_to_incident_context(input_data.response_incident.copy())
-    assert res == incident_context
+IOCS_JSON_LIST = [
+    {
+        "type": "ipv4",
+        "value": "4.4.4.4",
+        "source": "cortex xsoar",
+        "action": "no_action",
+        "severity": "informational",
+        "description": "lala",
+        "platforms": ["linux"],
+        "tags": ["test"],
+        "expiration": "2022-02-15T15:55:09Z",
+        "applied_globally": True,
+    },
+    {
+        "type": "ipv4",
+        "value": "5.5.5.5",
+        "source": "cortex xsoar",
+        "action": "no_action",
+        "severity": "informational",
+        "description": "lala",
+        "platforms": ["linux"],
+        "tags": ["test"],
+        "expiration": "2022-02-15T15:55:09Z",
+        "applied_globally": True,
+    },
+]
 
 
 def test_detection_to_incident_context():
     from CrowdStrikeFalcon import detection_to_incident_context
-    res = detection_to_incident_context(input_data.response_idp_detection.copy(), "IDP Detection", 'created_timestamp')
+
+    res = detection_to_incident_context(input_data.response_idp_detection.copy(), "IDP Detection", "created_timestamp")
     assert res == input_data.context_idp_detection
 
 
 def test_create_json_iocs_list():
     from CrowdStrikeFalcon import create_json_iocs_list
 
-    res = create_json_iocs_list(ioc_type='ipv4', iocs_value=['4.4.4.4', '5.5.5.5'], action='no_action',
-                                platforms=['linux'], severity='informational', source='cortex xsoar',
-                                description='lala', expiration='2022-02-15T15:55:09Z', applied_globally=True,
-                                host_groups=[], tags=['test'])
+    res = create_json_iocs_list(
+        ioc_type="ipv4",
+        iocs_value=["4.4.4.4", "5.5.5.5"],
+        action="no_action",
+        platforms=["linux"],
+        severity="informational",
+        source="cortex xsoar",
+        description="lala",
+        expiration="2022-02-15T15:55:09Z",
+        applied_globally=True,
+        host_groups=[],
+        tags=["test"],
+    )
     assert res == IOCS_JSON_LIST
 
 
 def test_timestamp_length_equalization():
     from CrowdStrikeFalcon import timestamp_length_equalization
+
     timestamp_in_millisecond = 1574585006000
     timestamp_in_seconds = 1574585015
 
-    timestamp_in_millisecond_after, timestamp_in_seconds_after = timestamp_length_equalization(timestamp_in_millisecond,
-                                                                                               timestamp_in_seconds)
+    timestamp_in_millisecond_after, timestamp_in_seconds_after = timestamp_length_equalization(
+        timestamp_in_millisecond, timestamp_in_seconds
+    )
 
     assert timestamp_in_millisecond_after == 1574585006000
     assert timestamp_in_seconds_after == 1574585015000
 
-    timestamp_in_seconds_after, timestamp_in_millisecond_after = timestamp_length_equalization(timestamp_in_seconds,
-                                                                                               timestamp_in_millisecond)
+    timestamp_in_seconds_after, timestamp_in_millisecond_after = timestamp_length_equalization(
+        timestamp_in_seconds, timestamp_in_millisecond
+    )
 
     assert timestamp_in_millisecond_after == 1574585006000
     assert timestamp_in_seconds_after == 1574585015000
@@ -122,21 +140,18 @@ def test_timestamp_length_equalization():
 
 def test_run_command_failure_sensor_offline(requests_mock, mocker):
     from CrowdStrikeFalcon import run_command
+
     mocker.patch.object(
         demisto,
-        'args',
+        "args",
         return_value={
-            'host_ids': '284771ee197e422d5176d6634a62b934',
-            'command_type': 'ls',
-            'full_command': 'cd C:\\some_directory'
-        }
+            "host_ids": "284771ee197e422d5176d6634a62b934",
+            "command_type": "ls",
+            "full_command": "cd C:\\some_directory",
+        },
     )
     error_object = {
-        "meta": {
-            "query_time": 0.505762223,
-            "powered_by": "empower-api",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
+        "meta": {"query_time": 0.505762223, "powered_by": "empower-api", "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
         "batch_id": "",
         "resources": {
             "284771ee197e422d5176d6634a62b934": {
@@ -145,121 +160,94 @@ def test_run_command_failure_sensor_offline(requests_mock, mocker):
                 "stdout": "",
                 "stderr": "",
                 "aid": "284771ee197e422d5176d6634a62b934",
-                "errors": [
-                    {
-                        "code": 40407,
-                        "message": "Sensor appears to be offline"
-                    }
-                ],
-                "query_time": 0
+                "errors": [{"code": 40407, "message": "Sensor appears to be offline"}],
+                "query_time": 0,
             }
         },
-        "errors": [
-            {
-                "code": 404,
-                "message": "no successful hosts initialized on RTR"
-            }
-        ]
+        "errors": [{"code": 404, "message": "no successful hosts initialized on RTR"}],
     }
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'batch_id'
-        },
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
     )
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-command/v1',
-        json=error_object,
-        status_code=404,
-        reason='Not found'
+        f"{SERVER_URL}/real-time-response/combined/batch-command/v1", json=error_object, status_code=404, reason="Not found"
     )
     with pytest.raises(DemistoException) as error_info:
         run_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 404 - ' \
-                                    'reason: Not found\nHost ID 284771ee197e422d5176d6634a62b934 - ' \
-                                    'Sensor appears to be offline'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 404 - "
+        "reason: Not found\nHost ID 284771ee197e422d5176d6634a62b934 - "
+        "Sensor appears to be offline"
+    )
 
 
 def test_run_command_read_scope(requests_mock, mocker):
     from CrowdStrikeFalcon import run_command
+
     response = {
-        'meta': {
-            'query_time': 1.178901572,
-            'powered_by': 'empower-api',
-            'trace_id': '07kk11c3-496g-42df-9157-834e499e279d'
-        },
-        'combined': {
-            'resources': {
-                '284771ee197e422d5176d6634a62b934': {
-                    'session_id': '1113b475-2c28-4486-8617-d000b8f3bc8d',
-                    'task_id': 'e0149c46-4ba0-48c9-9e98-49b806a0033f',
-                    'complete': True,
-                    'stdout': 'Directory listing for C:\\ -\n\n'
-                              'Name                                     Type         Size (bytes)    Size (MB)       '
-                              'Last Modified (UTC-5)     Created (UTC-5)          \n----                             '
-                              '        ----         ------------    ---------       ---------------------     -------'
-                              '--------          \n$Recycle.Bin                             <Directory>  --          '
-                              '    --              11/27/2018 10:54:44 AM    9/15/2017 3:33:40 AM     \nITAYDI       '
-                              '                            <Directory>  --              --              11/19/2018 1:'
-                              '31:42 PM     11/19/2018 1:31:42 PM    ',
-                    'stderr': '',
-                    'base_command': 'ls',
-                    'aid': '284771ee197e422d5176d6634a62b934',
-                    'errors': None,
-                    'query_time': 1.1783866060000001
+        "meta": {"query_time": 1.178901572, "powered_by": "empower-api", "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
+        "combined": {
+            "resources": {
+                "284771ee197e422d5176d6634a62b934": {
+                    "session_id": "1113b475-2c28-4486-8617-d000b8f3bc8d",
+                    "task_id": "e0149c46-4ba0-48c9-9e98-49b806a0033f",
+                    "complete": True,
+                    "stdout": "Directory listing for C:\\ -\n\n"
+                    "Name                                     Type         Size (bytes)    Size (MB)       "
+                    "Last Modified (UTC-5)     Created (UTC-5)          \n----                             "
+                    "        ----         ------------    ---------       ---------------------     -------"
+                    "--------          \n$Recycle.Bin                             <Directory>  --          "
+                    "    --              11/27/2018 10:54:44 AM    9/15/2017 3:33:40 AM     \nITAYDI       "
+                    "                            <Directory>  --              --              11/19/2018 1:"
+                    "31:42 PM     11/19/2018 1:31:42 PM    ",
+                    "stderr": "",
+                    "base_command": "ls",
+                    "aid": "284771ee197e422d5176d6634a62b934",
+                    "errors": None,
+                    "query_time": 1.1783866060000001,
                 }
             }
         },
-        'errors': []
+        "errors": [],
     }
     mocker.patch.object(
         demisto,
-        'args',
-        return_value={
-            'host_ids': '284771ee197e422d5176d6634a62b934',
-            'command_type': 'ls',
-            'full_command': 'ls C:\\'
-        }
+        "args",
+        return_value={"host_ids": "284771ee197e422d5176d6634a62b934", "command_type": "ls", "full_command": "ls C:\\"},
     )
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'batch_id'
-        },
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
     )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-command/v1',
-        json=response,
-        status_code=201
-    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-command/v1", json=response, status_code=201)
     results = run_command()
     expected_results = {
-        'CrowdStrike': {
-            'Command': [{
-                'HostID': '284771ee197e422d5176d6634a62b934',
-                'SessionID': '1113b475-2c28-4486-8617-d000b8f3bc8d',
-                'BatchID': 'batch_id',
-                'Stdout': 'Directory listing for C:\\ -\n\n'
-                          'Name                                     Type         Size (bytes)    Size (MB)       '
-                          'Last Modified (UTC-5)     Created (UTC-5)          \n----                             '
-                          '        ----         ------------    ---------       ---------------------     -------'
-                          '--------          \n$Recycle.Bin                             <Directory>  --          '
-                          '    --              11/27/2018 10:54:44 AM    9/15/2017 3:33:40 AM     \nITAYDI       '
-                          '                            <Directory>  --              --              11/19/2018 1:'
-                          '31:42 PM     11/19/2018 1:31:42 PM    ',
-                'Stderr': '',
-                'BaseCommand': 'ls',
-                'Command': 'ls C:\\'
-            }]
+        "CrowdStrike": {
+            "Command": [
+                {
+                    "HostID": "284771ee197e422d5176d6634a62b934",
+                    "SessionID": "1113b475-2c28-4486-8617-d000b8f3bc8d",
+                    "BatchID": "batch_id",
+                    "Stdout": "Directory listing for C:\\ -\n\n"
+                    "Name                                     Type         Size (bytes)    Size (MB)       "
+                    "Last Modified (UTC-5)     Created (UTC-5)          \n----                             "
+                    "        ----         ------------    ---------       ---------------------     -------"
+                    "--------          \n$Recycle.Bin                             <Directory>  --          "
+                    "    --              11/27/2018 10:54:44 AM    9/15/2017 3:33:40 AM     \nITAYDI       "
+                    "                            <Directory>  --              --              11/19/2018 1:"
+                    "31:42 PM     11/19/2018 1:31:42 PM    ",
+                    "Stderr": "",
+                    "BaseCommand": "ls",
+                    "Command": "ls C:\\",
+                }
+            ]
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_run_command_write_scope(requests_mock, mocker):
     from CrowdStrikeFalcon import run_command
+
     response = {
         "combined": {
             "resources": {
@@ -272,58 +260,51 @@ def test_run_command_write_scope(requests_mock, mocker):
                     "session_id": "ed0743e0-b156-4f98-8bbb-7a720a4192cf",
                     "stderr": "",
                     "stdout": "C:\\demistotest1",
-                    "task_id": "e579eee6-ce7a-487c-8fef-439ebc9c3bc0"
+                    "task_id": "e579eee6-ce7a-487c-8fef-439ebc9c3bc0",
                 }
             }
         },
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.478696373,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        }
+        "meta": {"powered_by": "empower-api", "query_time": 0.478696373, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
     }
     mocker.patch.object(
         demisto,
-        'args',
+        "args",
         return_value={
-            'host_ids': '284771ee197e422d5176d6634a62b934',
-            'command_type': 'mkdir',
-            'full_command': 'mkdir C:\\demistotest1',
-            'scope': 'write'
-        }
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'batch_id'
+            "host_ids": "284771ee197e422d5176d6634a62b934",
+            "command_type": "mkdir",
+            "full_command": "mkdir C:\\demistotest1",
+            "scope": "write",
         },
-        status_code=201
     )
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-active-responder-command/v1',
-        json=response,
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
+    )
+    requests_mock.post(
+        f"{SERVER_URL}/real-time-response/combined/batch-active-responder-command/v1", json=response, status_code=201
     )
     results = run_command()
     expected_results = {
-        'CrowdStrike': {
-            'Command': [{
-                'HostID': '284771ee197e422d5176d6634a62b934',
-                'BatchID': 'batch_id',
-                'SessionID': 'ed0743e0-b156-4f98-8bbb-7a720a4192cf',
-                'Stdout': 'C:\\demistotest1',
-                'Stderr': '',
-                'BaseCommand': 'mkdir',
-                'Command': 'mkdir C:\\demistotest1'
-            }]
+        "CrowdStrike": {
+            "Command": [
+                {
+                    "HostID": "284771ee197e422d5176d6634a62b934",
+                    "BatchID": "batch_id",
+                    "SessionID": "ed0743e0-b156-4f98-8bbb-7a720a4192cf",
+                    "Stdout": "C:\\demistotest1",
+                    "Stderr": "",
+                    "BaseCommand": "mkdir",
+                    "Command": "mkdir C:\\demistotest1",
+                }
+            ]
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_run_command_with_stderr(requests_mock, mocker):
     from CrowdStrikeFalcon import run_command
+
     response = {
         "combined": {
             "resources": {
@@ -335,63 +316,54 @@ def test_run_command_with_stderr(requests_mock, mocker):
                     "query_time": 4.111527091,
                     "session_id": "4d41588e-8455-4f0f-a3ee-0515922a8d94",
                     "stderr": "The term 'somepowershellscript' is not recognized as the name of a cmdlet, function,"
-                              " script file, or operable program. Check the spelling of the name, or if a path was "
-                              "included, verify that the path is correct and try again.",
+                    " script file, or operable program. Check the spelling of the name, or if a path was "
+                    "included, verify that the path is correct and try again.",
                     "stdout": "",
-                    "task_id": "6d78e0ab-ec8a-4a5b-a948-1dca6381a9d1"
+                    "task_id": "6d78e0ab-ec8a-4a5b-a948-1dca6381a9d1",
                 }
             }
         },
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 4.112103195,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        }
+        "meta": {"powered_by": "empower-api", "query_time": 4.112103195, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
     }
     mocker.patch.object(
         demisto,
-        'args',
+        "args",
         return_value={
-            'host_ids': '284771ee197e422d5176d6634a62b934',
-            'command_type': 'runscript',
-            'full_command': 'runscript -CloudFile=InvalidPowerShellScript',
-            'scope': 'admin'
-        }
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'batch_id'
+            "host_ids": "284771ee197e422d5176d6634a62b934",
+            "command_type": "runscript",
+            "full_command": "runscript -CloudFile=InvalidPowerShellScript",
+            "scope": "admin",
         },
-        status_code=201
     )
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-admin-command/v1',
-        json=response,
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
     )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-admin-command/v1", json=response, status_code=201)
     results = run_command()
     expected_results = {
-        'CrowdStrike': {
-            'Command': [{
-                'HostID': '284771ee197e422d5176d6634a62b934',
-                'BatchID': 'batch_id',
-                'SessionID': '4d41588e-8455-4f0f-a3ee-0515922a8d94',
-                'Stdout': '',
-                'Stderr': "The term 'somepowershellscript' is not recognized as the name of a cmdlet, function,"
-                          " script file, or operable program. Check the spelling of the name, or if a path was "
-                          "included, verify that the path is correct and try again.",
-                'BaseCommand': 'runscript',
-                'Command': 'runscript -CloudFile=InvalidPowerShellScript'
-            }]
+        "CrowdStrike": {
+            "Command": [
+                {
+                    "HostID": "284771ee197e422d5176d6634a62b934",
+                    "BatchID": "batch_id",
+                    "SessionID": "4d41588e-8455-4f0f-a3ee-0515922a8d94",
+                    "Stdout": "",
+                    "Stderr": "The term 'somepowershellscript' is not recognized as the name of a cmdlet, function,"
+                    " script file, or operable program. Check the spelling of the name, or if a path was "
+                    "included, verify that the path is correct and try again.",
+                    "BaseCommand": "runscript",
+                    "Command": "runscript -CloudFile=InvalidPowerShellScript",
+                }
+            ]
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_run_script(requests_mock, mocker):
     from CrowdStrikeFalcon import run_script_command
+
     response = {
         "combined": {
             "resources": {
@@ -403,183 +375,162 @@ def test_run_script(requests_mock, mocker):
                     "query_time": 4.111527091,
                     "session_id": "4d41588e-8455-4f0f-a3ee-0515922a8d94",
                     "stderr": "",
-                    "stdout": 'Hello, World!',
-                    "task_id": "6d78e0ab-ec8a-4a5b-a948-1dca6381a9d1"
+                    "stdout": "Hello, World!",
+                    "task_id": "6d78e0ab-ec8a-4a5b-a948-1dca6381a9d1",
                 }
             }
         },
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 4.112103195,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
+        "meta": {"powered_by": "empower-api", "query_time": 4.112103195, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
+    }
+    mocker.patch.object(
+        demisto, "args", return_value={"host_id": "284771ee197e422d5176d6634a62b934", "raw": "Write-Output 'Hello, World!"}
+    )
+    requests_mock.post(
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
+    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-admin-command/v1", json=response, status_code=201)
+    results = run_script_command()
+    expected_results = {
+        "CrowdStrike": {
+            "Command": [
+                {
+                    "HostID": "284771ee197e422d5176d6634a62b934",
+                    "SessionID": "4d41588e-8455-4f0f-a3ee-0515922a8d94",
+                    "Stdout": "Hello, World!",
+                    "Stderr": "",
+                    "BaseCommand": "runscript",
+                    "Command": "runscript -Raw=Write-Output 'Hello, World! -Timeout=30",
+                }
+            ]
         }
+    }
+    assert results["EntryContext"] == expected_results
+
+
+def test_run_script_with_command_line(requests_mock, mocker):
+    """
+    Given:
+        A command_line argument in addition to the script_name argument.
+    When:
+        Running the cs-falcon-run-script command.
+    Then:
+        Verify that -CommandLine={command_line} is appended after the base command and before -Timeout.
+    """
+    from CrowdStrikeFalcon import run_script_command
+
+    response = {
+        "combined": {
+            "resources": {
+                "284771ee197e422d5176d6634a62b934": {
+                    "aid": "284771ee197e422d5176d6634a62b934",
+                    "base_command": "runscript",
+                    "complete": True,
+                    "errors": None,
+                    "query_time": 4.111527091,
+                    "session_id": "4d41588e-8455-4f0f-a3ee-0515922a8d94",
+                    "stderr": "",
+                    "stdout": "Hello, World!",
+                    "task_id": "6d78e0ab-ec8a-4a5b-a948-1dca6381a9d1",
+                }
+            }
+        },
+        "errors": [],
+        "meta": {"powered_by": "empower-api", "query_time": 4.112103195, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
     }
     mocker.patch.object(
         demisto,
-        'args',
+        "args",
         return_value={
-            'host_id': '284771ee197e422d5176d6634a62b934',
-            'raw': "Write-Output 'Hello, World!"
-        }
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'batch_id'
+            "host_id": "284771ee197e422d5176d6634a62b934",
+            "script_name": "MyScript",
+            "command_line": "-Foo bar -Baz qux",
         },
-        status_code=201
     )
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-admin-command/v1',
-        json=response,
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
     )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-admin-command/v1", json=response, status_code=201)
     results = run_script_command()
-    expected_results = {
-        'CrowdStrike': {
-            'Command': [{
-                'HostID': '284771ee197e422d5176d6634a62b934',
-                'SessionID': '4d41588e-8455-4f0f-a3ee-0515922a8d94',
-                'Stdout': 'Hello, World!',
-                'Stderr': '',
-                'BaseCommand': 'runscript',
-                'Command': "runscript -Raw=Write-Output 'Hello, World! -Timeout=30"
-            }]
-        }
-    }
-    assert results['EntryContext'] == expected_results
+    expected_command = "runscript -CloudFile=MyScript -CommandLine=-Foo bar -Baz qux -Timeout=30"
+    assert results["EntryContext"]["CrowdStrike"]["Command"][0]["Command"] == expected_command
 
 
 def test_run_script_failure_bad_inputs(mocker):
     from CrowdStrikeFalcon import run_script_command
 
     # test failure given both script_name and raw arguments
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_name': 'iloveny',
-            'raw': 'RAWR'
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"script_name": "iloveny", "raw": "RAWR"})
     with pytest.raises(ValueError) as e:
         run_script_command()
-    assert str(e.value) == 'Only one of the arguments script_name or raw should be provided, not both.'
+    assert str(e.value) == "Only one of the arguments script_name or raw should be provided, not both."
 
     # test failure none of the arguments script_name and raw given
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={}
-    )
+    mocker.patch.object(demisto, "args", return_value={})
     with pytest.raises(ValueError) as e:
         run_script_command()
-    assert str(e.value) == 'One of the arguments script_name or raw must be provided, none given.'
+    assert str(e.value) == "One of the arguments script_name or raw must be provided, none given."
+
+    # test failure command_line provided with raw instead of script_name
+    mocker.patch.object(demisto, "args", return_value={"raw": "Write-Output 'Hello'", "command_line": "-Foo bar"})
+    with pytest.raises(ValueError) as e:
+        run_script_command()
+    assert str(e.value) == "The command_line argument can only be used together with the script_name argument."
 
 
 def test_upload_script_given_content(requests_mock, mocker):
     from CrowdStrikeFalcon import upload_script_command
+
     response = {
         "meta": {
             "query_time": 0.782968846,
-            "writes": {
-                "resources_affected": 1
-            },
+            "writes": {"resources_affected": 1},
             "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
+            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d",
         }
     }
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v1',
-        json=response,
-        status_code=200
-    )
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny',
-            'content': "Write-Output 'Hello, World!'"
-        }
-    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/scripts/v1", json=response, status_code=200)
+    mocker.patch.object(demisto, "args", return_value={"name": "iloveny", "content": "Write-Output 'Hello, World!'"})
     results = upload_script_command()
-    assert results['HumanReadable'] == 'The script was uploaded successfully'
-    assert results['Contents'] == response
+    assert results["HumanReadable"] == "The script was uploaded successfully"
+    assert results["Contents"] == response
 
 
 def test_upload_script_given_file(requests_mock, mocker):
     from CrowdStrikeFalcon import upload_script_command
+
     response = {
         "meta": {
             "query_time": 0.782968846,
-            "writes": {
-                "resources_affected": 1
-            },
+            "writes": {"resources_affected": 1},
             "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
+            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d",
         }
     }
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v1',
-        json=response,
-        status_code=200
-    )
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny',
-            'entry_id': '23@32'
-        }
-    )
-    mocker.patch.object(
-        demisto,
-        'getFilePath',
-        return_value={
-            'path': 'test_data/HelloWorld.ps1',
-            'name': 'HelloWorld.ps1'
-        }
-    )
-    mocker.patch.object(demisto, 'results')
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/scripts/v1", json=response, status_code=200)
+    mocker.patch.object(demisto, "args", return_value={"name": "iloveny", "entry_id": "23@32"})
+    mocker.patch.object(demisto, "getFilePath", return_value={"path": "test_data/HelloWorld.ps1", "name": "HelloWorld.ps1"})
+    mocker.patch.object(demisto, "results")
     results = upload_script_command()
-    assert results['HumanReadable'] == 'The script was uploaded successfully'
-    assert results['Contents'] == response
+    assert results["HumanReadable"] == "The script was uploaded successfully"
+    assert results["Contents"] == response
 
 
 def test_upload_script_failure_already_exists(requests_mock, mocker):
     from CrowdStrikeFalcon import upload_script_command
+
     response = {
-        "meta": {
-            "query_time": 0.01543348,
-            "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
-        "errors": [
-            {
-                "code": 409,
-                "message": "file with given name already exists"
-            }
-        ]
+        "meta": {"query_time": 0.01543348, "powered_by": "empower", "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
+        "errors": [{"code": 409, "message": "file with given name already exists"}],
     }
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v1',
-        json=response,
-        status_code=409,
-        reason='Conflict'
-    )
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny',
-            'content': "Write-Output 'Hello, World!'"
-        }
-    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/scripts/v1", json=response, status_code=409, reason="Conflict")
+    mocker.patch.object(demisto, "args", return_value={"name": "iloveny", "content": "Write-Output 'Hello, World!'"})
     with pytest.raises(DemistoException) as error_info:
         upload_script_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 409 - ' \
-                                    'reason: Conflict\nfile with given name already exists'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 409 - "
+        "reason: Conflict\nfile with given name already exists"
+    )
 
 
 def test_upload_script_failure_bad_inputs(requests_mock, mocker):
@@ -587,40 +538,25 @@ def test_upload_script_failure_bad_inputs(requests_mock, mocker):
 
     # test failure given both content and entry_id arguments
     mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny',
-            'content': "Write-Output 'Hello, World!'",
-            'entry_id': '23@32'
-        }
+        demisto, "args", return_value={"name": "iloveny", "content": "Write-Output 'Hello, World!'", "entry_id": "23@32"}
     )
     with pytest.raises(ValueError) as e:
         upload_script_command()
-    assert str(e.value) == 'Only one of the arguments entry_id or content should be provided, not both.'
+    assert str(e.value) == "Only one of the arguments entry_id or content should be provided, not both."
 
     # test failure none of the arguments content and entry_id given
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny'
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"name": "iloveny"})
     with pytest.raises(ValueError) as e:
         upload_script_command()
-    assert str(e.value) == 'One of the arguments entry_id or content must be provided, none given.'
+    assert str(e.value) == "One of the arguments entry_id or content must be provided, none given."
 
 
 def test_get_script_without_content(requests_mock, mocker):
     from CrowdStrikeFalcon import get_script_command
-    script_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    script_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "0f047130-1ea2-44cb-a178-e5a85b2ad55a"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "0f047130-1ea2-44cb-a178-e5a85b2ad55a"},
         "resources": [
             {
                 "created_by": "spongobob@demisto.com",
@@ -637,55 +573,42 @@ def test_get_script_without_content(requests_mock, mocker):
                 "run_success_count": 0,
                 "sha256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
                 "size": 4444,
-                'write_access': True
+                "write_access": True,
             }
-        ]
+        ],
     }
-    mocker.patch.object(demisto, 'results')
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_id': script_id
-        }
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v2?ids={script_id}',
-        json=response,
-        status_code=200
-    )
+    mocker.patch.object(demisto, "results")
+    mocker.patch.object(demisto, "args", return_value={"script_id": script_id})
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/scripts/v2?ids={script_id}", json=response, status_code=200)
     results = get_script_command()
     expected_results = {
-        'CrowdStrike.Script(val.ID === obj.ID)': {
-            'CreatedBy': 'spongobob@demisto.com',
-            'CreatedTime': '2019-10-17T13:41:48.487520845Z',
-            'Description': 'Demisto',
-            'ID': 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a',
-            'ModifiedBy': 'spongobob@demisto.com',
-            'ModifiedTime': '2019-10-17T13:41:48.487521161Z',
-            'Name': 'Demisto',
-            'Permission': 'private',
-            'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-            'RunAttemptCount': 0,
-            'RunSuccessCount': 0,
-            'WriteAccess': True
+        "CrowdStrike.Script(val.ID === obj.ID)": {
+            "CreatedBy": "spongobob@demisto.com",
+            "CreatedTime": "2019-10-17T13:41:48.487520845Z",
+            "Description": "Demisto",
+            "ID": "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a",
+            "ModifiedBy": "spongobob@demisto.com",
+            "ModifiedTime": "2019-10-17T13:41:48.487521161Z",
+            "Name": "Demisto",
+            "Permission": "private",
+            "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+            "RunAttemptCount": 0,
+            "RunSuccessCount": 0,
+            "WriteAccess": True,
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
     # verify there was no file returned as there no file content was returned
     assert demisto.results.call_count == 0
 
 
 def test_get_script_with_content(requests_mock, mocker, request):
     from CrowdStrikeFalcon import get_script_command
-    script_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    script_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     script_content = "function Demisto {}"
     response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "0f047130-1ea2-44cb-a178-e5a85b2ad55a"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "0f047130-1ea2-44cb-a178-e5a85b2ad55a"},
         "resources": [
             {
                 "content": script_content,
@@ -703,11 +626,11 @@ def test_get_script_with_content(requests_mock, mocker, request):
                 "run_success_count": 0,
                 "sha256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
                 "size": 4444,
-                'write_access': True
+                "write_access": True,
             }
-        ]
+        ],
     }
-    file_name = '1_test_file_result'
+    file_name = "1_test_file_result"
 
     def cleanup():
         try:
@@ -716,184 +639,121 @@ def test_get_script_with_content(requests_mock, mocker, request):
             pass
 
     request.addfinalizer(cleanup)
-    mocker.patch.object(demisto, 'uniqueFile', return_value="test_file_result")
-    mocker.patch.object(demisto, 'investigation', return_value={'id': '1'})
-    mocker.patch.object(demisto, 'results')
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_id': script_id
-        }
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v2?ids={script_id}',
-        json=response,
-        status_code=200
-    )
+    mocker.patch.object(demisto, "uniqueFile", return_value="test_file_result")
+    mocker.patch.object(demisto, "investigation", return_value={"id": "1"})
+    mocker.patch.object(demisto, "results")
+    mocker.patch.object(demisto, "args", return_value={"script_id": script_id})
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/scripts/v2?ids={script_id}", json=response, status_code=200)
     results = get_script_command()
     expected_results = {
-        'CrowdStrike.Script(val.ID === obj.ID)': {
-            'CreatedBy': 'spongobob@demisto.com',
-            'CreatedTime': '2019-10-17T13:41:48.487520845Z',
-            'Description': 'Demisto',
-            'ID': 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a',
-            'ModifiedBy': 'spongobob@demisto.com',
-            'ModifiedTime': '2019-10-17T13:41:48.487521161Z',
-            'Name': 'Demisto',
-            'Permission': 'private',
-            'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-            'RunAttemptCount': 0,
-            'RunSuccessCount': 0,
-            'WriteAccess': True
+        "CrowdStrike.Script(val.ID === obj.ID)": {
+            "CreatedBy": "spongobob@demisto.com",
+            "CreatedTime": "2019-10-17T13:41:48.487520845Z",
+            "Description": "Demisto",
+            "ID": "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a",
+            "ModifiedBy": "spongobob@demisto.com",
+            "ModifiedTime": "2019-10-17T13:41:48.487521161Z",
+            "Name": "Demisto",
+            "Permission": "private",
+            "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+            "RunAttemptCount": 0,
+            "RunSuccessCount": 0,
+            "WriteAccess": True,
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
     # verify there was file returned
     assert demisto.results.call_count == 1
     results = demisto.results.call_args[0]
     assert len(results) == 1
-    assert results[0]['Type'] == entryTypes['file']
-    assert results[0]['File'] == 'Demisto.ps1'
-    with open(file_name, 'rb') as f:
+    assert results[0]["Type"] == entryTypes["file"]
+    assert results[0]["File"] == "Demisto.ps1"
+    with open(file_name, "rb") as f:
         assert f.read().decode() == script_content
 
 
 def test_get_script_does_not_exist(requests_mock, mocker):
     from CrowdStrikeFalcon import get_script_command
-    script_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
-    response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "0f047130-1ea2-44cb-a178-e5a85b2ad55a"
-        },
-        "resources": []
-    }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_id': script_id
-        }
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v2?ids={script_id}',
-        json=response,
-        status_code=200
-    )
 
-    assert get_script_command() == 'No script found.'
+    script_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
+    response = {
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "0f047130-1ea2-44cb-a178-e5a85b2ad55a"},
+        "resources": [],
+    }
+    mocker.patch.object(demisto, "args", return_value={"script_id": script_id})
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/scripts/v2?ids={script_id}", json=response, status_code=200)
+
+    assert get_script_command() == "No script found."
 
 
 def test_delete_script(requests_mock, mocker):
     from CrowdStrikeFalcon import delete_script_command
-    script_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    script_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
         "meta": {
             "query_time": 0.535416674,
-            "writes": {
-                "resources_affected": 1
-            },
+            "writes": {"resources_affected": 1},
             "powered_by": "empower",
-            "trace_id": "b48fc444-8e80-48bf-akbf-281fb9471e5g"
+            "trace_id": "b48fc444-8e80-48bf-akbf-281fb9471e5g",
         }
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_id': script_id
-        }
-    )
-    requests_mock.delete(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v1?ids={script_id}',
-        json=response,
-        status_code=200
-    )
+    mocker.patch.object(demisto, "args", return_value={"script_id": script_id})
+    requests_mock.delete(f"{SERVER_URL}/real-time-response/entities/scripts/v1?ids={script_id}", json=response, status_code=200)
 
-    assert delete_script_command()['HumanReadable'] == f'Script {script_id} was deleted successfully'
+    assert delete_script_command()["HumanReadable"] == f"Script {script_id} was deleted successfully"
 
 
 def test_delete_script_failure_insufficient_permissions(requests_mock, mocker):
     from CrowdStrikeFalcon import delete_script_command
-    script_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    script_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
         "meta": {
             "query_time": 0.001585675,
             "powered_by": "crowdstrike-api-gateway",
-            "trace_id": "01fcdbc6-6319-42e4-8ab1-b3edca76aa2c"
+            "trace_id": "01fcdbc6-6319-42e4-8ab1-b3edca76aa2c",
         },
-        "errors": [
-            {
-                "code": 403,
-                "message": "access denied, authorization failed"
-            }
-        ]
+        "errors": [{"code": 403, "message": "access denied, authorization failed"}],
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_id': script_id
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"script_id": script_id})
     requests_mock.delete(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v1?ids={script_id}',
-        json=response,
-        status_code=403,
-        reason='Forbidden'
+        f"{SERVER_URL}/real-time-response/entities/scripts/v1?ids={script_id}", json=response, status_code=403, reason="Forbidden"
     )
 
     with pytest.raises(DemistoException) as error_info:
         delete_script_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 403 - ' \
-                                    'reason: Forbidden\naccess denied, authorization failed'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 403 - "
+        "reason: Forbidden\naccess denied, authorization failed"
+    )
 
 
 def test_delete_script_failure_not_found(requests_mock, mocker):
     from CrowdStrikeFalcon import delete_script_command
-    script_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    script_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
-        "meta": {
-            "query_time": 0.001585675,
-            "powered_by": "empower",
-            "trace_id": "01fcdbc6-6319-42e4-8ab1-b3edca76aa2c"
-        },
-        "errors": [
-            {
-                "code": 404,
-                "message": "Could not find file for deletion"
-            }
-        ]
+        "meta": {"query_time": 0.001585675, "powered_by": "empower", "trace_id": "01fcdbc6-6319-42e4-8ab1-b3edca76aa2c"},
+        "errors": [{"code": 404, "message": "Could not find file for deletion"}],
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'script_id': script_id
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"script_id": script_id})
     requests_mock.delete(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v1?ids={script_id}',
-        json=response,
-        status_code=404,
-        reason='Not Found'
+        f"{SERVER_URL}/real-time-response/entities/scripts/v1?ids={script_id}", json=response, status_code=404, reason="Not Found"
     )
     with pytest.raises(DemistoException) as error_info:
         delete_script_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 404 - ' \
-                                    'reason: Not Found\nCould not find file for deletion'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 404 - "
+        "reason: Not Found\nCould not find file for deletion"
+    )
 
 
 def test_list_scripts(requests_mock):
     from CrowdStrikeFalcon import list_scripts_command
+
     response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.031727879,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.031727879, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
         "resources": [
             {
                 "created_by": "spongobob@demisto.com",
@@ -910,132 +770,80 @@ def test_list_scripts(requests_mock):
                 "run_success_count": 0,
                 "sha256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
                 "size": 4444,
-                "platform": [
-                    "windows"
-                ],
-                "write_access": True
+                "platform": ["windows"],
+                "write_access": True,
             }
-        ]
+        ],
     }
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/scripts/v2',
-        json=response
-    )
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/scripts/v2", json=response)
     results = list_scripts_command()
     expected_results = {
-        'CrowdStrike.Script(val.ID === obj.ID)': [
+        "CrowdStrike.Script(val.ID === obj.ID)": [
             {
-                'CreatedBy': 'spongobob@demisto.com',
-                'CreatedTime': '2019-10-17T13:41:48.487520845Z',
-                'Description': 'Demisto',
-                'ID': 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a',
-                'ModifiedBy': 'spongobob@demisto.com',
-                'ModifiedTime': '2019-10-17T13:41:48.487521161Z',
-                'Name': 'Demisto',
-                'Permission': 'private',
-                'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-                'RunAttemptCount': 0,
-                'RunSuccessCount': 0,
-                'Platform': [
-                    "windows"
-                ],
-                'WriteAccess': True
+                "CreatedBy": "spongobob@demisto.com",
+                "CreatedTime": "2019-10-17T13:41:48.487520845Z",
+                "Description": "Demisto",
+                "ID": "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a",
+                "ModifiedBy": "spongobob@demisto.com",
+                "ModifiedTime": "2019-10-17T13:41:48.487521161Z",
+                "Name": "Demisto",
+                "Permission": "private",
+                "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+                "RunAttemptCount": 0,
+                "RunSuccessCount": 0,
+                "Platform": ["windows"],
+                "WriteAccess": True,
             }
         ]
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_upload_file(requests_mock, mocker):
     from CrowdStrikeFalcon import upload_file_command
+
     response = {
         "meta": {
             "query_time": 0.782968846,
-            "writes": {
-                "resources_affected": 1
-            },
+            "writes": {"resources_affected": 1},
             "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
+            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d",
         }
     }
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v1',
-        json=response,
-        status_code=200
-    )
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny',
-            'entry_id': '23@32'
-        }
-    )
-    mocker.patch.object(
-        demisto,
-        'getFilePath',
-        return_value={
-            'path': 'test_data/HelloWorld.ps1',
-            'name': 'HelloWorld.ps1'
-        }
-    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/put-files/v1", json=response, status_code=200)
+    mocker.patch.object(demisto, "args", return_value={"name": "iloveny", "entry_id": "23@32"})
+    mocker.patch.object(demisto, "getFilePath", return_value={"path": "test_data/HelloWorld.ps1", "name": "HelloWorld.ps1"})
     results = upload_file_command()
-    assert results['HumanReadable'] == 'File was uploaded successfully'
-    assert results['Contents'] == response
+    assert results["HumanReadable"] == "File was uploaded successfully"
+    assert results["Contents"] == response
 
 
 def test_upload_file_failure_already_exists(requests_mock, mocker):
     from CrowdStrikeFalcon import upload_file_command
+
     response = {
-        "meta": {
-            "query_time": 0.01543348,
-            "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
-        "errors": [
-            {
-                "code": 409,
-                "message": "file with given name already exists"
-            }
-        ]
+        "meta": {"query_time": 0.01543348, "powered_by": "empower", "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
+        "errors": [{"code": 409, "message": "file with given name already exists"}],
     }
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v1',
-        json=response,
-        status_code=409,
-        reason='Conflict'
+        f"{SERVER_URL}/real-time-response/entities/put-files/v1", json=response, status_code=409, reason="Conflict"
     )
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'name': 'iloveny',
-            'entry_id': "23@32"
-        }
-    )
-    mocker.patch.object(
-        demisto,
-        'getFilePath',
-        return_value={
-            'path': 'test_data/HelloWorld.ps1',
-            'name': 'HelloWorld.ps1'
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"name": "iloveny", "entry_id": "23@32"})
+    mocker.patch.object(demisto, "getFilePath", return_value={"path": "test_data/HelloWorld.ps1", "name": "HelloWorld.ps1"})
     with pytest.raises(DemistoException) as error_info:
         upload_file_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 409 - ' \
-                                    'reason: Conflict\nfile with given name already exists'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 409 - "
+        "reason: Conflict\nfile with given name already exists"
+    )
 
 
 def test_get_file_without_content(requests_mock, mocker):
     from CrowdStrikeFalcon import get_file_command
-    file_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    file_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
         "resources": [
             {
                 "created_by": "spongobob@demisto.com",
@@ -1052,59 +860,46 @@ def test_get_file_without_content(requests_mock, mocker):
                 "run_success_count": 0,
                 "sha256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
                 "size": 4444,
-                'write_access': True
+                "write_access": True,
             }
-        ]
+        ],
     }
-    mocker.patch.object(demisto, 'results')
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'file_id': file_id
-        }
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v2?ids={file_id}',
-        json=response,
-        status_code=200
-    )
+    mocker.patch.object(demisto, "results")
+    mocker.patch.object(demisto, "args", return_value={"file_id": file_id})
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/put-files/v2?ids={file_id}", json=response, status_code=200)
     results = get_file_command()
     expected_results = {
-        'CrowdStrike.File(val.ID === obj.ID)': {
-            'CreatedBy': 'spongobob@demisto.com',
-            'CreatedTime': '2019-10-17T13:41:48.487520845Z',
-            'Description': 'Demisto',
-            'ID': 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a',
-            'ModifiedBy': 'spongobob@demisto.com',
-            'ModifiedTime': '2019-10-17T13:41:48.487521161Z',
-            'Name': 'Demisto',
-            'Permission': 'private',
-            'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-            'Type': 'script'
+        "CrowdStrike.File(val.ID === obj.ID)": {
+            "CreatedBy": "spongobob@demisto.com",
+            "CreatedTime": "2019-10-17T13:41:48.487520845Z",
+            "Description": "Demisto",
+            "ID": "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a",
+            "ModifiedBy": "spongobob@demisto.com",
+            "ModifiedTime": "2019-10-17T13:41:48.487521161Z",
+            "Name": "Demisto",
+            "Permission": "private",
+            "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+            "Type": "script",
         },
-        outputPaths['file']: {
-            'Name': 'Demisto',
-            'Size': 4444,
-            'Type': 'script',
-            'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc'
-        }
+        outputPaths["file"]: {
+            "Name": "Demisto",
+            "Size": 4444,
+            "Type": "script",
+            "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+        },
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
     # verify there was no file returned as there no file content was returned
     assert demisto.results.call_count == 0
 
 
 def test_get_file_with_content(requests_mock, mocker, request):
     from CrowdStrikeFalcon import get_file_command
-    file_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    file_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     file_content = "function Demisto {}"
     response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
         "resources": [
             {
                 "content": file_content,
@@ -1121,9 +916,9 @@ def test_get_file_with_content(requests_mock, mocker, request):
                 "sha256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
                 "size": 4444,
             }
-        ]
+        ],
     }
-    file_name = '1_test_file_result'
+    file_name = "1_test_file_result"
 
     def cleanup():
         try:
@@ -1132,187 +927,124 @@ def test_get_file_with_content(requests_mock, mocker, request):
             pass
 
     request.addfinalizer(cleanup)
-    mocker.patch.object(demisto, 'uniqueFile', return_value="test_file_result")
-    mocker.patch.object(demisto, 'investigation', return_value={'id': '1'})
-    mocker.patch.object(demisto, 'results')
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'file_id': file_id
-        }
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v2?ids={file_id}',
-        json=response,
-        status_code=200
-    )
+    mocker.patch.object(demisto, "uniqueFile", return_value="test_file_result")
+    mocker.patch.object(demisto, "investigation", return_value={"id": "1"})
+    mocker.patch.object(demisto, "results")
+    mocker.patch.object(demisto, "args", return_value={"file_id": file_id})
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/put-files/v2?ids={file_id}", json=response, status_code=200)
     results = get_file_command()
     expected_results = {
-        'CrowdStrike.File(val.ID === obj.ID)': {
-            'CreatedBy': 'spongobob@demisto.com',
-            'CreatedTime': '2019-10-17T13:41:48.487520845Z',
-            'Description': 'Demisto',
-            'ID': 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a',
-            'ModifiedBy': 'spongobob@demisto.com',
-            'ModifiedTime': '2019-10-17T13:41:48.487521161Z',
-            'Name': 'Demisto',
-            'Permission': 'private',
-            'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-            'Type': 'script'
+        "CrowdStrike.File(val.ID === obj.ID)": {
+            "CreatedBy": "spongobob@demisto.com",
+            "CreatedTime": "2019-10-17T13:41:48.487520845Z",
+            "Description": "Demisto",
+            "ID": "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a",
+            "ModifiedBy": "spongobob@demisto.com",
+            "ModifiedTime": "2019-10-17T13:41:48.487521161Z",
+            "Name": "Demisto",
+            "Permission": "private",
+            "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+            "Type": "script",
         },
-        outputPaths['file']: {
-            'Name': 'Demisto',
-            'Size': 4444,
-            'Type': 'script',
-            'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc'
-        }
+        outputPaths["file"]: {
+            "Name": "Demisto",
+            "Size": 4444,
+            "Type": "script",
+            "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+        },
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
     # verify there was file returned
     assert demisto.results.call_count == 1
     results = demisto.results.call_args[0]
     assert len(results) == 1
-    assert results[0]['Type'] == entryTypes['file']
-    assert results[0]['File'] == 'Demisto'
-    with open(file_name, 'rb') as f:
+    assert results[0]["Type"] == entryTypes["file"]
+    assert results[0]["File"] == "Demisto"
+    with open(file_name, "rb") as f:
         assert f.read().decode() == file_content
 
 
 def test_get_file_does_not_exist(requests_mock, mocker):
     from CrowdStrikeFalcon import get_file_command
-    file_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
-    response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
-        "resources": []
-    }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'file_id': file_id
-        }
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v2?ids={file_id}',
-        json=response,
-        status_code=200
-    )
 
-    assert get_file_command() == 'No file found.'
+    file_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
+    response = {
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
+        "resources": [],
+    }
+    mocker.patch.object(demisto, "args", return_value={"file_id": file_id})
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/put-files/v2?ids={file_id}", json=response, status_code=200)
+
+    assert get_file_command() == "No file found."
 
 
 def test_delete_file(requests_mock, mocker):
     from CrowdStrikeFalcon import delete_file_command
-    file_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    file_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
         "meta": {
             "query_time": 0.535416674,
-            "writes": {
-                "resources_affected": 1
-            },
+            "writes": {"resources_affected": 1},
             "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
+            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d",
         }
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'file_id': file_id
-        }
-    )
-    requests_mock.delete(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v1?ids={file_id}',
-        json=response,
-        status_code=200
-    )
+    mocker.patch.object(demisto, "args", return_value={"file_id": file_id})
+    requests_mock.delete(f"{SERVER_URL}/real-time-response/entities/put-files/v1?ids={file_id}", json=response, status_code=200)
 
-    assert delete_file_command()['HumanReadable'] == f'File {file_id} was deleted successfully'
+    assert delete_file_command()["HumanReadable"] == f"File {file_id} was deleted successfully"
 
 
 def test_delete_file_failure_insufficient_permissions(requests_mock, mocker):
     from CrowdStrikeFalcon import delete_file_command
-    file_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    file_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
         "meta": {
             "query_time": 0.001585675,
             "powered_by": "crowdstrike-api-gateway",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
+            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d",
         },
-        "errors": [
-            {
-                "code": 403,
-                "message": "access denied, authorization failed"
-            }
-        ]
+        "errors": [{"code": 403, "message": "access denied, authorization failed"}],
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'file_id': file_id
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"file_id": file_id})
     requests_mock.delete(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v1?ids={file_id}',
-        json=response,
-        status_code=403,
-        reason='Forbidden'
+        f"{SERVER_URL}/real-time-response/entities/put-files/v1?ids={file_id}", json=response, status_code=403, reason="Forbidden"
     )
     with pytest.raises(DemistoException) as error_info:
         delete_file_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 403 - ' \
-                                    'reason: Forbidden\naccess denied, authorization failed'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 403 - "
+        "reason: Forbidden\naccess denied, authorization failed"
+    )
 
 
 def test_delete_file_failure_not_found(requests_mock, mocker):
     from CrowdStrikeFalcon import delete_file_command
-    file_id = 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a'
+
+    file_id = "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a"
     response = {
-        "meta": {
-            "query_time": 0.001585675,
-            "powered_by": "empower",
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
-        "errors": [
-            {
-                "code": 404,
-                "message": "Could not find file for deletion"
-            }
-        ]
+        "meta": {"query_time": 0.001585675, "powered_by": "empower", "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
+        "errors": [{"code": 404, "message": "Could not find file for deletion"}],
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'file_id': file_id
-        }
-    )
+    mocker.patch.object(demisto, "args", return_value={"file_id": file_id})
     requests_mock.delete(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v1?ids={file_id}',
-        json=response,
-        status_code=404,
-        reason='Not Found'
+        f"{SERVER_URL}/real-time-response/entities/put-files/v1?ids={file_id}", json=response, status_code=404, reason="Not Found"
     )
     with pytest.raises(DemistoException) as error_info:
         delete_file_command()
-    assert str(error_info.value) == 'Error in API call to CrowdStrike Falcon: code: 404 - ' \
-                                    'reason: Not Found\nCould not find file for deletion'
+    assert (
+        str(error_info.value) == "Error in API call to CrowdStrike Falcon: code: 404 - "
+        "reason: Not Found\nCould not find file for deletion"
+    )
 
 
 def test_list_files(requests_mock):
     from CrowdStrikeFalcon import list_files_command
+
     response = {
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.082774607,
-            "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.082774607, "trace_id": "07kk11c3-496g-42df-9157-834e499e279d"},
         "resources": [
             {
                 "content": "function Demisto {}",
@@ -1329,44 +1061,42 @@ def test_list_files(requests_mock):
                 "run_attempt_count": 0,
                 "run_success_count": 0,
                 "sha256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
-                "size": 4444
-            }
-        ]
-    }
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/put-files/v2',
-        json=response
-    )
-    results = list_files_command()
-    expected_results = {
-        'CrowdStrike.File(val.ID === obj.ID)': [
-            {
-                'CreatedBy': 'spongobob@demisto.com',
-                'CreatedTime': '2019-10-17T13:41:48.487520845Z',
-                'Description': 'Demisto',
-                'ID': 'le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a',
-                'ModifiedBy': 'spongobob@demisto.com',
-                'ModifiedTime': '2019-10-17T13:41:48.487521161Z',
-                'Name': 'Demisto',
-                'Permission': 'private',
-                'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-                'Type': 'script'
+                "size": 4444,
             }
         ],
-        outputPaths['file']: [
-            {
-                'Name': 'Demisto',
-                'Size': 4444,
-                'Type': 'script',
-                'SHA256': '5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc',
-            }
-        ]
     }
-    assert results['EntryContext'] == expected_results
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/put-files/v2", json=response)
+    results = list_files_command()
+    expected_results = {
+        "CrowdStrike.File(val.ID === obj.ID)": [
+            {
+                "CreatedBy": "spongobob@demisto.com",
+                "CreatedTime": "2019-10-17T13:41:48.487520845Z",
+                "Description": "Demisto",
+                "ID": "le10098bf0e311e989190662caec3daa_94cc8c55556741faa1d82bd1faabfb4a",
+                "ModifiedBy": "spongobob@demisto.com",
+                "ModifiedTime": "2019-10-17T13:41:48.487521161Z",
+                "Name": "Demisto",
+                "Permission": "private",
+                "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+                "Type": "script",
+            }
+        ],
+        outputPaths["file"]: [
+            {
+                "Name": "Demisto",
+                "Size": 4444,
+                "Type": "script",
+                "SHA256": "5a4440f2b9ce60b070e98c304370050446a2efa4b3850550a99e4d7b8f447fcc",
+            }
+        ],
+    }
+    assert results["EntryContext"] == expected_results
 
 
 def test_run_get(requests_mock, mocker):
     from CrowdStrikeFalcon import run_get_command
+
     response = {
         "batch_get_cmd_req_id": "84ee4d50-f499-482e-bac6-b0e296149bbf",
         "combined": {
@@ -1380,38 +1110,26 @@ def test_run_get(requests_mock, mocker):
                     "session_id": "7f861cda-f19a-4df3-8599-e2a4f6761359",
                     "stderr": "",
                     "stdout": "C:\\Windows\\notepad.exe",
-                    "task_id": "b5c8f140-280b-43fd-8501-9900f837510b"
+                    "task_id": "b5c8f140-280b-43fd-8501-9900f837510b",
                 }
             }
         },
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 1.630543865,
-            "trace_id": "8637f34a-7202-445a-818d-816715c5b368"
-        }
+        "meta": {"powered_by": "empower-api", "query_time": 1.630543865, "trace_id": "8637f34a-7202-445a-818d-816715c5b368"},
     }
     mocker.patch.object(
         demisto,
-        'args',
+        "args",
         return_value={
-            'host_ids': 'edfd6a04ad134c4344f8fb119a3ad88e',
-            'file_path': "C:\\Windows\\notepad.exe",
-            'raw': "Write-Output 'Hello, World!"
-        }
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'batch_id'
+            "host_ids": "edfd6a04ad134c4344f8fb119a3ad88e",
+            "file_path": "C:\\Windows\\notepad.exe",
+            "raw": "Write-Output 'Hello, World!",
         },
-        status_code=201
     )
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-get-command/v1',
-        json=response,
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "batch_id"}, status_code=201
     )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-get-command/v1", json=response, status_code=201)
     results = run_get_command()
     expected_results = {
         "CrowdStrike.Command(val.TaskID === obj.TaskID)": [
@@ -1423,22 +1141,19 @@ def test_run_get(requests_mock, mocker):
                 "TaskID": "b5c8f140-280b-43fd-8501-9900f837510b",
                 "GetRequestID": "84ee4d50-f499-482e-bac6-b0e296149bbf",
                 "Complete": True,
-                "FilePath": "C:\\Windows\\notepad.exe"
+                "FilePath": "C:\\Windows\\notepad.exe",
             }
         ]
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_status_get(requests_mock, mocker):
     from CrowdStrikeFalcon import status_get_command
+
     response = {
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.00252648,
-            "trace_id": "7cd74ed7-4695-403a-a1f5-f7402b7b9409"
-        },
+        "meta": {"powered_by": "empower-api", "query_time": 0.00252648, "trace_id": "7cd74ed7-4695-403a-a1f5-f7402b7b9409"},
         "resources": {
             "edfd6a04ad134c4344f8fb119a3ad88e": {
                 "cloud_request_id": "b5c8f140-280b-43fd-8501-9900f837510b",
@@ -1449,23 +1164,16 @@ def test_status_get(requests_mock, mocker):
                 "session_id": "7f861cda-f19a-4df3-8599-e2a4f6761359",
                 "sha256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
                 "size": 0,
-                "updated_at": "2020-05-01T16:09:00Z"
+                "updated_at": "2020-05-01T16:09:00Z",
             }
-        }
+        },
     }
     mocker.patch.object(
         demisto,
-        'args',
-        return_value={
-            'request_ids': ['84ee4d50-f499-482e-bac6-b0e296149bbf'],
-            'raw': "Write-Output 'Hello, World!"
-        }
+        "args",
+        return_value={"request_ids": ["84ee4d50-f499-482e-bac6-b0e296149bbf"], "raw": "Write-Output 'Hello, World!"},
     )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/combined/batch-get-command/v1',
-        json=response,
-        status_code=201
-    )
+    requests_mock.get(f"{SERVER_URL}/real-time-response/combined/batch-get-command/v1", json=response, status_code=201)
     results = status_get_command(demisto.args())
     expected_results = {
         "CrowdStrike.File(val.ID === obj.ID || val.TaskID === obj.TaskID)": [
@@ -1477,7 +1185,7 @@ def test_status_get(requests_mock, mocker):
                 "SHA256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
                 "Size": 0,
                 "TaskID": "b5c8f140-280b-43fd-8501-9900f837510b",
-                "UpdatedAt": "2020-05-01T16:09:00Z"
+                "UpdatedAt": "2020-05-01T16:09:00Z",
             }
         ],
         "File(val.MD5 \u0026\u0026 val.MD5 == obj.MD5 || val.SHA1 \u0026\u0026 val.SHA1 == obj.SHA1 || val.SHA256 "
@@ -1487,45 +1195,34 @@ def test_status_get(requests_mock, mocker):
             {
                 "Name": "\\Device\\HarddiskVolume2\\Windows\\notepad.exe",
                 "SHA256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
-                "Size": 0
+                "Size": 0,
             }
-        ]
+        ],
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_status(requests_mock, mocker):
     from CrowdStrikeFalcon import status_command
+
     response = {
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.00635876,
-            "trace_id": "083a0a94-87f2-4e66-8621-32eb75b4f205"
-        },
-        "resources": [{
-            "base_command": "ls",
-            "complete": True,
-            "session_id": "ea68c338-84c9-4870-a3c9-b10e405622c1",
-            "stderr": "",
-            "stdout": "Directory listing for C:\\ ....",
-            "task_id": "ae323961-5aa8-442e-8461-8d05c4541d7d"
-        }
-        ]
+        "meta": {"powered_by": "empower-api", "query_time": 0.00635876, "trace_id": "083a0a94-87f2-4e66-8621-32eb75b4f205"},
+        "resources": [
+            {
+                "base_command": "ls",
+                "complete": True,
+                "session_id": "ea68c338-84c9-4870-a3c9-b10e405622c1",
+                "stderr": "",
+                "stdout": "Directory listing for C:\\ ....",
+                "task_id": "ae323961-5aa8-442e-8461-8d05c4541d7d",
+            }
+        ],
     }
     mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'request_id': 'ae323961-5aa8-442e-8461-8d05c4541d7d',
-            'raw': "Write-Output 'Hello, World!"
-        }
+        demisto, "args", return_value={"request_id": "ae323961-5aa8-442e-8461-8d05c4541d7d", "raw": "Write-Output 'Hello, World!"}
     )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/command/v1',
-        json=response,
-        status_code=201
-    )
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/command/v1", json=response, status_code=201)
     results = status_command()
     expected_results = {
         "CrowdStrike.Command(val.TaskID === obj.TaskID)": [
@@ -1536,129 +1233,102 @@ def test_status(requests_mock, mocker):
                 "SequenceID": 0,
                 "Stderr": "",
                 "Stdout": "Directory listing for C:\\ ....",
-                "TaskID": "ae323961-5aa8-442e-8461-8d05c4541d7d"
+                "TaskID": "ae323961-5aa8-442e-8461-8d05c4541d7d",
             }
         ]
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_get_extracted_file(requests_mock, mocker):
     from CrowdStrikeFalcon import get_extracted_file_command
-    response_content = b'file-data'
 
-    session_id = 'fdd6408f-6688-441b-8659-41bcad25441c'
+    response_content = b"file-data"
+
+    session_id = "fdd6408f-6688-441b-8659-41bcad25441c"
     response_session = {
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.025573986,
-            "trace_id": "291d3fda-9684-4ed7-ae88-bcc3940a2104"
-        },
-        "resources": [{
-            "created_at": "2020-05-01T17:52:16.781771496Z",
-            "existing_aid_sessions": 1,
-            "scripts": [],
-            "session_id": f"{session_id}"
-        }
-        ]
+        "meta": {"powered_by": "empower-api", "query_time": 0.025573986, "trace_id": "291d3fda-9684-4ed7-ae88-bcc3940a2104"},
+        "resources": [
+            {
+                "created_at": "2020-05-01T17:52:16.781771496Z",
+                "existing_aid_sessions": 1,
+                "scripts": [],
+                "session_id": f"{session_id}",
+            }
+        ],
     }
     mocker.patch.object(
         demisto,
-        'args',
+        "args",
         return_value={
-            'host_id': 'edfd6a04ad134c4344f8fb119a3ad88e',
-            'sha256': 'f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3',
-            'raw': "Write-Output 'Hello, World!"
-        }
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/sessions/v1',
-        json=response_session,
-        status_code=201
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/extracted-file-contents/v1',
-        headers={
-            'Content-Type': 'application/x-7z-compressed',
-            'Content-Disposition': 'test.7z'
+            "host_id": "edfd6a04ad134c4344f8fb119a3ad88e",
+            "sha256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
+            "raw": "Write-Output 'Hello, World!",
         },
-        content=response_content,
-        status_code=201
     )
-    mocker.patch.object(demisto, 'debug', return_value=None)
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/sessions/v1", json=response_session, status_code=201)
+    requests_mock.get(
+        f"{SERVER_URL}/real-time-response/entities/extracted-file-contents/v1",
+        headers={"Content-Type": "application/x-7z-compressed", "Content-Disposition": "test.7z"},
+        content=response_content,
+        status_code=201,
+    )
+    mocker.patch.object(demisto, "debug", return_value=None)
     results = get_extracted_file_command(demisto.args())
 
-    fpath = demisto.investigation()['id'] + '_' + results['FileID']
-    with open(fpath, 'rb') as f:
+    fpath = demisto.investigation()["id"] + "_" + results["FileID"]
+    with open(fpath, "rb") as f:
         assert f.read() == response_content
     os.remove(fpath)
 
 
 def test_list_host_files(requests_mock, mocker):
     from CrowdStrikeFalcon import list_host_files_command
+
     response = {
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.002667573,
-            "trace_id": "fe95bfec-54bd-4236-9652-81aa9f6ca66d"
-        },
-        "resources": [{
-            "cloud_request_id": "1269ad9e-c11f-4e38-8aba-1a0275304f9c",
-            "created_at": "2020-05-01T17:57:42Z",
-            "deleted_at": None,
-            "id": 186811,
-            "name": "\\Device\\HarddiskVolume2\\Windows\\notepad.exe",
-            "session_id": "fdd6408f-6688-441b-8659-41bcad25441c",
-            "sha256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
-            "size": 0,
-            "updated_at": "2020-05-01T17:57:42Z"
-        }
-        ]
+        "meta": {"powered_by": "empower-api", "query_time": 0.002667573, "trace_id": "fe95bfec-54bd-4236-9652-81aa9f6ca66d"},
+        "resources": [
+            {
+                "cloud_request_id": "1269ad9e-c11f-4e38-8aba-1a0275304f9c",
+                "created_at": "2020-05-01T17:57:42Z",
+                "deleted_at": None,
+                "id": 186811,
+                "name": "\\Device\\HarddiskVolume2\\Windows\\notepad.exe",
+                "session_id": "fdd6408f-6688-441b-8659-41bcad25441c",
+                "sha256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
+                "size": 0,
+                "updated_at": "2020-05-01T17:57:42Z",
+            }
+        ],
     }
 
-    session_id = 'fdd6408f-6688-441b-8659-41bcad25441c'
+    session_id = "fdd6408f-6688-441b-8659-41bcad25441c"
     response_session = {
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.025573986,
-            "trace_id": "291d3fda-9684-4ed7-ae88-bcc3940a2104"
-        },
-        "resources": [{
-            "created_at": "2020-05-01T17:52:16.781771496Z",
-            "existing_aid_sessions": 1,
-            "scripts": [],
-            "session_id": f"{session_id}"
-        }
-        ]
+        "meta": {"powered_by": "empower-api", "query_time": 0.025573986, "trace_id": "291d3fda-9684-4ed7-ae88-bcc3940a2104"},
+        "resources": [
+            {
+                "created_at": "2020-05-01T17:52:16.781771496Z",
+                "existing_aid_sessions": 1,
+                "scripts": [],
+                "session_id": f"{session_id}",
+            }
+        ],
     }
     mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'host_id': 'edfd6a04ad134c4344f8fb119a3ad88e',
-            'raw': "Write-Output 'Hello, World!"
-        }
+        demisto, "args", return_value={"host_id": "edfd6a04ad134c4344f8fb119a3ad88e", "raw": "Write-Output 'Hello, World!"}
     )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/sessions/v1',
-        json=response_session,
-        status_code=201
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/real-time-response/entities/file/v2',
-        json=response,
-        status_code=201
-    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/sessions/v1", json=response_session, status_code=201)
+    requests_mock.get(f"{SERVER_URL}/real-time-response/entities/file/v2", json=response, status_code=201)
     results = list_host_files_command()
     expected_results = {
         "CrowdStrike.Command(val.TaskID === obj.TaskID)": [
             {
                 "HostID": "edfd6a04ad134c4344f8fb119a3ad88e",
                 "SessionID": "fdd6408f-6688-441b-8659-41bcad25441c",
-                "TaskID": "1269ad9e-c11f-4e38-8aba-1a0275304f9c"
+                "TaskID": "1269ad9e-c11f-4e38-8aba-1a0275304f9c",
             }
         ],
         "CrowdStrike.File(val.ID === obj.ID)": [
@@ -1671,7 +1341,7 @@ def test_list_host_files(requests_mock, mocker):
                 "Size": 0,
                 "Stderr": None,
                 "Stdout": None,
-                "UpdatedAt": "2020-05-01T17:57:42Z"
+                "UpdatedAt": "2020-05-01T17:57:42Z",
             }
         ],
         "File(val.MD5 \u0026\u0026 val.MD5 == obj.MD5 || val.SHA1 \u0026\u0026 val.SHA1 == obj.SHA1 || val.SHA256 "
@@ -1681,11 +1351,11 @@ def test_list_host_files(requests_mock, mocker):
             {
                 "Name": "\\Device\\HarddiskVolume2\\Windows\\notepad.exe",
                 "SHA256": "f1d62648ef915d85cb4fc140359e925395d315c70f3566b63bb3e21151cb2ce3",
-                "Size": 0
+                "Size": 0,
             }
-        ]
+        ],
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_list_host_files_with_given_session_id(mocker):
@@ -1699,505 +1369,792 @@ def test_list_host_files_with_given_session_id(mocker):
     """
     # prepare
     import CrowdStrikeFalcon
-    mocker.patch.object(demisto, 'args', return_value={
-        'host_id': 'test_host_id',
-        'session_id': 'test_session_id'
-    })
-    mocker.patch.object(CrowdStrikeFalcon, 'list_host_files', return_value={})
+
+    mocker.patch.object(demisto, "args", return_value={"host_id": "test_host_id", "session_id": "test_session_id"})
+    mocker.patch.object(CrowdStrikeFalcon, "list_host_files", return_value={})
 
     # call
     CrowdStrikeFalcon.list_host_files_command()
 
     # assert
-    CrowdStrikeFalcon.list_host_files.assert_called_with('test_host_id', 'test_session_id')
+    CrowdStrikeFalcon.list_host_files.assert_called_with("test_host_id", "test_session_id")
 
 
 def test_refresh_session(requests_mock, mocker):
     from CrowdStrikeFalcon import refresh_session_command
 
-    session_id = 'fdd6408f-6688-441b-8659-41bcad25441c'
+    session_id = "fdd6408f-6688-441b-8659-41bcad25441c"
     response = {
         "errors": [],
-        "meta": {
-            "powered_by": "empower-api",
-            "query_time": 0.025573986,
-            "trace_id": "291d3fda-9684-4ed7-ae88-bcc3940a2104"
-        },
-        "resources": [{
-            "created_at": "2020-05-01T17:52:16.781771496Z",
-            "existing_aid_sessions": 1,
-            "scripts": [{
-                "args": [{
-                    "arg_name": "Path",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2019-06-25T23:48:59Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "File to concatenate",
-                    "encoding": "",
-                    "id": 7,
-                    "options": None,
-                    "required": True,
-                    "requires_value": False,
-                    "script_id": 6,
-                    "sequence": 1,
-                    "updated_at": "2019-06-25T23:48:59Z"
-                }, {
-                    "arg_name": "Count",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2019-06-25T23:48:59Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "Number of bytes to read (max=32768)",
-                    "encoding": "",
-                    "id": 51,
-                    "options": None,
-                    "required": False,
-                    "requires_value": False,
-                    "script_id": 6,
-                    "sequence": 2,
-                    "updated_at": "2019-06-25T23:48:59Z"
-                }, {
-                    "arg_name": "Offset",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2019-06-25T23:48:59Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "Offset (in byte value) to start reading from",
-                    "encoding": "",
-                    "id": 52,
-                    "options": None,
-                    "required": False,
-                    "requires_value": False,
-                    "script_id": 6,
-                    "sequence": 3,
-                    "updated_at": "2019-06-25T23:48:59Z"
-                }, {
-                    "arg_name": "ShowHex",
-                    "arg_type": "flag",
-                    "command_level": "non-destructive",
-                    "created_at": "2019-06-25T23:48:59Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "Show the results in hexadecimal format instead of ASCII",
-                    "encoding": "",
-                    "id": 53,
-                    "options": None,
-                    "required": False,
-                    "requires_value": False,
-                    "script_id": 6,
-                    "sequence": 4,
-                    "updated_at": "2019-06-25T23:48:59Z"
-                }
+        "meta": {"powered_by": "empower-api", "query_time": 0.025573986, "trace_id": "291d3fda-9684-4ed7-ae88-bcc3940a2104"},
+        "resources": [
+            {
+                "created_at": "2020-05-01T17:52:16.781771496Z",
+                "existing_aid_sessions": 1,
+                "scripts": [
+                    {
+                        "args": [
+                            {
+                                "arg_name": "Path",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2019-06-25T23:48:59Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "File to concatenate",
+                                "encoding": "",
+                                "id": 7,
+                                "options": None,
+                                "required": True,
+                                "requires_value": False,
+                                "script_id": 6,
+                                "sequence": 1,
+                                "updated_at": "2019-06-25T23:48:59Z",
+                            },
+                            {
+                                "arg_name": "Count",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2019-06-25T23:48:59Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "Number of bytes to read (max=32768)",
+                                "encoding": "",
+                                "id": 51,
+                                "options": None,
+                                "required": False,
+                                "requires_value": False,
+                                "script_id": 6,
+                                "sequence": 2,
+                                "updated_at": "2019-06-25T23:48:59Z",
+                            },
+                            {
+                                "arg_name": "Offset",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2019-06-25T23:48:59Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "Offset (in byte value) to start reading from",
+                                "encoding": "",
+                                "id": 52,
+                                "options": None,
+                                "required": False,
+                                "requires_value": False,
+                                "script_id": 6,
+                                "sequence": 3,
+                                "updated_at": "2019-06-25T23:48:59Z",
+                            },
+                            {
+                                "arg_name": "ShowHex",
+                                "arg_type": "flag",
+                                "command_level": "non-destructive",
+                                "created_at": "2019-06-25T23:48:59Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "Show the results in hexadecimal format instead of ASCII",
+                                "encoding": "",
+                                "id": 53,
+                                "options": None,
+                                "required": False,
+                                "requires_value": False,
+                                "script_id": 6,
+                                "sequence": 4,
+                                "updated_at": "2019-06-25T23:48:59Z",
+                            },
+                        ],
+                        "command": "cat",
+                        "description": "Read a file from disk and display as ASCII or hex",
+                        "examples": "    C:\\\u003e cat c:\\mytextfile.txt",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [
+                            {
+                                "arg_name": "Path",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2018-11-08T18:27:18Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "Relative or absolute directory",
+                                "encoding": "",
+                                "id": 8,
+                                "options": None,
+                                "required": True,
+                                "requires_value": False,
+                                "script_id": 8,
+                                "sequence": 1,
+                                "updated_at": "2018-11-08T18:27:18Z",
+                            }
+                        ],
+                        "command": "cd",
+                        "description": "Change the current working directory",
+                        "examples": "    C:\\\u003e cd C:\\Users\\Administrator\r\n",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "env",
+                        "description": "Get environment variables for all scopes (Machine / User / Process)",
+                        "examples": "",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "eventlog",
+                        "description": "Inspect event logs.",
+                        "examples": "",
+                        "internal_only": False,
+                        "runnable": False,
+                        "sub_commands": [
+                            {
+                                "args": [
+                                    {
+                                        "arg_name": "Name",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2018-05-01T19:38:30Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": 'Name of the event log, for example "Application", "System"',
+                                        "encoding": "",
+                                        "id": 35,
+                                        "options": None,
+                                        "required": True,
+                                        "requires_value": False,
+                                        "script_id": 25,
+                                        "sequence": 1,
+                                        "updated_at": "2018-05-01T19:38:30Z",
+                                    },
+                                    {
+                                        "arg_name": "Count",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2018-05-01T19:38:30Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": "Optional number of entries to return. Default:100 Max=500",
+                                        "encoding": "",
+                                        "id": 36,
+                                        "options": None,
+                                        "required": False,
+                                        "requires_value": False,
+                                        "script_id": 25,
+                                        "sequence": 2,
+                                        "updated_at": "2018-05-01T19:38:30Z",
+                                    },
+                                    {
+                                        "arg_name": "SourceName",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2018-05-01T19:38:30Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": 'Optional name of the event source, e.x. "WinLogon"',
+                                        "encoding": "",
+                                        "id": 37,
+                                        "options": None,
+                                        "required": False,
+                                        "requires_value": False,
+                                        "script_id": 25,
+                                        "sequence": 3,
+                                        "updated_at": "2018-05-01T19:38:30Z",
+                                    },
+                                ],
+                                "command": "view",
+                                "description": "View most recent N events in a given event log",
+                                "examples": "    C:\\\u003e eventlog view Application",
+                                "internal_only": False,
+                                "runnable": True,
+                                "sub_commands": [],
+                            },
+                            {
+                                "args": [
+                                    {
+                                        "arg_name": "Name",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2020-03-17T18:11:22Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": 'Name of the event log, for example "Application", "System"',
+                                        "encoding": "",
+                                        "id": 38,
+                                        "options": None,
+                                        "required": True,
+                                        "requires_value": False,
+                                        "script_id": 26,
+                                        "sequence": 1,
+                                        "updated_at": "2020-03-17T18:11:22Z",
+                                    },
+                                    {
+                                        "arg_name": "Filename",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2020-03-17T18:11:22Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": "Target file on disk",
+                                        "encoding": "",
+                                        "id": 39,
+                                        "options": None,
+                                        "required": True,
+                                        "requires_value": False,
+                                        "script_id": 26,
+                                        "sequence": 2,
+                                        "updated_at": "2020-03-17T18:11:22Z",
+                                    },
+                                ],
+                                "command": "export",
+                                "description": "Export the specified event log to a file (.csv) on disk",
+                                "examples": "    C:\\\u003eeventlog export System",
+                                "internal_only": False,
+                                "runnable": True,
+                                "sub_commands": [],
+                            },
+                            {
+                                "args": [],
+                                "command": "list",
+                                "description": "Event log list: show available event log sources",
+                                "examples": "    C:\\\u003e eventlog list",
+                                "internal_only": False,
+                                "runnable": True,
+                                "sub_commands": [],
+                            },
+                            {
+                                "args": [
+                                    {
+                                        "arg_name": "Name",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2019-05-09T23:55:03Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": 'Name of the event log, for example "Application", "System"',
+                                        "encoding": "",
+                                        "id": 519,
+                                        "options": None,
+                                        "required": True,
+                                        "requires_value": False,
+                                        "script_id": 470,
+                                        "sequence": 1,
+                                        "updated_at": "2019-05-09T23:55:03Z",
+                                    },
+                                    {
+                                        "arg_name": "Filename",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2019-05-09T23:55:03Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": "Target file on disk",
+                                        "encoding": "",
+                                        "id": 520,
+                                        "options": None,
+                                        "required": True,
+                                        "requires_value": False,
+                                        "script_id": 470,
+                                        "sequence": 2,
+                                        "updated_at": "2019-05-09T23:55:03Z",
+                                    },
+                                ],
+                                "command": "backup",
+                                "description": "Back up the specified event log to a file (.evtx) on disk",
+                                "examples": "    C:\\\u003eeventlog backup System",
+                                "internal_only": False,
+                                "runnable": True,
+                                "sub_commands": [],
+                            },
+                        ],
+                    },
+                    {
+                        "args": [
+                            {
+                                "arg_name": "Path",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2020-03-17T18:10:50Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "File to hash",
+                                "encoding": "",
+                                "id": 72,
+                                "options": None,
+                                "required": True,
+                                "requires_value": False,
+                                "script_id": 45,
+                                "sequence": 1,
+                                "updated_at": "2020-03-17T18:10:50Z",
+                            }
+                        ],
+                        "command": "filehash",
+                        "description": "Generate the MD5, SHA1, and SHA256 hashes of a file",
+                        "examples": "C:\\\u003e filehash C:\\Windows\\System32\\cmd.exe",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [
+                            {
+                                "arg_name": "UserName",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2018-05-10T16:22:42Z",
+                                "data_type": "string",
+                                "default_value": "",
+                                "description": "Partial or full username to filter results",
+                                "encoding": "",
+                                "id": 42,
+                                "options": None,
+                                "required": False,
+                                "requires_value": False,
+                                "script_id": 29,
+                                "sequence": 1,
+                                "updated_at": "2018-05-10T16:22:42Z",
+                            }
+                        ],
+                        "command": "getsid",
+                        "description": "Enumerate local users and Security Identifiers (SID)",
+                        "examples": "\u003egetsid\r\nUserName       SID\r\n",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "ipconfig",
+                        "description": "Show network configuration information",
+                        "examples": "",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [
+                            {
+                                "arg_name": "Path",
+                                "arg_type": "arg",
+                                "command_level": "non-destructive",
+                                "created_at": "2019-02-12T16:44:59Z",
+                                "data_type": "string",
+                                "default_value": ".",
+                                "description": "Directory to list",
+                                "encoding": "",
+                                "id": 12,
+                                "options": None,
+                                "required": False,
+                                "requires_value": False,
+                                "script_id": 14,
+                                "sequence": 1,
+                                "updated_at": "2019-02-12T16:44:59Z",
+                            }
+                        ],
+                        "command": "ls",
+                        "description": "Display the contents of the specified path",
+                        "examples": "    C:\\Windows\u003e ls\r\n",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "mount",
+                        "description": "List mounted filesystem volumes",
+                        "examples": "    C:\\\u003e mount\r\n        Display local mounted volumes",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "netstat",
+                        "description": "Display network statistics and active connections",
+                        "examples": "",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "ps",
+                        "description": "Display process information",
+                        "examples": " C:\\\u003e ps\r\n\r\nName",
+                        "internal_only": False,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "pwd",
+                        "description": "Get current working directory",
+                        "examples": "",
+                        "internal_only": True,
+                        "runnable": True,
+                        "sub_commands": [],
+                    },
+                    {
+                        "args": [],
+                        "command": "reg",
+                        "description": "Windows registry manipulation.",
+                        "examples": "",
+                        "internal_only": False,
+                        "runnable": False,
+                        "sub_commands": [
+                            {
+                                "args": [
+                                    {
+                                        "arg_name": "Subkey",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2019-12-05T17:37:38Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": "Registry subkey full path",
+                                        "encoding": "",
+                                        "id": 43,
+                                        "options": None,
+                                        "required": False,
+                                        "requires_value": False,
+                                        "script_id": 30,
+                                        "sequence": 1,
+                                        "updated_at": "2019-12-05T17:37:39Z",
+                                    },
+                                    {
+                                        "arg_name": "Value",
+                                        "arg_type": "arg",
+                                        "command_level": "non-destructive",
+                                        "created_at": "2019-12-05T17:37:38Z",
+                                        "data_type": "string",
+                                        "default_value": "",
+                                        "description": "Name of value to query",
+                                        "encoding": "",
+                                        "id": 44,
+                                        "options": None,
+                                        "required": False,
+                                        "requires_value": False,
+                                        "script_id": 30,
+                                        "sequence": 2,
+                                        "updated_at": "2019-12-05T17:37:39Z",
+                                    },
+                                ],
+                                "command": "query",
+                                "description": "Query a registry subkey or value",
+                                "examples": "    C:\\\u003e reg query\r\n",
+                                "internal_only": False,
+                                "runnable": True,
+                                "sub_commands": [],
+                            }
+                        ],
+                    },
                 ],
-                "command": "cat",
-                "description": "Read a file from disk and display as ASCII or hex",
-                "examples": "    C:\\\u003e cat c:\\mytextfile.txt",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [{
-                    "arg_name": "Path",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2018-11-08T18:27:18Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "Relative or absolute directory",
-                    "encoding": "",
-                    "id": 8,
-                    "options": None,
-                    "required": True,
-                    "requires_value": False,
-                    "script_id": 8,
-                    "sequence": 1,
-                    "updated_at": "2018-11-08T18:27:18Z"
-                }
-                ],
-                "command": "cd",
-                "description": "Change the current working directory",
-                "examples": "    C:\\\u003e cd C:\\Users\\Administrator\r\n",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "env",
-                "description": "Get environment variables for all scopes (Machine / User / Process)",
-                "examples": "",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "eventlog",
-                "description": "Inspect event logs.",
-                "examples": "",
-                "internal_only": False,
-                "runnable": False,
-                "sub_commands": [{
-                    "args": [{
-                        "arg_name": "Name",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2018-05-01T19:38:30Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Name of the event log, for example \"Application\", \"System\"",
-                        "encoding": "",
-                        "id": 35,
-                        "options": None,
-                        "required": True,
-                        "requires_value": False,
-                        "script_id": 25,
-                        "sequence": 1,
-                        "updated_at": "2018-05-01T19:38:30Z"
-                    }, {
-                        "arg_name": "Count",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2018-05-01T19:38:30Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Optional number of entries to return. Default:100 Max=500",
-                        "encoding": "",
-                        "id": 36,
-                        "options": None,
-                        "required": False,
-                        "requires_value": False,
-                        "script_id": 25,
-                        "sequence": 2,
-                        "updated_at": "2018-05-01T19:38:30Z"
-                    }, {
-                        "arg_name": "SourceName",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2018-05-01T19:38:30Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Optional name of the event source, e.x. \"WinLogon\"",
-                        "encoding": "",
-                        "id": 37,
-                        "options": None,
-                        "required": False,
-                        "requires_value": False,
-                        "script_id": 25,
-                        "sequence": 3,
-                        "updated_at": "2018-05-01T19:38:30Z"
-                    }
-                    ],
-                    "command": "view",
-                    "description": "View most recent N events in a given event log",
-                    "examples": "    C:\\\u003e eventlog view Application",
-                    "internal_only": False,
-                    "runnable": True,
-                    "sub_commands": []
-                }, {
-                    "args": [{
-                        "arg_name": "Name",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2020-03-17T18:11:22Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Name of the event log, for example \"Application\", \"System\"",
-                        "encoding": "",
-                        "id": 38,
-                        "options": None,
-                        "required": True,
-                        "requires_value": False,
-                        "script_id": 26,
-                        "sequence": 1,
-                        "updated_at": "2020-03-17T18:11:22Z"
-                    }, {
-                        "arg_name": "Filename",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2020-03-17T18:11:22Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Target file on disk",
-                        "encoding": "",
-                        "id": 39,
-                        "options": None,
-                        "required": True,
-                        "requires_value": False,
-                        "script_id": 26,
-                        "sequence": 2,
-                        "updated_at": "2020-03-17T18:11:22Z"
-                    }
-                    ],
-                    "command": "export",
-                    "description": "Export the specified event log to a file (.csv) on disk",
-                    "examples": "    C:\\\u003eeventlog export System",
-                    "internal_only": False,
-                    "runnable": True,
-                    "sub_commands": []
-                }, {
-                    "args": [],
-                    "command": "list",
-                    "description": "Event log list: show available event log sources",
-                    "examples": "    C:\\\u003e eventlog list",
-                    "internal_only": False,
-                    "runnable": True,
-                    "sub_commands": []
-                }, {
-                    "args": [{
-                        "arg_name": "Name",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2019-05-09T23:55:03Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Name of the event log, for example \"Application\", \"System\"",
-                        "encoding": "",
-                        "id": 519,
-                        "options": None,
-                        "required": True,
-                        "requires_value": False,
-                        "script_id": 470,
-                        "sequence": 1,
-                        "updated_at": "2019-05-09T23:55:03Z"
-                    }, {
-                        "arg_name": "Filename",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2019-05-09T23:55:03Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Target file on disk",
-                        "encoding": "",
-                        "id": 520,
-                        "options": None,
-                        "required": True,
-                        "requires_value": False,
-                        "script_id": 470,
-                        "sequence": 2,
-                        "updated_at": "2019-05-09T23:55:03Z"
-                    }
-                    ],
-                    "command": "backup",
-                    "description": "Back up the specified event log to a file (.evtx) on disk",
-                    "examples": "    C:\\\u003eeventlog backup System",
-                    "internal_only": False,
-                    "runnable": True,
-                    "sub_commands": []
-                }
-                ]
-            }, {
-                "args": [{
-                    "arg_name": "Path",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2020-03-17T18:10:50Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "File to hash",
-                    "encoding": "",
-                    "id": 72,
-                    "options": None,
-                    "required": True,
-                    "requires_value": False,
-                    "script_id": 45,
-                    "sequence": 1,
-                    "updated_at": "2020-03-17T18:10:50Z"
-                }
-                ],
-                "command": "filehash",
-                "description": "Generate the MD5, SHA1, and SHA256 hashes of a file",
-                "examples": "C:\\\u003e filehash C:\\Windows\\System32\\cmd.exe",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [{
-                    "arg_name": "UserName",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2018-05-10T16:22:42Z",
-                    "data_type": "string",
-                    "default_value": "",
-                    "description": "Partial or full username to filter results",
-                    "encoding": "",
-                    "id": 42,
-                    "options": None,
-                    "required": False,
-                    "requires_value": False,
-                    "script_id": 29,
-                    "sequence": 1,
-                    "updated_at": "2018-05-10T16:22:42Z"
-                }
-                ],
-                "command": "getsid",
-                "description": "Enumerate local users and Security Identifiers (SID)",
-                "examples": "\u003egetsid\r\nUserName       SID\r\n",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "ipconfig",
-                "description": "Show network configuration information",
-                "examples": "",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [{
-                    "arg_name": "Path",
-                    "arg_type": "arg",
-                    "command_level": "non-destructive",
-                    "created_at": "2019-02-12T16:44:59Z",
-                    "data_type": "string",
-                    "default_value": ".",
-                    "description": "Directory to list",
-                    "encoding": "",
-                    "id": 12,
-                    "options": None,
-                    "required": False,
-                    "requires_value": False,
-                    "script_id": 14,
-                    "sequence": 1,
-                    "updated_at": "2019-02-12T16:44:59Z"
-                }
-                ],
-                "command": "ls",
-                "description": "Display the contents of the specified path",
-                "examples": "    C:\\Windows\u003e ls\r\n",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "mount",
-                "description": "List mounted filesystem volumes",
-                "examples": "    C:\\\u003e mount\r\n        Display local mounted volumes",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "netstat",
-                "description": "Display network statistics and active connections",
-                "examples": "",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "ps",
-                "description": "Display process information",
-                "examples": " C:\\\u003e ps\r\n\r\nName",
-                "internal_only": False,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "pwd",
-                "description": "Get current working directory",
-                "examples": "",
-                "internal_only": True,
-                "runnable": True,
-                "sub_commands": []
-            }, {
-                "args": [],
-                "command": "reg",
-                "description": "Windows registry manipulation.",
-                "examples": "",
-                "internal_only": False,
-                "runnable": False,
-                "sub_commands": [{
-                    "args": [{
-                        "arg_name": "Subkey",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2019-12-05T17:37:38Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Registry subkey full path",
-                        "encoding": "",
-                        "id": 43,
-                        "options": None,
-                        "required": False,
-                        "requires_value": False,
-                        "script_id": 30,
-                        "sequence": 1,
-                        "updated_at": "2019-12-05T17:37:39Z"
-                    }, {
-                        "arg_name": "Value",
-                        "arg_type": "arg",
-                        "command_level": "non-destructive",
-                        "created_at": "2019-12-05T17:37:38Z",
-                        "data_type": "string",
-                        "default_value": "",
-                        "description": "Name of value to query",
-                        "encoding": "",
-                        "id": 44,
-                        "options": None,
-                        "required": False,
-                        "requires_value": False,
-                        "script_id": 30,
-                        "sequence": 2,
-                        "updated_at": "2019-12-05T17:37:39Z"
-                    }
-                    ],
-                    "command": "query",
-                    "description": "Query a registry subkey or value",
-                    "examples": "    C:\\\u003e reg query\r\n",
-                    "internal_only": False,
-                    "runnable": True,
-                    "sub_commands": []
-                }
-                ]
+                "session_id": f"{session_id}",
             }
-            ],
-            "session_id": f"{session_id}"
-        }
-        ]
+        ],
     }
     mocker.patch.object(
-        demisto,
-        'args',
-        return_value={
-            'host_id': 'edfd6a04ad134c4344f8fb119a3ad88e',
-            'raw': "Write-Output 'Hello, World!"
-        }
+        demisto, "args", return_value={"host_id": "edfd6a04ad134c4344f8fb119a3ad88e", "raw": "Write-Output 'Hello, World!"}
     )
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/entities/refresh-session/v1',
-        json=response,
-        status_code=201
-    )
+    requests_mock.post(f"{SERVER_URL}/real-time-response/entities/refresh-session/v1", json=response, status_code=201)
     results = refresh_session_command()
 
-    assert results['HumanReadable'] == f"CrowdStrike Session Refreshed: {session_id}"
+    assert results["HumanReadable"] == f"CrowdStrike Session Refreshed: {session_id}"
+
+
+class TestFetchFunctionsTimestampFormatting:
+    """
+    Test class for verifying timestamp formatting in fetch functions before calling update_last_run_object.
+    All the tests verify that detection["occurred"] timestamps are converted to the correct
+    date format before being passed to the update_last_run_object function.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup_common_mocks(self, mocker):
+        """Setup common mocks used across all test methods."""
+        # CommonServerPython.update_last_run_object only formats detection["occurred"] field when offset is zero
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+
+    def test_fetch_endpoint_detections__update_last_run_object(self, mocker):
+        from CrowdStrikeFalcon import fetch_endpoint_detections
+
+        mocker.patch("CrowdStrikeFalcon.get_fetch_detections", return_value={})
+
+        # Mock API response with microsecond precision timestamp that needs conversion
+        mocker.patch(
+            "CrowdStrikeFalcon.get_detections_entities",
+            return_value={"resources": [{"created_timestamp": "2024-02-13T09:24:00.841616429Z", "composite_id": "123"}]},
+        )
+
+        try:
+            # Execute the function, it should handle timestamp formatting internally before calling update_last_run_object
+            fetch_endpoint_detections({}, None, False)
+        except Exception as e:
+            pytest.fail(f"Unexpected error during fetch_endpoint_detections with non-zero offset: {str(e)}")
+
+    @pytest.mark.parametrize(
+        "product_type, detection_name_prefix",
+        [
+            ("ods", "On-Demand Scans Detection"),
+            ("ofp", "OFP Detection"),
+            ("idp", "IDP Detection"),
+            ("ngsiem", "NGSIEM Detection"),
+            ("thirdparty", "Third Party Detection"),
+        ],
+    )
+    def test_fetch_detections_by_product_type__update_last_run_object(self, mocker, product_type, detection_name_prefix):
+        from CrowdStrikeFalcon import fetch_detections_by_product_type
+
+        mocker.patch("CrowdStrikeFalcon.get_detections_ids", return_value={"resources": ["123"]})
+
+        # Mock API response with microsecond precision timestamp that needs conversion
+        mocker.patch(
+            "CrowdStrikeFalcon.get_detection_entities",
+            return_value={
+                "resources": [{"created_timestamp": "2024-02-13T09:24:00.841616429Z", "composite_id": "123", "name": "name123"}]
+            },
+        )
+
+        try:
+            # Execute the function, it should handle timestamp formatting internally before calling update_last_run_object
+            fetch_detections_by_product_type({}, 0, product_type, "", "", detection_name_prefix, "created_timestamp")
+
+        except Exception as e:
+            pytest.fail(f"Unexpected error during fetch_endpoint_detections with non-zero offset: {str(e)}")
+
+
+class TestFetchLimitPerFlow:
+    """The last_run update uses base_fetch_limit: 10000 on XSIAM and INCIDENTS_PER_FETCH on XSOAR."""
+
+    def test_fetch_endpoint_detections_uses_xsiam_fetch_limit(self, mocker):
+        """
+        Given: XSIAM fetch-events (is_fetch_events=True) with an empty last_run.
+        When: fetch_endpoint_detections runs.
+        Then: update_last_run_object gets MAX_FETCH_DETECTION_PER_API_CALL (10000).
+        """
+        from CrowdStrikeFalcon import MAX_FETCH_DETECTION_PER_API_CALL, fetch_endpoint_detections
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        mocker.patch("CrowdStrikeFalcon.get_fetch_detections", return_value={})
+        mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": []})
+        update_last_run_mock = mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        fetch_endpoint_detections({}, look_back=0, is_fetch_events=True)
+
+        assert update_last_run_mock.call_args.kwargs["fetch_limit"] == MAX_FETCH_DETECTION_PER_API_CALL
+
+    def test_fetch_detections_by_product_type_uses_xsiam_fetch_limit(self, mocker):
+        """
+        Given: XSIAM fetch-events (is_fetch_events=True) with an empty last_run.
+        When: fetch_detections_by_product_type runs.
+        Then: filter and update_last_run_object get MAX_FETCH_DETECTION_PER_API_CALL (10000).
+        """
+        from CrowdStrikeFalcon import MAX_FETCH_DETECTION_PER_API_CALL, fetch_detections_by_product_type
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        mocker.patch("CrowdStrikeFalcon.get_detections_ids", return_value={"resources": ["123"]})
+        mocker.patch(
+            "CrowdStrikeFalcon.get_detection_entities",
+            return_value={
+                "resources": [{"created_timestamp": "2024-02-13T09:24:00.841616429Z", "composite_id": "123", "name": "name123"}]
+            },
+        )
+        filter_mock = mocker.patch(
+            "CrowdStrikeFalcon.filter_incidents_by_duplicates_and_limit",
+            side_effect=lambda incidents_res, **kwargs: incidents_res,
+        )
+        update_last_run_mock = mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        fetch_detections_by_product_type(
+            current_fetch_info={},
+            look_back=0,
+            product_type="idp",
+            fetch_query="",
+            detections_type="IDP Detection",
+            detection_name_prefix="IDP Detection",
+            start_time_key="created_timestamp",
+            is_fetch_events=True,
+        )
+
+        assert filter_mock.call_args.kwargs["fetch_limit"] == MAX_FETCH_DETECTION_PER_API_CALL
+        assert update_last_run_mock.call_args.kwargs["fetch_limit"] == MAX_FETCH_DETECTION_PER_API_CALL
+
+    def test_fetch_endpoint_detections_xsoar_uses_fresh_incidents_per_fetch(self, mocker):
+        """
+        Given: XSOAR fetch-incidents (is_fetch_events=False) with a stale persisted 'limit'.
+        When: fetch_endpoint_detections runs.
+        Then: update_last_run_object gets the fresh INCIDENTS_PER_FETCH, not the stale 'limit'.
+        """
+        from CrowdStrikeFalcon import INCIDENTS_PER_FETCH, fetch_endpoint_detections
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        mocker.patch("CrowdStrikeFalcon.get_fetch_detections", return_value={})
+        mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": []})
+        update_last_run_mock = mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        # last_run carries a stale, larger persisted limit from a prior run.
+        fetch_endpoint_detections({"limit": 500}, look_back=0, is_fetch_events=False)
+
+        assert update_last_run_mock.call_args.kwargs["fetch_limit"] == INCIDENTS_PER_FETCH
+
+    def test_fetch_detections_by_product_type_xsoar_uses_fresh_incidents_per_fetch(self, mocker):
+        """
+        Given: XSOAR fetch-incidents (is_fetch_events=False) with a stale persisted 'limit'.
+        When: fetch_detections_by_product_type runs.
+        Then: update_last_run_object gets the fresh INCIDENTS_PER_FETCH, not the stale 'limit'.
+        """
+        from CrowdStrikeFalcon import INCIDENTS_PER_FETCH, fetch_detections_by_product_type
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        mocker.patch("CrowdStrikeFalcon.get_detections_ids", return_value={"resources": ["123"]})
+        mocker.patch(
+            "CrowdStrikeFalcon.get_detection_entities",
+            return_value={
+                "resources": [{"created_timestamp": "2024-02-13T09:24:00.841616429Z", "composite_id": "123", "name": "name123"}]
+            },
+        )
+        mocker.patch(
+            "CrowdStrikeFalcon.filter_incidents_by_duplicates_and_limit",
+            side_effect=lambda incidents_res, **kwargs: incidents_res,
+        )
+        update_last_run_mock = mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        fetch_detections_by_product_type(
+            current_fetch_info={"limit": 500},
+            look_back=0,
+            product_type="idp",
+            fetch_query="",
+            detections_type="IDP Detection",
+            detection_name_prefix="IDP Detection",
+            start_time_key="created_timestamp",
+            is_fetch_events=False,
+        )
+
+        assert update_last_run_mock.call_args.kwargs["fetch_limit"] == INCIDENTS_PER_FETCH
+
+
+class TestFetchLimitApiCap:
+    """The limit sent to the API is capped so offset + limit never exceeds MAX_FETCH_SIZE."""
+
+    def test_fetch_endpoint_detections_caps_api_limit_when_persisted_limit_exceeds_max(self, mocker):
+        """
+        Given: fetch-events where look_back grew the persisted 'limit' past MAX_FETCH_SIZE.
+        When: fetch_endpoint_detections runs.
+        Then: the API call receives limit <= MAX_FETCH_SIZE - offset, avoiding the API 400.
+        """
+        from CrowdStrikeFalcon import MAX_FETCH_SIZE, fetch_endpoint_detections
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        get_fetch_detections_mock = mocker.patch("CrowdStrikeFalcon.get_fetch_detections", return_value={})
+        mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": []})
+        mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        # A prior look_back run persisted a grown limit above the API's hard ceiling.
+        fetch_endpoint_detections({"limit": MAX_FETCH_SIZE + 50, "offset": 0}, look_back=2, is_fetch_events=True)
+
+        assert get_fetch_detections_mock.call_args.kwargs["limit"] <= MAX_FETCH_SIZE
+
+    def test_fetch_detections_by_product_type_caps_api_limit_when_persisted_limit_exceeds_max(self, mocker):
+        """
+        Given: fetch-events where look_back grew the persisted 'limit' past MAX_FETCH_SIZE.
+        When: fetch_detections_by_product_type runs.
+        Then: the API call receives limit <= MAX_FETCH_SIZE - offset, avoiding the API 400.
+        """
+        from CrowdStrikeFalcon import MAX_FETCH_SIZE, fetch_detections_by_product_type
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        get_detections_ids_mock = mocker.patch("CrowdStrikeFalcon.get_detections_ids", return_value={"resources": []})
+        mocker.patch("CrowdStrikeFalcon.get_detection_entities", return_value={"resources": []})
+        mocker.patch(
+            "CrowdStrikeFalcon.filter_incidents_by_duplicates_and_limit",
+            side_effect=lambda incidents_res, **kwargs: incidents_res,
+        )
+        mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        fetch_detections_by_product_type(
+            current_fetch_info={"limit": MAX_FETCH_SIZE + 50, "offset": 0},
+            look_back=2,
+            product_type="idp",
+            fetch_query="",
+            detections_type="IDP Detection",
+            detection_name_prefix="IDP Detection",
+            start_time_key="created_timestamp",
+            is_fetch_events=True,
+        )
+
+        assert get_detections_ids_mock.call_args.kwargs["limit"] <= MAX_FETCH_SIZE
+
+    def test_api_limit_accounts_for_offset(self, mocker):
+        """
+        Given: fetch-events with a non-zero offset and a limit at MAX_FETCH_SIZE.
+        When: fetch_endpoint_detections runs.
+        Then: the API call receives limit <= MAX_FETCH_SIZE - offset (offset + limit stays within bound).
+        """
+        from CrowdStrikeFalcon import MAX_FETCH_SIZE, fetch_endpoint_detections
+
+        offset = 200
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=offset)
+        get_fetch_detections_mock = mocker.patch("CrowdStrikeFalcon.get_fetch_detections", return_value={})
+        mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": []})
+        mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        fetch_endpoint_detections({"limit": MAX_FETCH_SIZE, "offset": offset}, look_back=2, is_fetch_events=True)
+
+        api_limit = get_fetch_detections_mock.call_args.kwargs["limit"]
+        assert api_limit + offset <= MAX_FETCH_SIZE
+
+    def test_api_limit_is_noop_for_xsoar_small_limit(self, mocker):
+        """
+        Given: fetch-incidents (XSOAR) where the limit is the small INCIDENTS_PER_FETCH.
+        When: fetch_endpoint_detections runs.
+        Then: the API call receives the unchanged small limit (the cap is a no-op).
+        """
+        from CrowdStrikeFalcon import INCIDENTS_PER_FETCH, fetch_endpoint_detections
+
+        mocker.patch("CrowdStrikeFalcon.calculate_new_offset", return_value=0)
+        get_fetch_detections_mock = mocker.patch("CrowdStrikeFalcon.get_fetch_detections", return_value={})
+        mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": []})
+        mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={})
+
+        fetch_endpoint_detections({}, look_back=0, is_fetch_events=False)
+
+        assert get_fetch_detections_mock.call_args.kwargs["limit"] == INCIDENTS_PER_FETCH
 
 
 class TestFetch:
-    """ Test the logic of the fetch
-
-    """
+    """Test the logic of the fetch"""
 
     @pytest.fixture()
     def set_up_mocks(self, requests_mock, mocker):
-        """ Sets up the mocks for the fetch.
-        """
-        mocker.patch.object(demisto, 'setLastRun')
-        requests_mock.get(f'{SERVER_URL}/detects/queries/detects/v1', json={'resources': ['ldt:1', 'ldt:2'],
-                                                                            'meta': {'pagination': {'total': 2}}})
-        requests_mock.post(f'{SERVER_URL}/detects/entities/summaries/GET/v1',
-                           json={'resources': [{'detection_id': 'ldt:1',
-                                                'created_timestamp': '2020-09-04T09:16:11.000000Z',
-                                                'max_severity_displayname': 'Low'},
-                                               {'detection_id': 'ldt:2',
-                                                'created_timestamp': '2020-09-04T09:20:11.000000Z',
-                                                'max_severity_displayname': 'Low'}]})
-        requests_mock.get(f'{SERVER_URL}/incidents/queries/incidents/v1', json={})
-        requests_mock.post(f'{SERVER_URL}/incidents/entities/incidents/GET/v1', json={})
+        """Sets up the mocks for the fetch."""
+        mocker.patch.object(demisto, "setLastRun")
+        requests_mock.get(
+            f"{SERVER_URL}/detects/queries/detects/v1",
+            json={"resources": ["ldt:1", "ldt:2"], "meta": {"pagination": {"total": 2}}},
+        )
+        requests_mock.post(
+            f"{SERVER_URL}/detects/entities/summaries/GET/v1",
+            json={
+                "resources": [
+                    {
+                        "detection_id": "ldt:1",
+                        "created_timestamp": "2020-09-04T09:16:11.000000Z",
+                        "max_severity_displayname": "Low",
+                    },
+                    {
+                        "detection_id": "ldt:2",
+                        "created_timestamp": "2020-09-04T09:20:11.000000Z",
+                        "max_severity_displayname": "Low",
+                    },
+                ]
+            },
+        )
 
     @freeze_time("2020-08-26 17:22:13 UTC")
     def test_old_fetch_to_new_fetch(self, set_up_mocks, mocker):
@@ -2211,18 +2168,22 @@ class TestFetch:
             The `first_behavior_time` doesn't change and an `offset` of 2 is added.
 
         """
-        from CrowdStrikeFalcon import fetch_incidents
-        mocker.patch.object(demisto, 'params', return_value={})
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value={'first_behavior_detection_time': '2020-09-04T09:16:10.000000Z',
-                                          'detection_offset': 2,
-                                          'first_behavior_incident_time': '2020-09-04T09:22:10.000000Z',
-                                          'last_fetched_incident': '3',
-                                          'incident_offset': 4,
-                                          })
-        fetch_incidents()
-        assert demisto.setLastRun.mock_calls[0][1][0] == [
-            {'time': '2020-09-04T09:16:10Z'}, {'time': '2020-09-04T09:22:10Z'}, {}, {}, {}, {}, {}]
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(last_run_object, index=LastRunIndex.DETECTIONS, data={"time": "2020-09-04T09:16:10Z"})
+
+        mocker.patch.object(demisto, "params", return_value={})
+        mocker.patch.object(
+            demisto,
+            "getLastRun",
+            return_value={
+                "first_behavior_detection_time": "2020-09-04T09:16:10.000000Z",
+                "detection_offset": 2,
+            },
+        )
+        fetch_items()
+        assert demisto.setLastRun.mock_calls[0][1][0] == last_run_object
 
     @freeze_time("2020-09-04T09:16:10Z")
     def test_new_fetch(self, set_up_mocks, mocker, requests_mock):
@@ -2235,21 +2196,42 @@ class TestFetch:
         Then:
             The `first_behavior_time` changes and no `offset` is added.
         """
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value=[{'time': '2020-09-04T09:16:10.000000Z',
-                                          'offset': 2}, {}, {}])
+
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object, index=LastRunIndex.DETECTIONS, data={"time": "2020-09-04T09:16:11.000000Z", "offset": 2}
+        )
+
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
         # Override post to have 1 results so FETCH_LIMIT won't be reached
-        requests_mock.post(f'{SERVER_URL}/detects/entities/summaries/GET/v1',
-                           json={'resources': [{'detection_id': 'ldt:1',
-                                                'created_timestamp': '2020-09-04T09:16:11.000000Z',
-                                                'max_severity_displayname': 'Low'}],
-                                 })
-        from CrowdStrikeFalcon import fetch_incidents
-        fetch_incidents()
-        assert demisto.setLastRun.mock_calls[0][1][0][0] == {
-            'time': '2020-09-04T09:16:11.000000Z', 'limit': 2, 'offset': 0, "found_incident_ids":
-                {'Detection ID: ldt:1': 1599210970}}
+        requests_mock.get(
+            f"{SERVER_URL}/alerts/queries/alerts/v2",
+            json={
+                "resources": [
+                    {"composite_id": "ldt:1", "start": "2020-09-04T09:16:11Z", "created_timestamp": "2020-09-04T09:16:11Z"}
+                ]
+            },
+        )
+
+        # POST returns alert details with created_timestamp
+        requests_mock.post(
+            f"{SERVER_URL}/alerts/entities/alerts/v2",
+            json={
+                "resources": [
+                    {"composite_id": "ldt:1", "start": "2020-09-04T09:16:11Z", "created_timestamp": "2020-09-04T09:16:11Z"}
+                ]
+            },
+        )
+
+        fetch_items()
+        assert demisto.setLastRun.mock_calls[0][1][0][LastRunIndex.DETECTIONS] == {
+            "time": "2020-09-04T09:16:11.000000Z",
+            "limit": 2,
+            "offset": 3,
+            "found_incident_ids": {"Detection ID: ldt:1": 1599210970},
+        }
 
     @freeze_time("2020-09-04T09:16:10Z")
     def test_fetch_with_offset(self, set_up_mocks, mocker, requests_mock):
@@ -2264,48 +2246,77 @@ class TestFetch:
             - In the next call, the offset will be reset to 0 and the last time will be the latest detection time
 
         """
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        # mock the total number of detections to be 4, so offset will be set
-        requests_mock.get(f'{SERVER_URL}/detects/queries/detects/v1', json={'resources': ['ldt:1', 'ldt:2'],
-                                                                            'meta': {'pagination': {'total': 4}}})
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
 
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value=[{'time': '2020-09-04T09:16:10.000000Z',
-                                          'offset': 0}, {}, {}])
+        # mock the total number of detections to be 4, so offset will be set
+        requests_mock.get(
+            f"{SERVER_URL}/alerts/queries/alerts/v2",
+            json={"resources": ["ldt:1", "ldt:2"], "meta": {"pagination": {"total": 4}}},
+        )
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object, index=LastRunIndex.DETECTIONS, data={"time": "2020-09-04T09:16:10.000000Z", "offset": 0}
+        )
+
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
         # Override post to have 1 results so FETCH_LIMIT won't be reached
-        requests_mock.post(f'{SERVER_URL}/detects/entities/summaries/GET/v1',
-                           json={'resources': [{'detection_id': 'ldt:1',
-                                                'created_timestamp': '2020-09-04T09:16:11.000000Z',
-                                                'max_severity_displayname': 'Low'}],
-                                 })
-        from CrowdStrikeFalcon import fetch_incidents
-        fetch_incidents()
+        requests_mock.post(
+            f"{SERVER_URL}/alerts/entities/alerts/v2",
+            json={
+                "resources": [
+                    {
+                        "detection_id": "ldt:1",
+                        "created_timestamp": "2020-09-04T09:16:11.000000Z",
+                        "max_severity_displayname": "Low",
+                    }
+                ],
+            },
+        )
+
+        fetch_items()
         # the offset should be increased to 2, and the time should be stay the same
         expected_last_run = {
-            'time': '2020-09-04T09:16:10.000000Z', 'limit': 2, 'offset': 2, "found_incident_ids":
-                {'Detection ID: ldt:1': 1599210970}}
-        assert demisto.setLastRun.mock_calls[0][1][0][0] == expected_last_run
+            "time": "2020-09-04T09:16:10.000000Z",
+            "limit": 2,
+            "offset": 2,
+            "found_incident_ids": {"Detection ID: ldt:1": 1599210970},
+        }
+        assert demisto.setLastRun.mock_calls[0][1][0][LastRunIndex.DETECTIONS] == expected_last_run
 
-        requests_mock.get(f'{SERVER_URL}/detects/queries/detects/v1', json={'resources': ['ldt:3', 'ldt:4'],
-                                                                            'meta': {'pagination': {'total': 4}}})
+        requests_mock.get(
+            f"{SERVER_URL}/alerts/queries/alerts/v2",
+            json={"resources": ["ldt:3", "ldt:4"], "meta": {"pagination": {"total": 4}}},
+        )
 
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value=[expected_last_run, {}, {}])
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(last_run_object, index=LastRunIndex.DETECTIONS, data=expected_last_run)
 
-        requests_mock.post(f'{SERVER_URL}/detects/entities/summaries/GET/v1',
-                           json={'resources': [{'detection_id': 'ldt:2',
-                                                'created_timestamp': '2020-09-04T09:16:13.000000Z',
-                                                'max_severity_displayname': 'Low'}],
-                                 })
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
 
-        fetch_incidents()
+        requests_mock.post(
+            f"{SERVER_URL}/alerts/entities/alerts/v2",
+            json={
+                "resources": [
+                    {
+                        "detection_id": "ldt:2",
+                        "created_timestamp": "2020-09-04T09:16:13.000000Z",
+                        "max_severity_displayname": "Low",
+                    }
+                ],
+            },
+        )
+
+        fetch_items()
         # the offset should be 0 because all detections were fetched, and the time should update to the latest detection
-        assert demisto.setLastRun.mock_calls[1][1][0][0] == {
-            'time': '2020-09-04T09:16:13.000000Z', 'limit': 2, 'offset': 0, "found_incident_ids":
-                {'Detection ID: ldt:1': 1599210970,
-                 'Detection ID: ldt:2': 1599210970}}
+        assert demisto.setLastRun.mock_calls[1][1][0][LastRunIndex.DETECTIONS] == {
+            "time": "2020-09-04T09:16:13.000000Z",
+            "limit": 2,
+            "offset": 0,
+            "found_incident_ids": {"Detection ID: ldt:1": 1599210970, "Detection ID: ldt:2": 1599210970},
+        }
 
-    def test_fetch_incident_type(self, set_up_mocks, mocker):
+    def test_fetch_incident_type(self, set_up_mocks, mocker, requests_mock):
         """
         Tests the addition of incident_type field to the context
         Given:
@@ -2316,220 +2327,146 @@ class TestFetch:
             "incident_type": "detection" is in raw result returned by the indicator
 
         """
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        from CrowdStrikeFalcon import fetch_incidents
-        mocker.patch.object(demisto, 'getLastRun', return_value=[{
-            'time': '2020-09-04T09:16:10Z',
-        }, {}, {}])
-        incidents = fetch_incidents()
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        requests_mock.get(
+            f"{SERVER_URL}/alerts/queries/alerts/v2",
+            json={
+                "resources": [
+                    {"incident_id": "ldt:1", "start": "2020-09-04T09:16:11Z", "created_timestamp": "2020-09-04T09:16:11Z"}
+                ]
+            },
+        )
+
+        requests_mock.post(
+            f"{SERVER_URL}/alerts/entities/alerts/v2",
+            json={
+                "resources": [
+                    {"incident_id": "ldt:1", "start": "2020-09-04T09:16:11Z", "created_timestamp": "2020-09-04T09:16:11Z"}
+                ]
+            },
+        )
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object,
+            index=LastRunIndex.DETECTIONS,
+            data={
+                "time": "2020-09-04T09:16:10Z",
+            },
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        _, incidents = fetch_items()
         for incident in incidents:
-            assert "\"incident_type\": \"detection\"" in incident.get('rawJSON', '')
+            assert '"incident_type": "detection"' in incident.get("rawJSON", "")
 
     @pytest.mark.parametrize(
-        "expected_name, fetch_incidents_or_detections,incidents_len",
+        "detection_type, expected_name",
         [
-            ('Incident ID:', ['Incidents'], 2),
-            ('Detection ID:', ['Detections'], 2),
-            ('Detection ID:', ['Detections', 'Incidents'], 4),
-            ('Incident ID:', ['Endpoint Incident'], 2),
-            ('Detection ID:', ['Endpoint Detection'], 2),
-            ('Detection ID:', ['Endpoint Detection', 'Endpoint Incident'], 4),
-            ('IDP Detection ID: ', ['IDP Detection'], 2)
+            ("ngsiem", "NGSIEM Detection"),
+            ("thirdparty", "Third Party Detection"),
         ],
     )
-    def test_fetch_returns_all_types(self, requests_mock, set_up_mocks, mocker, expected_name,
-                                     fetch_incidents_or_detections, incidents_len):
-        """
-        Tests that fetch incidents returns incidents, detections, endpoint incidents, endpoint detection,
-        and idp detections types. depends on the value of fetch_incidents_or_detections.
-        Given:
-            fetch_incidents_or_detections parameter.
-        When:
-            Fetching incidents.
-        Then:
-            Validate the results contains only detection when fetch_incidents_or_detections = ['Detections'],
-            Validate the results contains only incidents when fetch_incidents_or_detections = ['Incidents']
-            Validate the results contains detection and incidents when
-             fetch_incidents_or_detections = ['Detections', 'Incidents']
-            Validate the results contains only detection when fetch_incidents_or_detections = ['Endpoint Detections'],
-            Validate the results contains only incidents when fetch_incidents_or_detections = ['Endpoint Incidents']
-            Validate the results contains detection and incidents when
-             fetch_incidents_or_detections = ['Endpoint Detections', 'Endpoint Incidents']
-            Validate the results contains only IDP detection when fetch_incidents_or_detections = ['IDP Detections'],
+    def test_fetch_type_no_legacy_version(self, requests_mock, mocker, detection_type, expected_name):
+        from CrowdStrikeFalcon import fetch_items, NGSIEM_DETECTION_FETCH_TYPE, THIRD_PARTY_DETECTION_FETCH_TYPE
 
-        """
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        from CrowdStrikeFalcon import fetch_incidents
-        mocker.patch.object(demisto, 'getLastRun', return_value=[{'time': '2020-09-04T09:16:10Z'}, {}, {}])
+        # Get the actual constants based on the parameter
+        fetch_type = NGSIEM_DETECTION_FETCH_TYPE if detection_type == "ngsiem" else THIRD_PARTY_DETECTION_FETCH_TYPE
 
-        requests_mock.get(f'{SERVER_URL}/incidents/queries/incidents/v1', json={'resources': ['ldt:1', 'ldt:2'],
-                                                                                'meta': {'pagination': {'total': 2}}})
-        requests_mock.post(f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-                           json={'resources': [{'incident_id': 'ldt:1', 'start': '2020-09-04T09:16:11Z'},
-                                               {'incident_id': 'ldt:2', 'start': '2020-09-04T09:16:11Z'}]})
-        requests_mock.get(f'{SERVER_URL}/alerts/queries/alerts/v1', json={'resources': ['a:ind:1', 'a:ind:2']})
-        requests_mock.post(f'{SERVER_URL}/alerts/entities/alerts/v1',
-                           json={'resources': [{'composite_id': 'a:ind:1', 'start_time': '2020-09-04T09:16:11.000Z',
-                                                "created_timestamp": "2020-09-04T09:16:11.000Z"},
-                                               {'composite_id': 'a:ind:2', 'start_time': '2020-09-04T09:16:11.000Z',
-                                                "created_timestamp": "2020-09-04T09:16:11.000Z"}]})
+        mocker.patch.object(
+            demisto, "params", return_value={"fetch_incidents_or_detections": [fetch_type], "legacy_version": False}
+        )
+
+        mocker.patch.object(demisto, "getLastRun", return_value={})
+
+        requests_mock.get(
+            f"{SERVER_URL}/alerts/queries/alerts/v2",
+            json={"resources": [f"a:{detection_type}:1", f"a:{detection_type}:2"], "meta": {"pagination": {"total": 2}}},
+        )
+        requests_mock.post(
+            f"{SERVER_URL}/alerts/entities/alerts/v2",
+            json={
+                "resources": [
+                    {
+                        "composite_id": f"a:{detection_type}:1",
+                        "created_timestamp": "2025-03-11T16:45:21.571614153Z",
+                        "start_time": "2025-03-11T15:46:00.426Z",
+                    },
+                    {
+                        "composite_id": f"a:{detection_type}:2",
+                        "created_timestamp": "2025-03-11T16:45:21.571614153Z",
+                        "start_time": "2025-03-11T15:46:00.426Z",
+                    },
+                ]
+            },
+        )
+
+        _, incidents = fetch_items()
+        assert len(incidents) == 2
+
+        for incident in incidents:
+            assert expected_name in incident.get("name", "")
+
+    @pytest.mark.parametrize(
+        "expected_name, fetch_incidents_or_detections, incidents_len",
+        [
+            ("Detection ID:", ["Detections"], 2),
+            ("Detection ID:", ["Endpoint Detection"], 2),
+            ("IDP Detection ID: ", ["IDP Detection"], 2),
+        ],
+    )
+    def test_fetch_returns_all_types(self, set_up_mocks, mocker, expected_name, fetch_incidents_or_detections, incidents_len):
+        """
+        Tests fetch_items by mocking all fetch functions to return predictable mock data.
+        """
+        from CrowdStrikeFalcon import (
+            fetch_items,
+            TOTAL_FETCH_TYPE_XSOAR,
+            LastRunIndex,
+            set_last_run_per_type,
+        )
+
+        last_run_object = [{} for _ in range(TOTAL_FETCH_TYPE_XSOAR)]
+        set_last_run_per_type(last_run_object, index=LastRunIndex.DETECTIONS, data={"time": "2020-09-04T09:16:10Z"})
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
 
         mocker.patch.object(
             demisto,
-            'params',
+            "params",
             return_value={
-                'url': SERVER_URL,
-                'proxy': True,
-                'incidents_per_fetch': 2,
-                'fetch_incidents_or_detections': fetch_incidents_or_detections,
-                'fetch_time': '3 days',
-            }
+                "url": "https://mockserver",
+                "proxy": True,
+                "incidents_per_fetch": 2,
+                "fetch_incidents_or_detections": fetch_incidents_or_detections,
+                "fetch_time": "3 days",
+            },
         )
 
-        incidents = fetch_incidents()
-        assert len(incidents) == incidents_len
+        def make_mock_items(prefix):
+            return [{"name": f"{prefix} 1"}, {"name": f"{prefix} 2"}], {"mock": True}
 
-        if incidents_len == 4:
-            assert 'Incident ID:' in incidents[0]['name']
-            assert 'Incident ID:' in incidents[1]['name']
-            assert 'Detection ID:' in incidents[2]['name']
-            assert 'Detection ID:' in incidents[3]['name']
-        else:
-            assert expected_name in incidents[0]['name']
-            assert expected_name in incidents[1]['name']
+        # Mock all fetch functions unconditionally
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_endpoint_detections", side_effect=lambda lr, lb, efe: make_mock_items("Detection ID:")
+        )
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_detections_by_product_type",
+            side_effect=lambda lr, **kwargs: make_mock_items(f"{kwargs.get('detection_name_prefix', 'IDP Detection')} ID: "),
+        )
 
+        _, items = fetch_items()
 
-class TestIncidentFetch:
-    """ Test the logic of the fetch
-
-    """
-
-    @pytest.fixture()
-    def set_up_mocks(self, requests_mock, mocker):
-        """ Sets up the mocks for the fetch.
-        """
-        mocker.patch.object(demisto, 'setLastRun')
-        requests_mock.get(f'{SERVER_URL}/detects/queries/detects/v1', json={})
-        requests_mock.post(f'{SERVER_URL}/detects/entities/summaries/GET/v1',
-                           json={})
-        requests_mock.get(f'{SERVER_URL}/incidents/queries/incidents/v1', json={'resources': ['ldt:1', 'ldt:2'],
-                                                                                'meta': {'pagination': {'total': 2}}})
-        requests_mock.post(f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-                           json={'resources': [{'incident_id': 'ldt:1', 'start': '2020-09-04T09:16:11Z'},
-                                               {'incident_id': 'ldt:2', 'start': '2020-09-04T09:16:11Z'}]})
-
-    def delete_offset_test(self, set_up_mocks, mocker):
-        """
-        Tests the change of logic done in fetch. Validates that it's done smoothly
-        Given:
-            Old getLastRun which holds two lists with offset key
-        When:
-            The offset is inside the lastRun
-        Then:
-            The offset is deleted from the lastRun
-        """
-
-        from CrowdStrikeFalcon import fetch_incidents
-        mocker.patch.object(demisto, 'params', return_value={})
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value=[{'time': '2020-09-04T09:16:10Z', 'offset': 2},
-                                          {'time': '2020-09-04T09:22:10Z', 'offset': 4}])
-        fetch_incidents()
-        assert demisto.setLastRun.mock_calls[0][1][0] == [{'time': '2020-09-04T09:16:10Z'},
-                                                          {'time': '2020-09-04T09:22:10Z'}]
-
-    @freeze_time("2020-08-26 17:22:13 UTC")
-    def test_new_fetch(self, set_up_mocks, mocker, requests_mock):
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        mocker.patch.object(demisto, 'getLastRun', return_value=[{}, {'time': '2020-09-04T09:16:10Z',
-                                                                      'offset': 2}, {}])
-        # Override post to have 1 results so FETCH_LIMIT won't be reached
-        requests_mock.post(f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-                           json={'resources': [{'incident_id': 'ldt:1', 'start': '2020-09-04T09:16:11Z'}]})
-        from CrowdStrikeFalcon import fetch_incidents
-        fetch_incidents()
-        assert demisto.setLastRun.mock_calls[0][1][0][1] == {'time': '2020-09-04T09:16:11Z',
-                                                             'limit': 2,
-                                                             'offset': 0,
-                                                             'found_incident_ids': {'Incident ID: ldt:1': 1598462533}}
-
-    @freeze_time("2020-09-04T09:16:10.000000Z")
-    def test_fetch_with_offset(self, set_up_mocks, mocker, requests_mock):
-        """
-        Tests the correct flow of fetch with offset
-        Given:
-            `getLastRun` which holds  `first_behavior_time` and `offset`
-        When:
-            2 result is returned (which is less than the total which is 4)
-        Then:
-            - The offset increases to 2 in the next run, and the last time remains
-            - In the next call, the offset will be reset to 0 and the last time will be the latest detection time
-
-        """
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        # mock the total number of detections to be 4, so offset will be set
-        requests_mock.get(f'{SERVER_URL}/incidents/queries/incidents/v1', json={'resources': ['ldt:1', 'ldt:2'],
-                                                                                'pagination': {'meta': {'total': 4}}})
-
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value=[{}, {'time': '2020-09-04T09:16:10Z',
-                                          'offset': 0}, {}])
-        # Override post to have 1 results so FETCH_LIMIT won't be reached
-        requests_mock.post(f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-                           json={'resources': [{'incident_id': 'ldt:1',
-                                                'start': '2020-09-04T09:16:11Z',
-                                                'max_severity_displayname': 'Low'}],
-                                 })
-        from CrowdStrikeFalcon import fetch_incidents
-        fetch_incidents()
-        # the offset should be increased to 2, and the time should be stay the same
-        expected_last_run = {
-            'time': '2020-09-04T09:16:10Z', 'limit': 2, 'offset': 2, "found_incident_ids": {'Incident ID: ldt:1': 1599210970}}
-        assert demisto.setLastRun.mock_calls[0][1][0][1] == expected_last_run
-
-        requests_mock.get(f'{SERVER_URL}/incidents/queries/incidents/v1', json={'resources': ['ldt:3', 'ldt:4'],
-                                                                                'meta': {'pagination': {'total': 4}}})
-
-        mocker.patch.object(demisto, 'getLastRun',
-                            return_value=[{}, expected_last_run, {}])
-
-        requests_mock.post(f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-                           json={'resources': [{'incident_id': 'ldt:2',
-                                                'start': '2020-09-04T09:16:13Z',
-                                                'max_severity_displayname': 'Low'}],
-                                 })
-
-        fetch_incidents()
-        # the offset should be 0 because all detections were fetched, and the time should update to the latest detection
-        assert demisto.setLastRun.mock_calls[1][1][0][1] == {
-            'time': '2020-09-04T09:16:13Z', 'limit': 2, 'offset': 0, "found_incident_ids": {'Incident ID: ldt:1': 1599210970,
-                                                                                            'Incident ID: ldt:2': 1599210970}}
-
-    def test_incident_type_in_fetch(self, set_up_mocks, mocker):
-        """Tests the addition of incident_type field to the context
-        Given:
-            Old getLastRun which holds `first_behavior_time` and `last_incident_id`
-        When:
-            2 results are returned (which equals the FETCH_LIMIT)
-        Then:
-            "incident_type": "incident" is in raw result returned by the indicator
-        """
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
-        mocker.patch.object(demisto, 'getLastRun', return_value=[{}, {'time': '2020-09-04T09:16:10Z',
-                                                                      }])
-        from CrowdStrikeFalcon import fetch_incidents
-        incidents = fetch_incidents()
-        for incident in incidents:
-            assert "\"incident_type\": \"incident\"" in incident.get('rawJSON', '')
+        assert len(items) == incidents_len
+        assert expected_name in items[0]["name"]
+        assert expected_name in items[1]["name"]
 
 
 def get_fetch_data():
-    with open('./test_data/test_data.json') as f:
+    with open("./test_data/test_data.json") as f:
         return json.loads(f.read())
 
 
 def get_fetch_data2():
-    with open('./test_data/test_data2.json') as f:
+    with open("./test_data/test_data2.json") as f:
         return json.loads(f.read())
 
 
@@ -2539,20 +2476,21 @@ test_data2 = get_fetch_data2()
 
 def test_get_indicator_device_id(mocker, requests_mock):
     from CrowdStrikeFalcon import get_indicator_device_id
-    requests_mock.get("https://4.4.4.4/indicators/queries/devices/v1",
-                      json=test_data['response_for_get_indicator_device_id'])
-    mocker.patch.object(demisto, 'args', return_value={'type': 'sha256', 'value': 'example_sha'})
+
+    requests_mock.get("https://4.4.4.4/indicators/queries/devices/v1", json=test_data["response_for_get_indicator_device_id"])
+    mocker.patch.object(demisto, "args", return_value={"type": "sha256", "value": "example_sha"})
     res = get_indicator_device_id()
 
     # Expecting both DeviceIOC and DeviceID outputs for BC.
-    assert set(res.outputs.keys()) - {'DeviceIOC', 'DeviceID'} == set()
-    assert res.outputs['DeviceIOC']['Type'] == 'sha256'
-    assert res.outputs['DeviceIOC']['Value'] == 'example_sha'
-    assert res.outputs['DeviceIOC']['DeviceID'] == res.outputs['DeviceID']
+    assert set(res.outputs.keys()) - {"DeviceIOC", "DeviceID"} == set()
+    assert res.outputs["DeviceIOC"]["Type"] == "sha256"
+    assert res.outputs["DeviceIOC"]["Value"] == "example_sha"
+    assert res.outputs["DeviceIOC"]["DeviceID"] == res.outputs["DeviceID"]
 
 
 def test_validate_response():
     from CrowdStrikeFalcon import validate_response
+
     true_res = validate_response({"resources": "1234"})
     false_res = validate_response({"error": "404"})
     assert true_res
@@ -2562,11 +2500,11 @@ def test_validate_response():
 def test_build_error_message():
     from CrowdStrikeFalcon import build_error_message
 
-    res_error_data = build_error_message({'meta': 1234})
-    assert res_error_data == 'Error: error code: None, error_message: something got wrong, please try again.'
+    res_error_data = build_error_message({"meta": 1234})
+    assert res_error_data == "Error: error code: None, error_message: something got wrong, please try again."
 
-    res_error_data_with_specific_error = build_error_message({'errors': [{"code": 1234, "message": "hi"}]})
-    assert res_error_data_with_specific_error == 'Error: error code: 1234, error_message: hi.'
+    res_error_data_with_specific_error = build_error_message({"errors": [{"code": 1234, "message": "hi"}]})
+    assert res_error_data_with_specific_error == "Error: error code: 1234, error_message: hi."
 
 
 def test_search_iocs_command_does_not_exist(requests_mock):
@@ -2582,14 +2520,11 @@ def test_search_iocs_command_does_not_exist(requests_mock):
      - Do not populate the entry context
     """
     from CrowdStrikeFalcon import search_iocs_command
-    response = {'resources': []}
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/queries/iocs/v1',
-        json=response,
-        status_code=200
-    )
+
+    response = {"resources": []}
+    requests_mock.get(f"{SERVER_URL}/indicators/queries/iocs/v1", json=response, status_code=200)
     results = search_iocs_command()
-    assert results["HumanReadable"] == 'Could not find any Indicators of Compromise.'
+    assert results["HumanReadable"] == "Could not find any Indicators of Compromise."
     assert results["EntryContext"] is None
 
 
@@ -2606,30 +2541,25 @@ def test_search_iocs_command_exists(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import search_iocs_command
-    id_response = {'resources': ['md5:testmd5'], 'errors': []}
+
+    id_response = {"resources": ["md5:testmd5"], "errors": []}
     ioc_response = {
-        'resources': [{
-            'type': 'md5',
-            'value': 'testmd5',
-            'policy': 'detect',
-            'share_level': 'red',
-            'description': 'Eicar file',
-            'created_timestamp': '2020-10-01T09:09:04Z',
-            'modified_timestamp': '2020-10-01T09:09:04Z'
-        }]
+        "resources": [
+            {
+                "type": "md5",
+                "value": "testmd5",
+                "policy": "detect",
+                "share_level": "red",
+                "description": "Eicar file",
+                "created_timestamp": "2020-10-01T09:09:04Z",
+                "modified_timestamp": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/queries/iocs/v1',
-        json=id_response,
-        status_code=200
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=ioc_response,
-        status_code=200
-    )
+    requests_mock.get(f"{SERVER_URL}/indicators/queries/iocs/v1", json=id_response, status_code=200)
+    requests_mock.get(f"{SERVER_URL}/indicators/entities/iocs/v1", json=ioc_response, status_code=200)
     results = search_iocs_command()
-    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == 'testmd5'
+    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "testmd5"
 
 
 def test_search_iocs_command__no_iocs(requests_mock, mocker):
@@ -2644,13 +2574,11 @@ def test_search_iocs_command__no_iocs(requests_mock, mocker):
      - Display an appropriate info in the HR
     """
     from CrowdStrikeFalcon import search_iocs_command
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/queries/iocs/v1',
-        json={}
-    )
-    mocker.patch.object(demisto, 'results')
+
+    requests_mock.get(f"{SERVER_URL}/indicators/queries/iocs/v1", json={})
+    mocker.patch.object(demisto, "results")
     res = search_iocs_command()
-    assert 'Could not find any Indicators of Compromise.' in res['HumanReadable']
+    assert "Could not find any Indicators of Compromise." in res["HumanReadable"]
 
 
 def test_get_ioc_command_does_not_exist(requests_mock):
@@ -2666,15 +2594,12 @@ def test_get_ioc_command_does_not_exist(requests_mock):
      - Raise the error back from the server
     """
     from CrowdStrikeFalcon import get_ioc_command
-    response = {'resources': [], 'errors': [{'code': 404, 'message': 'md5:testmd5 - Resource Not Found'}]}
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=response,
-        status_code=200
-    )
+
+    response = {"resources": [], "errors": [{"code": 404, "message": "md5:testmd5 - Resource Not Found"}]}
+    requests_mock.get(f"{SERVER_URL}/indicators/entities/iocs/v1", json=response, status_code=200)
     with pytest.raises(DemistoException) as excinfo:
-        get_ioc_command(ioc_type='md5', value='testmd5')
-    assert [{'code': 404, 'message': 'md5:testmd5 - Resource Not Found'}] == excinfo.value.args[0]
+        get_ioc_command(ioc_type="md5", value="testmd5")
+    assert excinfo.value.args[0] == [{"code": 404, "message": "md5:testmd5 - Resource Not Found"}]
 
 
 def test_get_ioc_command_exists(requests_mock):
@@ -2690,24 +2615,23 @@ def test_get_ioc_command_exists(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import get_ioc_command
+
     ioc_response = {
-        'resources': [{
-            'type': 'md5',
-            'value': 'testmd5',
-            'policy': 'detect',
-            'share_level': 'red',
-            'description': 'Eicar file',
-            'created_timestamp': '2020-10-01T09:09:04Z',
-            'modified_timestamp': '2020-10-01T09:09:04Z'
-        }]
+        "resources": [
+            {
+                "type": "md5",
+                "value": "testmd5",
+                "policy": "detect",
+                "share_level": "red",
+                "description": "Eicar file",
+                "created_timestamp": "2020-10-01T09:09:04Z",
+                "modified_timestamp": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=ioc_response,
-        status_code=200
-    )
-    results = get_ioc_command(ioc_type='md5', value='testmd5')
-    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == 'testmd5'
+    requests_mock.get(f"{SERVER_URL}/indicators/entities/iocs/v1", json=ioc_response, status_code=200)
+    results = get_ioc_command(ioc_type="md5", value="testmd5")
+    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "testmd5"
 
 
 def test_upload_ioc_command_fail(requests_mock, mocker):
@@ -2722,20 +2646,13 @@ def test_upload_ioc_command_fail(requests_mock, mocker):
      - Display error message to user
     """
     from CrowdStrikeFalcon import upload_ioc_command
-    upload_response = {'resources': []}
-    get_response = {'resources': [], 'errors': [{'code': 404, 'message': 'md5:testmd5 - Resource Not Found'}]}
-    requests_mock.post(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=upload_response,
-        status_code=200
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=get_response,
-        status_code=200
-    )
+
+    upload_response = {"resources": []}
+    get_response = {"resources": [], "errors": [{"code": 404, "message": "md5:testmd5 - Resource Not Found"}]}
+    requests_mock.post(f"{SERVER_URL}/indicators/entities/iocs/v1", json=upload_response, status_code=200)
+    requests_mock.get(f"{SERVER_URL}/indicators/entities/iocs/v1", json=get_response, status_code=200)
     with pytest.raises(DemistoException) as excinfo:
-        upload_ioc_command(ioc_type='md5', value='testmd5')
+        upload_ioc_command(ioc_type="md5", value="testmd5")
     assert excinfo.value.args[0] == "Failed to create IOC. Please try again."
 
 
@@ -2752,30 +2669,25 @@ def test_upload_ioc_command_successful(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import upload_ioc_command
-    upload_response = {'resources': []}
+
+    upload_response = {"resources": []}
     ioc_response = {
-        'resources': [{
-            'type': 'md5',
-            'value': 'testmd5',
-            'policy': 'detect',
-            'share_level': 'red',
-            'description': 'Eicar file',
-            'created_timestamp': '2020-10-01T09:09:04Z',
-            'modified_timestamp': '2020-10-01T09:09:04Z'
-        }]
+        "resources": [
+            {
+                "type": "md5",
+                "value": "testmd5",
+                "policy": "detect",
+                "share_level": "red",
+                "description": "Eicar file",
+                "created_timestamp": "2020-10-01T09:09:04Z",
+                "modified_timestamp": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
-    requests_mock.post(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=upload_response,
-        status_code=200
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/entities/iocs/v1',
-        json=ioc_response,
-        status_code=200
-    )
-    results = upload_ioc_command(ioc_type='md5', value='testmd5')
-    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == 'testmd5'
+    requests_mock.post(f"{SERVER_URL}/indicators/entities/iocs/v1", json=upload_response, status_code=200)
+    requests_mock.get(f"{SERVER_URL}/indicators/entities/iocs/v1", json=ioc_response, status_code=200)
+    results = upload_ioc_command(ioc_type="md5", value="testmd5")
+    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "testmd5"
 
 
 def test_search_custom_iocs_command_does_not_exist(requests_mock):
@@ -2791,14 +2703,11 @@ def test_search_custom_iocs_command_does_not_exist(requests_mock):
      - Do not populate the entry context
     """
     from CrowdStrikeFalcon import search_custom_iocs_command
-    response = {'resources': []}
-    requests_mock.get(
-        f'{SERVER_URL}/iocs/combined/indicator/v1',
-        json=response,
-        status_code=200
-    )
+
+    response = {"resources": []}
+    requests_mock.get(f"{SERVER_URL}/iocs/combined/indicator/v1", json=response, status_code=200)
     results = search_custom_iocs_command()
-    assert results["HumanReadable"] == 'Could not find any Indicators of Compromise.'
+    assert results["HumanReadable"] == "Could not find any Indicators of Compromise."
     assert results["EntryContext"] is None
 
 
@@ -2815,27 +2724,28 @@ def test_search_custom_iocs_command_exists(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import search_custom_iocs_command
+
     ioc_response = {
-        'resources': [{
-            'id': '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r',
-            'type': 'md5',
-            'value': 'testmd5',
-            'action': 'prevent',
-            'severity': 'high',
-            'description': 'Eicar file',
-            'created_on': '2020-10-01T09:09:04Z',
-            'modified_on': '2020-10-01T09:09:04Z',
-        }]
+        "resources": [
+            {
+                "id": "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r",
+                "type": "md5",
+                "value": "testmd5",
+                "action": "prevent",
+                "severity": "high",
+                "description": "Eicar file",
+                "created_on": "2020-10-01T09:09:04Z",
+                "modified_on": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
-    requests_mock.get(
-        f'{SERVER_URL}/iocs/combined/indicator/v1',
-        json=ioc_response,
-        status_code=200
-    )
+    requests_mock.get(f"{SERVER_URL}/iocs/combined/indicator/v1", json=ioc_response, status_code=200)
     results = search_custom_iocs_command()
-    assert '| 4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r | prevent | high | md5 |' \
-           in results[0]["HumanReadable"]
-    assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == 'testmd5'
+    assert (
+        "| 4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r | prevent |  | high | md5 |"
+        in results[0]["HumanReadable"]
+    )
+    assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "testmd5"
 
 
 def test_search_custom_iocs_command__no_iocs(requests_mock, mocker):
@@ -2850,14 +2760,12 @@ def test_search_custom_iocs_command__no_iocs(requests_mock, mocker):
      - Display an appropriate info in HR
     """
     from CrowdStrikeFalcon import search_custom_iocs_command
-    requests_mock.get(
-        f'{SERVER_URL}/iocs/combined/indicator/v1',
-        json={}
-    )
-    mocker.patch.object(demisto, 'results')
+
+    requests_mock.get(f"{SERVER_URL}/iocs/combined/indicator/v1", json={})
+    mocker.patch.object(demisto, "results")
     mocker.patch(RETURN_ERROR_TARGET)
     res = search_custom_iocs_command()
-    assert 'Could not find any Indicators of Compromise.' in res['HumanReadable']
+    assert "Could not find any Indicators of Compromise." in res["HumanReadable"]
 
 
 def test_search_custom_iocs_command_filter(requests_mock):
@@ -2873,32 +2781,37 @@ def test_search_custom_iocs_command_filter(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import search_custom_iocs_command
-    ioc_type = 'domain'
-    ioc_value = 'test.com'
+
+    ioc_type = "domain"
+    ioc_value = "test.com"
     ioc_response = {
-        'resources': [{
-            'id': '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r',
-            'type': ioc_type,
-            'value': ioc_value,
-            'action': 'prevent',
-            'severity': 'high',
-            'created_on': '2020-10-01T09:09:04Z',
-            'modified_on': '2020-10-01T09:09:04Z',
-        }]
+        "resources": [
+            {
+                "id": "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r",
+                "type": ioc_type,
+                "value": ioc_value,
+                "action": "prevent",
+                "severity": "high",
+                "created_on": "2020-10-01T09:09:04Z",
+                "modified_on": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
     requests_mock.get(
-        f'{SERVER_URL}/iocs/combined/indicator/v1?filter=type%3A%5B%27{ioc_type}%27%5D%2Bvalue%3A%5B%27{ioc_value}%27'
-        f'%5D&limit=50',
+        f"{SERVER_URL}/iocs/combined/indicator/v1?filter=type%3A%5B%27{ioc_type}%27%5D%2Bvalue%3A%5B%27{ioc_value}%27"
+        f"%5D&limit=50",
         # noqa: E501
         json=ioc_response,
-        status_code=200
+        status_code=200,
     )
     results = search_custom_iocs_command(
         types=ioc_type,
         values=ioc_value,
     )
-    assert f'| 4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r | prevent | high | {ioc_type} |' \
-           f' {ioc_value} |' in results[0]["HumanReadable"]  # noqa: E501
+    assert (
+        f"| 4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r | prevent |  | high | {ioc_type} |"
+        f" {ioc_value} |" in results[0]["HumanReadable"]
+    )  # noqa: E501
     assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == ioc_value
 
 
@@ -2915,24 +2828,27 @@ def test_get_custom_ioc_command_exists(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import get_custom_ioc_command
-    ioc_type = 'md5'
-    ioc_value = 'testmd5'
+
+    ioc_type = "md5"
+    ioc_value = "testmd5"
     ioc_response = {
-        'resources': [{
-            'id': '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r',
-            'type': ioc_type,
-            'value': ioc_value,
-            'action': 'prevent',
-            'severity': 'high',
-            'description': 'Eicar file',
-            'created_on': '2020-10-01T09:09:04Z',
-            'modified_on': '2020-10-01T09:09:04Z',
-        }]
+        "resources": [
+            {
+                "id": "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r",
+                "type": ioc_type,
+                "value": ioc_value,
+                "action": "prevent",
+                "severity": "high",
+                "description": "Eicar file",
+                "created_on": "2020-10-01T09:09:04Z",
+                "modified_on": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
 
     requests_mock.get(
-        f'{SERVER_URL}/iocs/combined/indicator/v1?filter=type%3A%5B%27{ioc_type}%27%5D%2Bvalue%3A%5B%27{ioc_value}%27'
-        f'%5D&limit=50',
+        f"{SERVER_URL}/iocs/combined/indicator/v1?filter=type%3A%5B%27{ioc_type}%27%5D%2Bvalue%3A%5B%27{ioc_value}%27"
+        f"%5D&limit=50",
         # noqa: E501
         json=ioc_response,
         status_code=200,
@@ -2954,15 +2870,12 @@ def test_get_custom_ioc_command_does_not_exist(requests_mock):
      - Raise the error back from the server
     """
     from CrowdStrikeFalcon import get_custom_ioc_command
-    response = {'resources': [], 'errors': [{'code': 404, 'message': 'md5:testmd5 - Resource Not Found'}]}
-    requests_mock.get(
-        f'{SERVER_URL}/iocs/combined/indicator/v1',
-        json=response,
-        status_code=200
-    )
+
+    response = {"resources": [], "errors": [{"code": 404, "message": "md5:testmd5 - Resource Not Found"}]}
+    requests_mock.get(f"{SERVER_URL}/iocs/combined/indicator/v1", json=response, status_code=200)
     with pytest.raises(DemistoException) as excinfo:
-        get_custom_ioc_command(ioc_type='md5', value='testmd5')
-    assert [{'code': 404, 'message': 'md5:testmd5 - Resource Not Found'}] == excinfo.value.args[0]
+        get_custom_ioc_command(ioc_type="md5", value="testmd5")
+    assert excinfo.value.args[0] == [{"code": 404, "message": "md5:testmd5 - Resource Not Found"}]
 
 
 def test_get_custom_ioc_command_by_id(requests_mock):
@@ -2975,22 +2888,25 @@ def test_get_custom_ioc_command_by_id(requests_mock):
      - Do populate the entry context with the right ID
     """
     from CrowdStrikeFalcon import get_custom_ioc_command
-    ioc_id = '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r'
+
+    ioc_id = "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r"
     ioc_response = {
-        'resources': [{
-            'id': ioc_id,
-            'type': 'domain',
-            'value': 'test.com',
-            'action': 'prevent',
-            'severity': 'high',
-            'description': 'Eicar file',
-            'created_on': '2020-10-01T09:09:04Z',
-            'modified_on': '2020-10-01T09:09:04Z',
-        }]
+        "resources": [
+            {
+                "id": ioc_id,
+                "type": "domain",
+                "value": "test.com",
+                "action": "prevent",
+                "severity": "high",
+                "description": "Eicar file",
+                "created_on": "2020-10-01T09:09:04Z",
+                "modified_on": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
 
     requests_mock.get(
-        f'{SERVER_URL}/iocs/entities/indicators/v1?ids={ioc_id}',  # noqa: E501
+        f"{SERVER_URL}/iocs/entities/indicators/v1?ids={ioc_id}",  # noqa: E501
         json=ioc_response,
         status_code=200,
     )
@@ -3011,33 +2927,38 @@ def test_upload_custom_ioc_command_successful(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import upload_custom_ioc_command
+
     ioc_response = {
-        'resources': [{
-            'id': '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r',
-            'type': 'md5',
-            'value': 'testmd5',
-            'action': 'prevent',
-            'severity': 'high',
-            'description': 'Eicar file',
-            'created_on': '2020-10-01T09:09:04Z',
-            'modified_on': '2020-10-01T09:09:04Z',
-        }]
+        "resources": [
+            {
+                "id": "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r",
+                "type": "md5",
+                "value": "testmd5",
+                "action": "prevent",
+                "severity": "high",
+                "description": "Eicar file",
+                "created_on": "2020-10-01T09:09:04Z",
+                "modified_on": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
     requests_mock.post(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
+        f"{SERVER_URL}/iocs/entities/indicators/v1",
         json=ioc_response,
         status_code=200,
     )
     results = upload_custom_ioc_command(
-        ioc_type='md5',
-        value='testmd5',
-        action='prevent',
-        severity='high',
-        platforms='mac,linux',
+        ioc_type="md5",
+        value="testmd5",
+        action="prevent",
+        severity="high",
+        platforms="mac,linux",
     )
-    assert '| 2020-10-01T09:09:04Z | Eicar file |  | 4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r |' \
-           in results[0]["HumanReadable"]
-    assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == 'testmd5'
+    assert (
+        "| 2020-10-01T09:09:04Z | Eicar file |  | 4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r |"
+        in results[0]["HumanReadable"]
+    )
+    assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "testmd5"
 
 
 def test_upload_custom_ioc_command_fail(requests_mock):
@@ -3052,31 +2973,30 @@ def test_upload_custom_ioc_command_fail(requests_mock):
      - Display error message to user
     """
     from CrowdStrikeFalcon import upload_custom_ioc_command
+
     response = {
-        'resources': [{
-            'row': 1,
-            'value': None,
-            'type': None,
-            'message_type': 'error',
-            'field_name': 'value',
-            'message': 'required string is missing'
-        }],
-        'errors': [{'code': 400, 'message': 'one or more inputs are invalid'}]
+        "resources": [
+            {
+                "row": 1,
+                "value": None,
+                "type": None,
+                "message_type": "error",
+                "field_name": "value",
+                "message": "required string is missing",
+            }
+        ],
+        "errors": [{"code": 400, "message": "one or more inputs are invalid"}],
     }
-    requests_mock.post(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
-        json=response,
-        status_code=200
-    )
+    requests_mock.post(f"{SERVER_URL}/iocs/entities/indicators/v1", json=response, status_code=200)
     with pytest.raises(DemistoException) as excinfo:
         upload_custom_ioc_command(
-            ioc_type='md5',
-            value='testmd5',
-            action='prevent',
-            severity='high',
-            platforms='mac,linux',
+            ioc_type="md5",
+            value="testmd5",
+            action="prevent",
+            severity="high",
+            platforms="mac,linux",
         )
-    assert response['errors'] == excinfo.value.args[0]
+    assert response["errors"] == excinfo.value.args[0]
 
 
 def test_upload_custom_ioc_command_duplicate(requests_mock, mocker):
@@ -3091,37 +3011,36 @@ def test_upload_custom_ioc_command_duplicate(requests_mock, mocker):
      - Display error message to user
     """
     from CrowdStrikeFalcon import upload_custom_ioc_command
-    ioc_type = 'domain'
-    ioc_value = 'test.com'
+
+    ioc_type = "domain"
+    ioc_value = "test.com"
     response = {
-        'errors': [{
-            'code': 400,
-            'message': 'One or more indicators have a warning or invalid input'
-        }],
-        'resources': [{
-            'row': 1,
-            'value':
-                'test2.com',
-            'type': 'domain',
-            'message_type': 'warning',
-            'message': f"Warning: Duplicate type: '{ioc_type}' and value: '{ioc_value}' combination."
-        }]
+        "errors": [{"code": 400, "message": "One or more indicators have a warning or invalid input"}],
+        "resources": [
+            {
+                "row": 1,
+                "value": "test2.com",
+                "type": "domain",
+                "message_type": "warning",
+                "message": f"Warning: Duplicate type: '{ioc_type}' and value: '{ioc_value}' combination.",
+            }
+        ],
     }
     requests_mock.post(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
+        f"{SERVER_URL}/iocs/entities/indicators/v1",
         json=response,
         status_code=400,
-        reason='Bad Request',
+        reason="Bad Request",
     )
     with pytest.raises(DemistoException) as error_info:
         upload_custom_ioc_command(
             ioc_type=ioc_type,
             value=ioc_value,
-            action='prevent',
-            severity='high',
-            platforms='mac,linux',
+            action="prevent",
+            severity="high",
+            platforms="mac,linux",
         )
-    assert response['resources'][0]['message'] in str(error_info.value)
+    assert response["resources"][0]["message"] in str(error_info.value)
 
 
 def test_upload_custom_ioc_command_filename(requests_mock):
@@ -3138,23 +3057,15 @@ def test_upload_custom_ioc_command_filename(requests_mock):
         - Make sure that the filename is included in the request to CrowdStrike
     """
     from CrowdStrikeFalcon import upload_custom_ioc_command
-    mock = requests_mock.post(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
-        status_code=200,
-        json={"result": "ok"}
-    )
+
+    mock = requests_mock.post(f"{SERVER_URL}/iocs/entities/indicators/v1", status_code=200, json={"result": "ok"})
 
     upload_custom_ioc_command(
-        action='prevent',
-        severity='high',
-        platforms='mac,linux',
-        ioc_type="sha256",
-        value="testsha256",
-        file_name="test.txt"
+        action="prevent", severity="high", platforms="mac,linux", ioc_type="sha256", value="testsha256", file_name="test.txt"
     )
 
     body = mock.last_request.json()
-    assert body['indicators'][0]['metadata']['filename'] == "test.txt"
+    assert body["indicators"][0]["metadata"]["filename"] == "test.txt"
 
 
 def test_upload_custom_ioc_command_filename_nosha5(requests_mock):
@@ -3171,20 +3082,141 @@ def test_upload_custom_ioc_command_filename_nosha5(requests_mock):
         - Make sure that the filename is ignored in the request to CrowdStrike
     """
     from CrowdStrikeFalcon import upload_custom_ioc_command
-    mock = requests_mock.post(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
-        status_code=200,
-        json={"result": "ok"}
-    )
+
+    mock = requests_mock.post(f"{SERVER_URL}/iocs/entities/indicators/v1", status_code=200, json={"result": "ok"})
     upload_custom_ioc_command(
-        action='prevent',
-        severity='high',
-        platforms='mac,linux',
-        ioc_type="ip",
-        value="someip",
-        file_name="test.txt"
+        action="prevent", severity="high", platforms="mac,linux", ioc_type="ip", value="someip", file_name="test.txt"
     )
-    assert 'metadata' not in mock.last_request.json()['indicators'][0]
+    assert "metadata" not in mock.last_request.json()["indicators"][0]
+
+
+def test_upload_custom_ioc_command_mobile_action(requests_mock):
+    """
+    Test that providing a mobile_action to custom ioc works as expected
+
+    Given:
+        - A mobile_action attached to a custom IOC
+
+    When:
+        - The user tries to upload a custom IOC with a mobile_action
+
+    Then:
+        - Make sure that the mobile_action is included in the request to CrowdStrike
+    """
+    from CrowdStrikeFalcon import upload_custom_ioc_command
+
+    mock = requests_mock.post(f"{SERVER_URL}/iocs/entities/indicators/v1", status_code=200, json={"result": "ok"})
+
+    upload_custom_ioc_command(
+        action="no_action", platforms="mac,android", ioc_type="domain", value="test.com", mobile_action="prevent"
+    )
+
+    body = mock.last_request.json()
+    assert body["indicators"][0]["mobile_action"] == "prevent"
+
+
+def test_upload_custom_ioc_command_no_mobile_action(requests_mock):
+    """
+    Test that not providing a mobile_action omits it from the request
+
+    Given:
+        - No mobile_action provided
+
+    When:
+        - The user tries to upload a custom IOC without a mobile_action
+
+    Then:
+        - Make sure that mobile_action is not included in the request to CrowdStrike
+    """
+    from CrowdStrikeFalcon import upload_custom_ioc_command
+
+    mock = requests_mock.post(f"{SERVER_URL}/iocs/entities/indicators/v1", status_code=200, json={"result": "ok"})
+
+    upload_custom_ioc_command(action="no_action", platforms="mac,linux", ioc_type="domain", value="test.com")
+
+    body = mock.last_request.json()
+    assert "mobile_action" not in body["indicators"][0]
+
+
+def test_upload_custom_ioc_command_mobile_action_without_mobile_platform():
+    """
+    Test that providing mobile_action without a mobile platform raises an error
+
+    Given:
+        - A mobile_action provided without android or ios in platforms
+
+    When:
+        - The user tries to upload a custom IOC with mobile_action but only desktop platforms
+
+    Then:
+        - Raise a ValueError indicating a mobile platform is required
+    """
+    from CrowdStrikeFalcon import upload_custom_ioc_command
+
+    with pytest.raises(ValueError, match="mobile_action requires a mobile platform"):  # noqa: E501
+        upload_custom_ioc_command(
+            action="no_action", platforms="windows,linux", ioc_type="domain", value="test.com", mobile_action="prevent"
+        )
+
+
+def test_lift_host_containment_command_default(requests_mock, mocker):
+    """
+    Test cs-falcon-lift-host-containment with default behavior (lift_containment)
+
+    Given:
+        - Host IDs to lift containment from
+
+    When:
+        - The user runs cs-falcon-lift-host-containment without lift_filesystem_containment_all
+
+    Then:
+        - The API is called with action_name=lift_containment
+    """
+    from CrowdStrikeFalcon import lift_host_containment_command
+
+    mocker.patch("CrowdStrikeFalcon.demisto.args", return_value={"ids": "test_host_id"})
+    mock = requests_mock.post(
+        f"{SERVER_URL}/devices/entities/devices-actions/v2",
+        json={"resources": [{"id": "test_host_id"}], "meta": {"query_time": 0.001}},
+        status_code=200,
+    )
+
+    result = lift_host_containment_command()
+
+    assert mock.last_request.qs["action_name"] == ["lift_containment"]
+    assert "Containment has been lifted off host" in result["HumanReadable"]
+
+
+def test_lift_host_containment_command_filesystem(requests_mock, mocker):
+    """
+    Test cs-falcon-lift-host-containment with lift_filesystem_containment_all=true
+
+    Given:
+        - Host IDs to lift filesystem containment from
+
+    When:
+        - The user runs cs-falcon-lift-host-containment with lift_filesystem_containment_all=true
+
+    Then:
+        - The API is called with action_name=lift_filesystem_containment_all
+        - The human readable output mentions filesystem containment
+    """
+    from CrowdStrikeFalcon import lift_host_containment_command
+
+    mocker.patch(
+        "CrowdStrikeFalcon.demisto.args",
+        return_value={"ids": "test_host_id", "lift_filesystem_containment_all": "true"},
+    )
+    mock = requests_mock.post(
+        f"{SERVER_URL}/devices/entities/devices-actions/v2",
+        json={"resources": [{"id": "test_host_id"}], "meta": {"query_time": 0.001}},
+        status_code=200,
+    )
+
+    result = lift_host_containment_command()
+
+    assert mock.last_request.qs["action_name"] == ["lift_filesystem_containment_all"]
+    assert "Filesystem containment has been lifted off host" in result["HumanReadable"]
 
 
 def test_update_custom_ioc_command(requests_mock):
@@ -3201,30 +3233,31 @@ def test_update_custom_ioc_command(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import update_custom_ioc_command
-    ioc_id = '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r'
+
+    ioc_id = "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r"
     ioc_response = {
-        'resources': [{
-            'id': ioc_id,
-            'type': 'md5',
-            'value': 'testmd5',
-            'action': 'prevent',
-            'severity': 'high',
-            'description': 'Eicar file',
-            'created_on': '2020-10-01T09:09:04Z',
-            'modified_on': '2020-10-01T09:09:04Z',
-        }]
+        "resources": [
+            {
+                "id": ioc_id,
+                "type": "md5",
+                "value": "testmd5",
+                "action": "prevent",
+                "severity": "high",
+                "description": "Eicar file",
+                "created_on": "2020-10-01T09:09:04Z",
+                "modified_on": "2020-10-01T09:09:04Z",
+            }
+        ]
     }
-    updated_severity = 'medium'
+    updated_severity = "medium"
 
     def match_req_body(request):
-        if request.json() == {
-            'indicators': [{'id': ioc_id, 'severity': updated_severity}]
-        }:
+        if request.json() == {"indicators": [{"id": ioc_id, "severity": updated_severity}]}:
             return True
         return None
 
     requests_mock.patch(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
+        f"{SERVER_URL}/iocs/entities/indicators/v1",
         json=ioc_response,
         status_code=200,
         additional_matcher=match_req_body,
@@ -3234,8 +3267,8 @@ def test_update_custom_ioc_command(requests_mock):
         ioc_id=ioc_id,
         severity=updated_severity,
     )
-    assert 'Custom IOC was updated successfully' in results["HumanReadable"]
-    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == 'testmd5'
+    assert "Custom IOC was updated successfully" in results["HumanReadable"]
+    assert results["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "testmd5"
 
 
 def test_update_custom_ioc_command_filename(requests_mock):
@@ -3253,19 +3286,12 @@ def test_update_custom_ioc_command_filename(requests_mock):
     """
     from CrowdStrikeFalcon import update_custom_ioc
 
-    mock = requests_mock.patch(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
-        status_code=200,
-        json={"result": "ok"}
-    )
+    mock = requests_mock.patch(f"{SERVER_URL}/iocs/entities/indicators/v1", status_code=200, json={"result": "ok"})
 
-    update_custom_ioc(
-        ioc_id="3",
-        file_name="test.txt"
-    )
+    update_custom_ioc(ioc_id="3", file_name="test.txt")
 
     body = mock.last_request.json()
-    assert body['indicators'][0]['metadata']['filename'] == "test.txt"
+    assert body["indicators"][0]["metadata"]["filename"] == "test.txt"
 
 
 def test_delete_custom_ioc_command(requests_mock):
@@ -3280,18 +3306,12 @@ def test_delete_custom_ioc_command(requests_mock):
      - Ensure expected output is returned
     """
     from CrowdStrikeFalcon import delete_custom_ioc_command
-    ioc_id = '4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r'
-    response = {
-        'resources': [ioc_id],
-        'errors': []
-    }
-    requests_mock.delete(
-        f'{SERVER_URL}/iocs/entities/indicators/v1?ids={ioc_id}',
-        json=response,
-        status_code=200
-    )
+
+    ioc_id = "4f8c43311k1801ca4359fc07t319610482c2003mcde8934d5412b1781e841e9r"
+    response = {"resources": [ioc_id], "errors": []}
+    requests_mock.delete(f"{SERVER_URL}/iocs/entities/indicators/v1?ids={ioc_id}", json=response, status_code=200)
     command_res = delete_custom_ioc_command(ioc_id)
-    assert f'Custom IOC {ioc_id} was successfully deleted.' in command_res['HumanReadable']
+    assert f"Custom IOC {ioc_id} was successfully deleted." in command_res["HumanReadable"]
 
 
 def test_get_ioc_device_count_command_does_not_exist(requests_mock, mocker):
@@ -3306,17 +3326,13 @@ def test_get_ioc_device_count_command_does_not_exist(requests_mock, mocker):
      - Raise an error
     """
     from CrowdStrikeFalcon import get_ioc_device_count_command
-    expected_error = [{'code': 404, 'message': 'md5:testmd5 - Resource Not Found'}]
-    response = {'resources': [], 'errors': expected_error}
-    requests_mock.get(
-        f'{SERVER_URL}/indicators/aggregates/devices-count/v1',
-        json=response,
-        status_code=404,
-        reason='Not found'
-    )
+
+    expected_error = [{"code": 404, "message": "md5:testmd5 - Resource Not Found"}]
+    response = {"resources": [], "errors": expected_error}
+    requests_mock.get(f"{SERVER_URL}/indicators/aggregates/devices-count/v1", json=response, status_code=404, reason="Not found")
     mocker.patch(RETURN_ERROR_TARGET)
-    res = get_ioc_device_count_command(ioc_type='md5', value='testmd5')
-    assert res == 'No results found for md5 - testmd5'
+    res = get_ioc_device_count_command(ioc_type="md5", value="testmd5")
+    assert res == "No results found for md5 - testmd5"
 
 
 def test_get_ioc_device_count_command_exists(requests_mock):
@@ -3332,15 +3348,55 @@ def test_get_ioc_device_count_command_exists(requests_mock):
      - Do populate the entry context with the right value
     """
     from CrowdStrikeFalcon import get_ioc_device_count_command
-    response = {'resources': [{'id': 'md5:testmd5', 'type': 'md5', 'value': 'testmd5', 'device_count': 1}]}
+
+    response = {"resources": [{"id": "md5:testmd5", "type": "md5", "value": "testmd5", "device_count": 1}]}
     requests_mock.get(
-        f'{SERVER_URL}/indicators/aggregates/devices-count/v1',
+        f"{SERVER_URL}/indicators/aggregates/devices-count/v1",
         json=response,
         status_code=200,
     )
-    result = get_ioc_device_count_command(ioc_type='md5', value='testmd5')
-    assert result['HumanReadable'] == 'Indicator of Compromise **md5:testmd5** device count: **1**'
-    assert result['EntryContext']['CrowdStrike.IOC(val.ID === obj.ID)'][0]['ID'] == 'md5:testmd5'
+    result = get_ioc_device_count_command(ioc_type="md5", value="testmd5")
+    assert result["HumanReadable"] == "Indicator of Compromise **md5:testmd5** device count: **1**"
+    assert result["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["ID"] == "md5:testmd5"
+
+
+def test_get_ioc_device_count_command_rate_limit_exceeded(requests_mock):
+    """
+    Test cs-falcon-device-count-ioc with rate limit exceeded
+
+    Given
+    - There is a rate limit in CS side
+    When
+    - The user is running cs-falcon-device-count-ioc with md5:testmd5
+    Then
+    - ensure the correct count is returned by the offset mechanism
+    """
+    from CrowdStrikeFalcon import get_ioc_device_count_command
+
+    response = {
+        "resources": [{"id": "md5:testmd5", "type": "md5", "value": "testmd5", "limit_exceeded": "true", "device_count": 1}]
+    }
+    indicators_queries_res = {"resources": ["res_1", "res_2", "res_3"]}
+    indicators_queries_res_with_offset = indicators_queries_res | {"meta": {"pagination": {"offset": 1}}}
+    requests_mock.get(
+        f"{SERVER_URL}/indicators/aggregates/devices-count/v1",
+        json=response,
+        status_code=200,
+    )
+    requests_mock.get(
+        f"{SERVER_URL}/indicators/queries/devices/v1",
+        json=indicators_queries_res_with_offset,
+        status_code=200,
+    )
+    requests_mock.get(
+        f"{SERVER_URL}/indicators/queries/devices/v1?type=md5&value=testmd5&offset=1",
+        json=indicators_queries_res,
+        status_code=200,
+    )
+
+    res = get_ioc_device_count_command(ioc_type="md5", value="testmd5")
+
+    assert "device count: **6**" in res["HumanReadable"]
 
 
 def test_get_process_details_command_not_exists(requests_mock, mocker):
@@ -3355,16 +3411,17 @@ def test_get_process_details_command_not_exists(requests_mock, mocker):
      - Raise an error
     """
     from CrowdStrikeFalcon import get_process_details_command
-    expected_error = [{'code': 404, 'message': 'pid:fake:process'}]
-    response = {'resources': [], 'errors': expected_error}
+
+    expected_error = [{"code": 404, "message": "pid:fake:process"}]
+    response = {"resources": [], "errors": expected_error}
     requests_mock.get(
-        f'{SERVER_URL}/processes/entities/processes/v1',
+        f"{SERVER_URL}/processes/entities/processes/v1",
         json=response,
         status_code=200,
     )
     mocker.patch(RETURN_ERROR_TARGET)
     with pytest.raises(DemistoException) as excinfo:
-        get_process_details_command(ids='pid:fake:process')
+        get_process_details_command(ids="pid:fake:process")
     assert expected_error == excinfo.value.args[0]
 
 
@@ -3379,25 +3436,26 @@ def test_get_process_details_command_exists(requests_mock):
     Then
      - Return a human readable result with appropriate message
      - Do populate the entry context with the right value
-     """
+    """
     from CrowdStrikeFalcon import get_process_details_command
+
     resources = {
-        'device_id': 'process',
-        'command_line': 'command_line',
-        'start_timestamp': '2020-10-01T09:05:51Z',
-        'start_timestamp_raw': '132460167512852140',
-        'stop_timestamp': '2020-10-02T06:43:45Z',
-        'stop_timestamp_raw': '132460946259334768'
+        "device_id": "process",
+        "command_line": "command_line",
+        "start_timestamp": "2020-10-01T09:05:51Z",
+        "start_timestamp_raw": "132460167512852140",
+        "stop_timestamp": "2020-10-02T06:43:45Z",
+        "stop_timestamp_raw": "132460946259334768",
     }
-    response = {'resources': [resources]}
+    response = {"resources": [resources]}
     requests_mock.get(
-        f'{SERVER_URL}/processes/entities/processes/v1',
+        f"{SERVER_URL}/processes/entities/processes/v1",
         json=response,
         status_code=200,
     )
-    result = get_process_details_command(ids='pid:fake:process')
-    assert '| command_line | process | 2020-10-01T09:05:51Z | 132460167512852140 |' in result['HumanReadable']
-    assert resources == result['EntryContext']['CrowdStrike.Process(val.process_id === obj.process_id)'][0]
+    result = get_process_details_command(ids="pid:fake:process")
+    assert "| command_line | process | 2020-10-01T09:05:51Z | 132460167512852140 |" in result["HumanReadable"]
+    assert resources == result["EntryContext"]["CrowdStrike.Process(val.process_id === obj.process_id)"][0]
 
 
 def test_get_proccesses_ran_on_command_exists(requests_mock):
@@ -3411,20 +3469,21 @@ def test_get_proccesses_ran_on_command_exists(requests_mock):
     Then
      - Return a human readable result with appropriate message
      - Do populate the entry context with the right value
-     """
+    """
     from CrowdStrikeFalcon import get_proccesses_ran_on_command
-    response = {'resources': ['pid:fake:process']}
+
+    response = {"resources": ["pid:fake:process"]}
     requests_mock.get(
-        f'{SERVER_URL}/indicators/queries/processes/v1',
+        f"{SERVER_URL}/indicators/queries/processes/v1",
         json=response,
         status_code=200,
     )
-    result = get_proccesses_ran_on_command(ioc_type='test', value='mock', device_id='123')
-    assert '### Processes with custom IOC test:mock on device 123.' in result['HumanReadable']
-    assert '| pid:fake:process |' in result['HumanReadable']
+    result = get_proccesses_ran_on_command(ioc_type="test", value="mock", device_id="123")
+    assert "### Processes with custom IOC test:mock on device 123." in result["HumanReadable"]
+    assert "| pid:fake:process |" in result["HumanReadable"]
 
-    expected_proc_result = {'DeviceID': '123', 'ID': ['pid:fake:process']}
-    actual_proc_result = result['EntryContext']['CrowdStrike.IOC(val.ID === obj.ID)']['Process']
+    expected_proc_result = {"DeviceID": "123", "ID": ["pid:fake:process"]}
+    actual_proc_result = result["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"]["Process"]
     assert expected_proc_result == actual_proc_result
 
 
@@ -3438,17 +3497,18 @@ def test_get_proccesses_ran_on_command_not_exists(requests_mock):
      - The user is running cs-falcon-processes-ran-on with pid:fake:process
     Then
      - Raise an error
-     """
+    """
     from CrowdStrikeFalcon import get_proccesses_ran_on_command
-    expected_error = [{'code': 404, 'message': 'pid:fake:process - Resource Not Found'}]
-    response = {'resources': [], 'errors': expected_error}
+
+    expected_error = [{"code": 404, "message": "pid:fake:process - Resource Not Found"}]
+    response = {"resources": [], "errors": expected_error}
     requests_mock.get(
-        f'{SERVER_URL}/indicators/queries/processes/v1',
+        f"{SERVER_URL}/indicators/queries/processes/v1",
         json=response,
         status_code=200,
     )
     with pytest.raises(DemistoException) as excinfo:
-        get_proccesses_ran_on_command(ioc_type='test', value='mock', device_id='123')
+        get_proccesses_ran_on_command(ioc_type="test", value="mock", device_id="123")
     assert expected_error == excinfo.value.args[0]
 
 
@@ -3462,48 +3522,68 @@ def test_search_device_command(requests_mock):
     Then
      - Return a CrowdStrike context output
      - Return an Endpoint context output
-     """
+    """
     from CrowdStrikeFalcon import search_device_command
-    response = {'resources': {'meta': {'query_time': 0.010188508, 'pagination': {'offset': 1, 'limit': 100, 'total': 1},
-                                       'powered_by': 'device-api', 'trace_id': 'c876614b-da71-4942-88db-37b939a78eb3'},
-                              'resources': ['15dbb9d8f06b45fe9f61eb46e829d986'], 'errors': []}}
-    device_context = {'ID': '15dbb9d8f06b45fe9f61eb46e829d986', 'ExternalIP': '1.1.1.1', 'MacAddress': '42-01-0a-80-00-07',
-                      'Hostname': 'FALCON-CROWDSTR', 'FirstSeen': '2020-02-10T12:40:18Z',
-                      'LastSeen': '2021-04-05T13:48:12Z', 'LocalIP': '1.1.1.1', 'OS': 'Windows Server 2019',
-                      'Status': 'normal'}
-    endpoint_context = {'Hostname': 'FALCON-CROWDSTR', 'ID': '15dbb9d8f06b45fe9f61eb46e829d986', 'IPAddress': '1.1.1.1',
-                        'MACAddress': '42-01-0a-80-00-07', 'OS': 'Windows', 'OSVersion': 'Windows Server 2019',
-                        'Status': 'Offline', 'Vendor': 'CrowdStrike Falcon'}
+
+    response = {
+        "resources": {
+            "meta": {
+                "query_time": 0.010188508,
+                "pagination": {"offset": 1, "limit": 100, "total": 1},
+                "powered_by": "device-api",
+                "trace_id": "c876614b-da71-4942-88db-37b939a78eb3",
+            },
+            "resources": ["15dbb9d8f06b45fe9f61eb46e829d986"],
+            "errors": [],
+        }
+    }
+    device_context = {
+        "ID": "15dbb9d8f06b45fe9f61eb46e829d986",
+        "ExternalIP": "1.1.1.1",
+        "MacAddress": "42-01-0a-80-00-07",
+        "Hostname": "FALCON-CROWDSTR",
+        "FirstSeen": "2020-02-10T12:40:18Z",
+        "LastSeen": "2021-04-05T13:48:12Z",
+        "LocalIP": "1.1.1.1",
+        "OS": "Windows Server 2019",
+        "Status": "normal",
+    }
+    endpoint_context = {
+        "Hostname": "FALCON-CROWDSTR",
+        "ID": "15dbb9d8f06b45fe9f61eb46e829d986",
+        "IPAddress": "1.1.1.1",
+        "MACAddress": "42-01-0a-80-00-07",
+        "OS": "Windows",
+        "OSVersion": "Windows Server 2019",
+        "Status": "Offline",
+        "Vendor": "CrowdStrike Falcon",
+    }
     status_res = {
-        "meta": {
-            "query_time": 0.002455124,
-            "powered_by": "device-api",
-            "trace_id": "c876614b-da71-4942-88db-37b939a78eb3"
-        },
+        "meta": {"query_time": 0.002455124, "powered_by": "device-api", "trace_id": "c876614b-da71-4942-88db-37b939a78eb3"},
         "resources": [
             {
                 "id": "15dbb9d8f06b45fe9f61eb46e829d986",
                 "cid": "20879a8064904ecfbb62c118a6a19411",
                 "last_seen": "2022-09-03T10:48:12Z",
-                "state": "offline"
+                "state": "offline",
             }
         ],
-        "errors": []
+        "errors": [],
     }
 
     requests_mock.get(
-        f'{SERVER_URL}/devices/queries/devices/v1',
+        f"{SERVER_URL}/devices/queries/devices/v1",
         json=response,
         status_code=200,
     )
     requests_mock.post(
-        f'{SERVER_URL}/devices/entities/devices/v2',
+        f"{SERVER_URL}/devices/entities/devices/v2",
         json=test_data2,
         status_code=200,
     )
 
     requests_mock.get(
-        f'{SERVER_URL}/devices/entities/online-state/v1',
+        f"{SERVER_URL}/devices/entities/online-state/v1",
         json=status_res,
         status_code=200,
     )
@@ -3511,11 +3591,11 @@ def test_search_device_command(requests_mock):
     outputs = search_device_command()
     result = outputs[0].to_context()
 
-    context = result.get('EntryContext')
+    context = result.get("EntryContext")
     for key, _value in context.items():
-        if 'Device' in key:
+        if "Device" in key:
             assert context[key] == device_context
-        if 'Endpoint' in key:
+        if "Endpoint" in key:
             assert context[key] == [endpoint_context]
 
 
@@ -3530,56 +3610,69 @@ def test_get_endpoint_command(requests_mock, mocker):
      - Return an Endpoint context output
     """
     from CrowdStrikeFalcon import get_endpoint_command
-    response = {'resources': {'meta': {'query_time': 0.010188508, 'pagination': {'offset': 1, 'limit': 100, 'total': 1},
-                                       'powered_by': 'device-api', 'trace_id': 'c876614b-da71-4942-88db-37b939a78eb3'},
-                              'resources': ['15dbb9d8f06b45fe9f61eb46e829d986'], 'errors': []}}
-    endpoint_context = {'Hostname': 'FALCON-CROWDSTR', 'ID': '15dbb9d8f06b45fe9f61eb46e829d986', 'IPAddress': '1.1.1.1',
-                        'MACAddress': '42-01-0a-80-00-07', 'OS': 'Windows', 'OSVersion': 'Windows Server 2019',
-                        'Status': 'Online', 'Vendor': 'CrowdStrike Falcon'}
+
+    response = {
+        "resources": {
+            "meta": {
+                "query_time": 0.010188508,
+                "pagination": {"offset": 1, "limit": 100, "total": 1},
+                "powered_by": "device-api",
+                "trace_id": "c876614b-da71-4942-88db-37b939a78eb3",
+            },
+            "resources": ["15dbb9d8f06b45fe9f61eb46e829d986"],
+            "errors": [],
+        }
+    }
+    endpoint_context = {
+        "Hostname": "FALCON-CROWDSTR",
+        "ID": "15dbb9d8f06b45fe9f61eb46e829d986",
+        "IPAddress": "1.1.1.1",
+        "MACAddress": "42-01-0a-80-00-07",
+        "OS": "Windows",
+        "OSVersion": "Windows Server 2019",
+        "Status": "Online",
+        "Vendor": "CrowdStrike Falcon",
+    }
 
     status_res = {
-        "meta": {
-            "query_time": 0.002455124,
-            "powered_by": "device-api",
-            "trace_id": "c876614b-da71-4942-88db-37b939a78eb3"
-        },
+        "meta": {"query_time": 0.002455124, "powered_by": "device-api", "trace_id": "c876614b-da71-4942-88db-37b939a78eb3"},
         "resources": [
             {
                 "id": "15dbb9d8f06b45fe9f61eb46e829d986",
                 "cid": "20879a8064904ecfbb62c118a6a19411",
                 "last_seen": "2022-09-03T10:48:12Z",
-                "state": "online"
+                "state": "online",
             }
         ],
-        "errors": []
+        "errors": [],
     }
 
     requests_mock.get(
-        f'{SERVER_URL}/devices/entities/online-state/v1',
+        f"{SERVER_URL}/devices/entities/online-state/v1",
         json=status_res,
         status_code=200,
     )
 
     query_mocker = requests_mock.get(
-        f'{SERVER_URL}/devices/queries/devices/v1',
+        f"{SERVER_URL}/devices/queries/devices/v1",
         json=response,
         status_code=200,
     )
     requests_mock.post(
-        f'{SERVER_URL}/devices/entities/devices/v2',
+        f"{SERVER_URL}/devices/entities/devices/v2",
         json=test_data2,
         status_code=200,
     )
 
-    mocker.patch.object(demisto, 'args', return_value={'id': 'identifier_numbe', 'hostname': 'falcon-crowdstr'})
+    mocker.patch.object(demisto, "args", return_value={"id": "identifier_numbe", "hostname": "falcon-crowdstr"})
 
     outputs = get_endpoint_command()
     result = outputs[0].to_context()
-    context = result.get('EntryContext')
+    context = result.get("EntryContext")
 
     api_query = "filter=device_id:'identifier_numbe',hostname:'falcon-crowdstr'&limit=50&offset=0&sort="
     assert unquote(query_mocker.last_request.query) == api_query
-    assert context['Endpoint(val.ID && val.ID == obj.ID && val.Vendor == obj.Vendor)'] == [endpoint_context]
+    assert context["Endpoint(val.ID && val.ID == obj.ID && val.Vendor == obj.Vendor)"] == [endpoint_context]
 
 
 def test_create_hostgroup_invalid(requests_mock, mocker):
@@ -3591,20 +3684,18 @@ def test_create_hostgroup_invalid(requests_mock, mocker):
      - Calling create hostgroup command
     Then
      - Throw an error
-     """
+    """
     from CrowdStrikeFalcon import create_host_group_command
-    response_data = load_json('test_data/test_create_hostgroup_invalid_data.json')
-    requests_mock.post(
-        f'{SERVER_URL}/devices/entities/host-groups/v1',
-        json=response_data,
-        status_code=400,
-        reason='Bad Request'
-    )
+
+    response_data = load_json("test_data/test_create_hostgroup_invalid_data.json")
+    requests_mock.post(f"{SERVER_URL}/devices/entities/host-groups/v1", json=response_data, status_code=400, reason="Bad Request")
     with pytest.raises(DemistoException):
-        create_host_group_command(name="dem test",
-                                  description="dem des",
-                                  group_type='static',
-                                  assignment_rule="device_id:[''],hostname:['falcon-crowdstrike-sensor-centos7']")
+        create_host_group_command(
+            name="dem test",
+            description="dem des",
+            group_type="static",
+            assignment_rule="device_id:[''],hostname:['falcon-crowdstrike-sensor-centos7']",
+        )
 
 
 def test_update_hostgroup_invalid(requests_mock):
@@ -3616,108 +3707,20 @@ def test_update_hostgroup_invalid(requests_mock):
      - Calling create hostgroup command
     Then
      - Throw an error
-     """
+    """
     from CrowdStrikeFalcon import update_host_group_command
-    response_data = load_json('test_data/test_create_hostgroup_invalid_data.json')
+
+    response_data = load_json("test_data/test_create_hostgroup_invalid_data.json")
     requests_mock.patch(
-        f'{SERVER_URL}/devices/entities/host-groups/v1',
-        json=response_data,
-        status_code=400,
-        reason='Bad Request'
+        f"{SERVER_URL}/devices/entities/host-groups/v1", json=response_data, status_code=400, reason="Bad Request"
     )
     with pytest.raises(DemistoException):
         update_host_group_command(
-            host_group_id='b1a0cd73ecab411581cbe467fc3319f5',
+            host_group_id="b1a0cd73ecab411581cbe467fc3319f5",
             name="dem test",
             description="dem des",
-            assignment_rule="device_id:[''],hostname:['falcon-crowdstrike-sensor-centos7']")
-
-
-def test_resolve_incidents(mocker):
-    """
-    Given
-     -
-    When
-     - Calling resolve incident command
-    Then
-
-     """
-    import CrowdStrikeFalcon
-    http_request_mock = mocker.patch.object(CrowdStrikeFalcon, 'http_request')
-    CrowdStrikeFalcon.resolve_incident_command(ids=['test_id'], user_uuid='test',
-                                               status='New', add_tag='test', remove_tag='test', add_comment='test')
-    assert http_request_mock.call_count == 1
-    assert http_request_mock.call_args.kwargs == {
-        "method": "POST",
-        "url_suffix": "/incidents/entities/incident-actions/v1",
-        "json": {
-            "action_parameters": [
-                {
-                    "name": "update_status",
-                    "value": "20"
-                },
-                {
-                    "name": "update_assigned_to_v2",
-                    "value": "test"
-                },
-                {
-                    "name": "add_tag",
-                    "value": "test"
-                },
-                {
-                    "name": "delete_tag",
-                    "value": "test"
-                },
-                {
-                    "name": "add_comment",
-                    "value": "test"
-                }
-            ],
-            "ids": [
-                "test_id"
-            ]
-        }
-    }
-
-
-@pytest.mark.parametrize('status, expected_status_api', [('New', "20"),
-                                                         ('Reopened', "25"),
-                                                         ('In Progress', "30"),
-                                                         ('Closed', "40")])
-def test_resolve_incidents_statuses(requests_mock, status, expected_status_api):
-    """
-    Test Create resolve incidents with valid status code
-    Given
-     - Valid status, as expected by product description
-    When
-     - Calling resolve incident command
-    Then
-     - Map the status to the status number that the api expects
-     """
-    from CrowdStrikeFalcon import resolve_incident_command
-    m = requests_mock.post(
-        f'{SERVER_URL}/incidents/entities/incident-actions/v1',
-        json={})
-    resolve_incident_command(['test'], status)
-    assert m.last_request.json()['action_parameters'][0]['value'] == expected_status_api
-
-
-def test_update_incident_comment(requests_mock):
-    """
-    Test Update incident comment
-    Given
-     - Comment
-    When
-     - Calling update incident comment command
-    Then
-     - Update incident comment
-     """
-    from CrowdStrikeFalcon import update_incident_comment_command
-    m = requests_mock.post(
-        f'{SERVER_URL}/incidents/entities/incident-actions/v1',
-        json={})
-    update_incident_comment_command(['test'], 'comment')
-    assert m.last_request.json()['action_parameters'][0]['value'] == 'comment'
+            assignment_rule="device_id:[''],hostname:['falcon-crowdstrike-sensor-centos7']",
+        )
 
 
 def test_list_host_group_members(requests_mock):
@@ -3729,16 +3732,15 @@ def test_list_host_group_members(requests_mock):
      - Calling list_host_group_members_command
     Then
      - Return all the hosts
-     """
+    """
     from CrowdStrikeFalcon import list_host_group_members_command
-    test_list_hostgroup_members_data = load_json('test_data/test_list_hostgroup_members_data.json')
+
+    test_list_hostgroup_members_data = load_json("test_data/test_list_hostgroup_members_data.json")
     requests_mock.get(
-        f'{SERVER_URL}/devices/combined/host-group-members/v1',
-        json=test_list_hostgroup_members_data,
-        status_code=200
+        f"{SERVER_URL}/devices/combined/host-group-members/v1", json=test_list_hostgroup_members_data, status_code=200
     )
     command_results = list_host_group_members_command()
-    expected_results = load_json('test_data/expected_list_hostgroup_members_results.json')
+    expected_results = load_json("test_data/expected_list_hostgroup_members_results.json")
     for expected_result, ectual_results in zip(expected_results, command_results.outputs):
         assert expected_result == ectual_results
 
@@ -3756,47 +3758,89 @@ def test_upload_batch_custom_ioc_command(requests_mock):
      - Do populate the entry context with the right values
     """
     from CrowdStrikeFalcon import upload_batch_custom_ioc_command
+
     ioc_response = {
-        'meta': {'query_time': 0.132378491, 'pagination': {'limit': 0, 'total': 2}, 'powered_by': 'ioc-manager',
-                 'trace_id': '121f377b-016a-4e34-bca7-992cec821ab3'}, 'errors': None, 'resources': [
-            {'id': '1196afeae04528228e782d4efc0c1d8257554dcd99552e1151ca3a3d2eed03f1', 'type': 'ipv4',
-             'value': '8.9.6.8', 'source': 'Cortex XSOAR', 'action': 'no_action', 'mobile_action': 'no_action',
-             'severity': 'informational', 'platforms': ['linux'], 'expiration': '2022-02-16T11:41:01Z',
-             'expired': False, 'deleted': False, 'applied_globally': True, 'from_parent': False,
-             'created_on': '2022-02-15T11:42:17.397548307Z', 'created_by': '2bf188d347e44e08946f2e61ef590c24',
-             'modified_on': '2022-02-15T11:42:17.397548307Z', 'modified_by': '2bf188d347e44e08946f2e61ef590c24'},
-            {'id': '1156f19c5a384117e7e6023f467ed3b58412ddd5d0591872f3a111335fae79a5', 'type': 'ipv4',
-             'value': '4.5.8.6', 'source': 'Cortex XSOAR', 'action': 'no_action', 'mobile_action': 'no_action',
-             'severity': 'informational', 'platforms': ['linux'], 'expiration': '2022-02-16T11:40:47Z',
-             'expired': False, 'deleted': False, 'applied_globally': True, 'from_parent': False,
-             'created_on': '2022-02-15T11:42:17.397548307Z', 'created_by': '2bf188d347e44e08946f2e61ef590c24',
-             'modified_on': '2022-02-15T11:42:17.397548307Z', 'modified_by': '2bf188d347e44e08946f2e61ef590c24'}]}
+        "meta": {
+            "query_time": 0.132378491,
+            "pagination": {"limit": 0, "total": 2},
+            "powered_by": "ioc-manager",
+            "trace_id": "121f377b-016a-4e34-bca7-992cec821ab3",
+        },
+        "errors": None,
+        "resources": [
+            {
+                "id": "1196afeae04528228e782d4efc0c1d8257554dcd99552e1151ca3a3d2eed03f1",
+                "type": "ipv4",
+                "value": "8.9.6.8",
+                "source": "Cortex XSOAR",
+                "action": "no_action",
+                "mobile_action": "no_action",
+                "severity": "informational",
+                "platforms": ["linux"],
+                "expiration": "2022-02-16T11:41:01Z",
+                "expired": False,
+                "deleted": False,
+                "applied_globally": True,
+                "from_parent": False,
+                "created_on": "2022-02-15T11:42:17.397548307Z",
+                "created_by": "2bf188d347e44e08946f2e61ef590c24",
+                "modified_on": "2022-02-15T11:42:17.397548307Z",
+                "modified_by": "2bf188d347e44e08946f2e61ef590c24",
+            },
+            {
+                "id": "1156f19c5a384117e7e6023f467ed3b58412ddd5d0591872f3a111335fae79a5",
+                "type": "ipv4",
+                "value": "4.5.8.6",
+                "source": "Cortex XSOAR",
+                "action": "no_action",
+                "mobile_action": "no_action",
+                "severity": "informational",
+                "platforms": ["linux"],
+                "expiration": "2022-02-16T11:40:47Z",
+                "expired": False,
+                "deleted": False,
+                "applied_globally": True,
+                "from_parent": False,
+                "created_on": "2022-02-15T11:42:17.397548307Z",
+                "created_by": "2bf188d347e44e08946f2e61ef590c24",
+                "modified_on": "2022-02-15T11:42:17.397548307Z",
+                "modified_by": "2bf188d347e44e08946f2e61ef590c24",
+            },
+        ],
+    }
 
     requests_mock.post(
-        f'{SERVER_URL}/iocs/entities/indicators/v1',
+        f"{SERVER_URL}/iocs/entities/indicators/v1",
         json=ioc_response,
         status_code=200,
     )
     results = upload_batch_custom_ioc_command(json.dumps(IOCS_JSON_LIST))
-    assert '2022-02-16T11:41:01Z | 1196afeae04528228e782d4efc0c1d8257554dcd99552e1151ca3a3d2eed03f1 | ' \
-           '2bf188d347e44e08946f2e61ef590c24 | 2022-02-15T11:42:17.397548307Z | linux | informational | Cortex XSOAR ' \
-           '| ipv4 | 8.9.6.8 |' in results[0]["HumanReadable"]
+    assert (
+        "2022-02-16T11:41:01Z | 1196afeae04528228e782d4efc0c1d8257554dcd99552e1151ca3a3d2eed03f1 | "
+        "no_action | 2bf188d347e44e08946f2e61ef590c24 | 2022-02-15T11:42:17.397548307Z | linux | informational | Cortex XSOAR "
+        "| ipv4 | 8.9.6.8 |" in results[0]["HumanReadable"]
+    )
 
-    assert '2022-02-16T11:40:47Z | 1156f19c5a384117e7e6023f467ed3b58412ddd5d0591872f3a111335fae79a5 | ' \
-           '2bf188d347e44e08946f2e61ef590c24 | 2022-02-15T11:42:17.397548307Z | linux | informational | Cortex XSOAR ' \
-           '| ipv4 | 4.5.8.6 |' in results[1]["HumanReadable"]
+    assert (
+        "2022-02-16T11:40:47Z | 1156f19c5a384117e7e6023f467ed3b58412ddd5d0591872f3a111335fae79a5 | "
+        "no_action | 2bf188d347e44e08946f2e61ef590c24 | 2022-02-15T11:42:17.397548307Z | linux | informational | Cortex XSOAR "
+        "| ipv4 | 4.5.8.6 |" in results[1]["HumanReadable"]
+    )
 
-    assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == '8.9.6.8'
-    assert results[1]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == '4.5.8.6'
+    assert results[0]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "8.9.6.8"
+    assert results[1]["EntryContext"]["CrowdStrike.IOC(val.ID === obj.ID)"][0]["Value"] == "4.5.8.6"
 
 
-@pytest.mark.parametrize('endpoint_status, status, is_isolated',
-                         [('Normal', 'Online', ''),
-                          ('normal', 'Online', ''),
-                          ('containment_pending', '', 'Pending isolation'),
-                          ('contained', '', 'Yes'),
-                          ('lift_containment_pending', '', 'Pending unisolation'),
-                          ])
+@pytest.mark.parametrize(
+    "endpoint_status, status, is_isolated",
+    [
+        ("Normal", "Online", ""),
+        ("normal", "Online", ""),
+        ("containment_pending", "", "Pending isolation"),
+        ("contained", "", "Yes"),
+        ("lift_containment_pending", "", "Pending unisolation"),
+    ],
+)
 def test_get_isolation_status(endpoint_status, status, is_isolated):
     """
     Test valid call for generate status field
@@ -3806,7 +3850,7 @@ def test_get_isolation_status(endpoint_status, status, is_isolated):
      - Calling generate_status_field function
     Then
      - Return status and is_isolated
-     """
+    """
     from CrowdStrikeFalcon import get_isolation_status
 
     assert is_isolated == get_isolation_status(endpoint_status)
@@ -3821,346 +3865,213 @@ def test_get_isolation_status_invalid():
      - Calling generate_status_field function
     Then
      - Raise an exception
-     """
+    """
     from CrowdStrikeFalcon import get_isolation_status
+
     with pytest.raises(DemistoException):
-        get_isolation_status('unknown status')
-
-
-def test_list_incident_summaries_command_no_given_ids(requests_mock, mocker):
-    """
-    Test list_incident_summaries_command without ids arg
-    Given
-     - No arguments given, as is
-    When
-     - The user is running list_incident_summaries_command with no ids
-    Then
-     - Function is executed properly and get_incidents_ids func was called once
-     """
-    from CrowdStrikeFalcon import list_incident_summaries_command
-
-    query_response = {"errors": [], "meta": {"pagination": {"limit": 0, "offset": 0, "total": 0},
-                                             "powered_by": "string", "query_time": 0, "trace_id": "string",
-                                             "writes": {"resources_affected": 0}}, "resources": ['id1']}
-
-    entity_response = {"errors": [],
-                       "meta": {"pagination": {"limit": 0, "offset": 0, "total": 0}, "powered_by": "string"},
-                       "resources": [{"assigned_to": "Test no ids", "assigned_to_name": "string", "cid": "string",
-                                      "created": "2022-02-21T16:36:57.759Z", "description": "string",
-                                      "end": "2022-02-21T16:36:57.759Z",
-                                      "events_histogram": [{"count": 0}], "fine_score": 0, "host_ids": ["string"],
-                                      "hosts": [{"agent_load_flags": "string", "tags": ["string"]}],
-                                      "incident_id": "string", "incident_type": 0,
-                                      "lm_host_ids": ["string"], "start": "2022-02-21T16:36:57.759Z", "state": "string",
-                                      "status": 0,
-                                      "tactics": ["string"], "tags": ["string"], "techniques": ["string"],
-                                      "users": ["string"], "visibility": 0}]}
-
-    requests_mock.get(
-        f'{SERVER_URL}/incidents/queries/incidents/v1',
-        json=query_response,
-        status_code=200,
-    )
-    get_incidents_ids_func = requests_mock.post(
-        f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-        json=entity_response,
-        status_code=200,
-    )
-    mocker.patch.object(demisto, 'args', return_value={})
-
-    outputs = list_incident_summaries_command().outputs
-
-    assert outputs[0]['assigned_to'] == 'Test no ids'
-    assert get_incidents_ids_func.call_count == 1
-
-
-def test_list_incident_summaries_command_with_given_ids(requests_mock, mocker):
-    """
-    Test list_incident_summaries_command with ids arg
-    Given
-     - ids
-    When
-     - The user is running list_incident_summaries_command with ids
-    Then
-     - Function is executed properly and get_incidents_ids func was not called
-     """
-    from CrowdStrikeFalcon import list_incident_summaries_command
-
-    query_response = {"errors": [], "meta": {"pagination": {"limit": 0, "offset": 0, "total": 0},
-                                             "powered_by": "string", "query_time": 0, "trace_id": "string",
-                                             "writes": {"resources_affected": 0}}, "resources": ['id1']}
-
-    entity_response = {"errors": [],
-                       "meta": {"pagination": {"limit": 0, "offset": 0, "total": 0}, "powered_by": "string"},
-                       "resources": [{"assigned_to": "Test with ids", "assigned_to_name": "string", "cid": "string",
-                                      "created": "2022-02-21T16:36:57.759Z", "description": "string",
-                                      "end": "2022-02-21T16:36:57.759Z",
-                                      "events_histogram": [{"count": 0}], "fine_score": 0, "host_ids": ["string"],
-                                      "hosts": [{"agent_load_flags": "string", "tags": ["string"]}],
-                                      "incident_id": "string", "incident_type": 0,
-                                      "lm_host_ids": ["string"], "start": "2022-02-21T16:36:57.759Z", "state": "string",
-                                      "status": 0,
-                                      "tactics": ["string"], "tags": ["string"], "techniques": ["string"],
-                                      "users": ["string"], "visibility": 0}]}
-
-    get_incidents_ids_func = requests_mock.get(
-        f'{SERVER_URL}/incidents/queries/incidents/v1',
-        json=query_response,
-        status_code=200,
-    )
-    requests_mock.post(
-        f'{SERVER_URL}/incidents/entities/incidents/GET/v1',
-        json=entity_response,
-        status_code=200,
-    )
-    mocker.patch.object(demisto, 'args', return_value={'ids': 'id1,id2'})
-
-    outputs = list_incident_summaries_command().outputs
-
-    assert outputs[0]['assigned_to'] == 'Test with ids'
-    assert get_incidents_ids_func.call_count == 0
+        get_isolation_status("unknown status")
 
 
 def test_parse_rtr_command_response_host_exists_stderr_output():
     from CrowdStrikeFalcon import parse_rtr_command_response
-    response_data = load_json('test_data/rtr_outputs_with_stderr.json')
+
+    response_data = load_json("test_data/rtr_outputs_with_stderr.json")
     parsed_result = parse_rtr_command_response(response_data, ["1"])
     assert len(parsed_result) == 1
-    assert parsed_result[0].get('HostID') == "1"
-    assert parsed_result[0].get('Error') == "Cannot find a process with the process identifier 5260."
+    assert parsed_result[0].get("HostID") == "1"
+    assert parsed_result[0].get("Error") == "Cannot find a process with the process identifier 5260."
 
 
 def test_parse_rtr_command_response_host_exists_error_output():
     from CrowdStrikeFalcon import parse_rtr_command_response
-    response_data = load_json('test_data/rtr_outputs_with_error.json')
+
+    response_data = load_json("test_data/rtr_outputs_with_error.json")
     parsed_result = parse_rtr_command_response(response_data, ["1"])
     assert len(parsed_result) == 1
-    assert parsed_result[0].get('HostID') == "1"
-    assert parsed_result[0].get('Error') == "Some error"
+    assert parsed_result[0].get("HostID") == "1"
+    assert parsed_result[0].get("Error") == "Some error"
 
 
 def test_parse_rtr_command_response_host_not_exist():
     from CrowdStrikeFalcon import parse_rtr_command_response
-    response_data = load_json('test_data/rtr_outputs_host_not_exist.json')
+
+    response_data = load_json("test_data/rtr_outputs_host_not_exist.json")
     parsed_result = parse_rtr_command_response(response_data, ["1", "2"])
     assert len(parsed_result) == 2
     for res in parsed_result:
-        if res.get('HostID') == "1":
-            assert res.get('Error') == "Success"
-        elif res.get('HostID') == "2":
-            assert res.get('Error') == "The host ID was not found."
+        if res.get("HostID") == "1":
+            assert res.get("Error") == "Success"
+        elif res.get("HostID") == "2":
+            assert res.get("Error") == "The host ID was not found."
 
 
 def test_parse_rtr_stdout_response(mocker):
     from CrowdStrikeFalcon import parse_rtr_stdout_response
-    response_data = load_json('test_data/rtr_list_processes_response.json')
-    mocker.patch('CrowdStrikeFalcon.fileResult',
-                 return_value={'Contents': '', 'ContentsFormat': 'text', 'Type': 3, 'File': 'netstat-1', 'FileID': 'c'})
+
+    response_data = load_json("test_data/rtr_list_processes_response.json")
+    mocker.patch(
+        "CrowdStrikeFalcon.fileResult",
+        return_value={"Contents": "", "ContentsFormat": "text", "Type": 3, "File": "netstat-1", "FileID": "c"},
+    )
     parsed_result = parse_rtr_stdout_response(["1"], response_data, "netstat")
-    assert parsed_result[0][0].get('Stdout') == "example stdout"
-    assert parsed_result[0][0].get('FileName') == "netstat-1"
-    assert parsed_result[1][0].get('File') == "netstat-1"
+    assert parsed_result[0][0].get("Stdout") == "example stdout"
+    assert parsed_result[0][0].get("FileName") == "netstat-1"
+    assert parsed_result[1][0].get("File") == "netstat-1"
 
 
-@pytest.mark.parametrize('failed_devices, all_requested_devices, expected_result', [
-    ({}, ["id1", "id2"], ""),
-    ({'id1': "some error"}, ["id1", "id2"], "Note: you don't see the following IDs in the results as the request was"
-                                            " failed for them. \nID id1 failed as it was not found. \n"),
-])
+@pytest.mark.parametrize(
+    "failed_devices, all_requested_devices, expected_result",
+    [
+        ({}, ["id1", "id2"], ""),
+        (
+            {"id1": "some error"},
+            ["id1", "id2"],
+            "Note: you don't see the following IDs in the results as the request was"
+            " failed for them. \nID id1 failed as it was not found. \n",
+        ),
+    ],
+)
 def test_add_error_message(failed_devices, all_requested_devices, expected_result):
     from CrowdStrikeFalcon import add_error_message
+
     assert add_error_message(failed_devices, all_requested_devices) == expected_result
 
 
-@pytest.mark.parametrize('failed_devices, all_requested_devices', [
-    ({'id1': "some error", 'id2': "some error"}, ["id1", "id2"]),
-    ({'id1': "some error1", 'id2': "some error2"}, ["id1", "id2"]),
-])
+@pytest.mark.parametrize(
+    "failed_devices, all_requested_devices",
+    [
+        ({"id1": "some error", "id2": "some error"}, ["id1", "id2"]),
+        ({"id1": "some error1", "id2": "some error2"}, ["id1", "id2"]),
+    ],
+)
 def test_add_error_message_raise_error(failed_devices, all_requested_devices):
     from CrowdStrikeFalcon import add_error_message
-    with raises(DemistoException,
-                match=f'CrowdStrike Falcon The command was failed with the errors: {failed_devices}'):
+
+    with pytest.raises(DemistoException, match=f"CrowdStrike Falcon The command was failed with the errors: {failed_devices}"):
         add_error_message(failed_devices, all_requested_devices)
 
 
 def test_rtr_kill_process_command(mocker):
     from CrowdStrikeFalcon import rtr_kill_process_command
-    mocker.patch('CrowdStrikeFalcon.init_rtr_batch_session', return_value="1")
-    response_data = load_json('test_data/rtr_general_response.json')
-    args = {'host_id': "1", 'process_ids': "2,3"}
-    mocker.patch('CrowdStrikeFalcon.execute_run_batch_write_cmd_with_timer', return_value=response_data)
+
+    mocker.patch("CrowdStrikeFalcon.init_rtr_batch_session", return_value="1")
+    response_data = load_json("test_data/rtr_general_response.json")
+    args = {"host_id": "1", "process_ids": "2,3"}
+    mocker.patch("CrowdStrikeFalcon.execute_run_batch_write_cmd_with_timer", return_value=response_data)
     parsed_result = rtr_kill_process_command(args).outputs
     for res in parsed_result:
-        assert res.get('Error') == "Success"
+        assert res.get("Error") == "Success"
 
 
-@pytest.mark.parametrize('operating_system, expected_result', [
-    ("Windows", "rm 'test.txt' --force"),
-    ("Linux", "rm 'test.txt' -r -d"),
-    ("Mac", "rm 'test.txt' -r -d"),
-    ("bla", ""),
-])
+@pytest.mark.parametrize(
+    "operating_system, expected_result",
+    [
+        ("Windows", "rm 'test.txt' --force"),
+        ("Linux", "rm 'test.txt' -r -d"),
+        ("Mac", "rm 'test.txt' -r -d"),
+        ("bla", ""),
+    ],
+)
 def test_match_remove_command_for_os(operating_system, expected_result):
     from CrowdStrikeFalcon import match_remove_command_for_os
+
     assert match_remove_command_for_os(operating_system, "test.txt") == expected_result
 
 
 def test_rtr_remove_file_command(mocker):
     from CrowdStrikeFalcon import rtr_remove_file_command
-    mocker.patch('CrowdStrikeFalcon.init_rtr_batch_session', return_value="1")
-    response_data = load_json('test_data/rtr_general_response.json')
-    args = {'host_ids': "1", 'file_path': "c:\\test", 'os': "Windows"}
-    mocker.patch('CrowdStrikeFalcon.execute_run_batch_write_cmd_with_timer', return_value=response_data)
+
+    mocker.patch("CrowdStrikeFalcon.init_rtr_batch_session", return_value="1")
+    response_data = load_json("test_data/rtr_general_response.json")
+    args = {"host_ids": "1", "file_path": "c:\\test", "os": "Windows"}
+    mocker.patch("CrowdStrikeFalcon.execute_run_batch_write_cmd_with_timer", return_value=response_data)
     parsed_result = rtr_remove_file_command(args).outputs
     for res in parsed_result:
-        assert res.get('Error') == "Success"
+        assert res.get("Error") == "Success"
 
 
 def test_rtr_read_registry_keys_command(mocker):
     from CrowdStrikeFalcon import rtr_read_registry_keys_command
-    mocker.patch('CrowdStrikeFalcon.init_rtr_batch_session', return_value="1")
-    response_data = load_json('test_data/rtr_general_response.json')
-    args = {'host_ids': "1", 'registry_keys': "key", 'os': "Windows"}
-    mocker.patch('CrowdStrikeFalcon.execute_run_batch_write_cmd_with_timer', return_value=response_data)
-    mocker.patch('CrowdStrikeFalcon.fileResult',
-                 return_value={'Contents': '', 'ContentsFormat': 'text', 'Type': 3, 'File': 'netstat-1', 'FileID': 'c'})
+
+    mocker.patch("CrowdStrikeFalcon.init_rtr_batch_session", return_value="1")
+    response_data = load_json("test_data/rtr_general_response.json")
+    args = {"host_ids": "1", "registry_keys": "key", "os": "Windows"}
+    mocker.patch("CrowdStrikeFalcon.execute_run_batch_write_cmd_with_timer", return_value=response_data)
+    mocker.patch(
+        "CrowdStrikeFalcon.fileResult",
+        return_value={"Contents": "", "ContentsFormat": "text", "Type": 3, "File": "netstat-1", "FileID": "c"},
+    )
     parsed_result = rtr_read_registry_keys_command(args)
     assert len(parsed_result) == 2
     assert "reg-1key" in parsed_result[0].readable_output
 
 
-detections = {'resources': [
-    {'behavior_id': 'example_behavior_1',
-     'detection_ids': ['example_detection'],
-     'incident_id': 'example_incident_id',
-     'some_field': 'some_example',
-     },
-    {'behavior_id': 'example_behavior_2',
-     'detection_ids': ['example_detection2'],
-     'incident_id': 'example_incident_id',
-     'some_field': 'some_example2',
-     }
-]}
-
-DETECTION_FOR_INCIDENT_CASES = [
-    (
-        detections,
-        ['a', 'b'],
-        [
-            {'incident_id': 'example_incident_id', 'behavior_id': 'example_behavior_1',
-             'detection_ids': ['example_detection']},
-            {'incident_id': 'example_incident_id', 'behavior_id': 'example_behavior_2',
-             'detection_ids': ['example_detection2']}],
-        [
-            {'behavior_id': 'example_behavior_1',
-             'detection_ids': ['example_detection'],
-             'incident_id': 'example_incident_id',
-             'some_field': 'some_example'},
-            {'behavior_id': 'example_behavior_2',
-             'detection_ids': ['example_detection2'],
-             'incident_id': 'example_incident_id',
-             'some_field': 'some_example2'}
-        ],
-        'CrowdStrike.IncidentDetection',
-        '### Detection For Incident\n|behavior_id|detection_ids|incident_id|\n|---|---|---|'
-        '\n| example_behavior_1 | example_detection | example_incident_id |\n'
-        '| example_behavior_2 | example_detection2 | example_incident_id |\n'),
-    ({'resources': []}, [], None, None, None, 'Could not find behaviors for incident zz')
-]
-
-
 @pytest.mark.parametrize(
-    'detections, resources, expected_outputs, expected_raw, expected_prefix, expected_md',
-    DETECTION_FOR_INCIDENT_CASES)
-def test_get_detection_for_incident_command(mocker, detections, resources, expected_outputs, expected_raw,
-                                            expected_prefix,
-                                            expected_md):
-    """
-    Given: An incident ID
-    When: When running cs-falcon-get-detections-for-incident command
-    Then: validates the created command result contains the correct data (whether found or not).
-    """
-
-    from CrowdStrikeFalcon import get_detection_for_incident_command
-
-    mocker.patch('CrowdStrikeFalcon.get_behaviors_by_incident',
-                 return_value={'resources': resources, 'meta': {'pagination': {'total': len(resources)}}})
-
-    mocker.patch('CrowdStrikeFalcon.get_detections_by_behaviors',
-                 return_value=detections)
-
-    res = get_detection_for_incident_command(incident_id='zz')
-
-    assert res.outputs == expected_outputs
-    assert res.raw_response == expected_raw
-    assert res.readable_output == expected_md
-    assert res.outputs_prefix == expected_prefix
-
-
-@pytest.mark.parametrize('remote_id, close_incident, incident_status, detection_status, mirrored_object, entries',
-                         input_data.get_remote_data_command_args)
-def test_get_remote_data_command(mocker, remote_id, close_incident, incident_status, detection_status, mirrored_object,
-                                 entries):
+    "remote_id, close_incident, detection_status, mirrored_object, entries",
+    [args for args in input_data.get_remote_data_command_args if args[0] == input_data.remote_detection_id],
+)
+def test_get_remote_data_command(mocker, remote_id, close_incident, detection_status, mirrored_object, entries):
     """
     Given
-        - arguments - id and lastUpdate time set to a lower than incident modification time
-        - a raw update (get_incidents_entities and get_detections_entities results)
-        - the state of the incident/detection in CrowdStrike Falcon
+        - arguments - id and lastUpdate time set to a lower than detection modification time
+        - a raw update (get_detections_entities results)
+        - the state of the detection in CrowdStrike Falcon
     When
         - running get_remote_data_command with changes to make
     Then
-        - the mirrored_object in the GetRemoteDataResponse contains the modified incident fields
-        - the entries in the GetRemoteDataResponse contain expected entries (an incident closure/reopen entry when needed)
+        - the mirrored_object in the GetRemoteDataResponse contains the modified detection fields
+        - the entries in the GetRemoteDataResponse contain expected entries (a detection closure/reopen entry when needed)
     """
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
     from CrowdStrikeFalcon import get_remote_data_command
-    incident_entity = input_data.response_incident.copy()
-    incident_entity['status'] = incident_status
-    mocker.patch('CrowdStrikeFalcon.get_incidents_entities', return_value={'resources': [incident_entity]})
-    detection_entity = input_data.response_detection.copy()
-    detection_entity['status'] = detection_status
-    mocker.patch('CrowdStrikeFalcon.get_detections_entities', return_value={'resources': [detection_entity]})
-    reopen_statuses = 'New,In progress,True positive,False positive,Reopened,Ignored'
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': close_incident, 'reopen_statuses': reopen_statuses})
 
-    result = get_remote_data_command({'id': remote_id, 'lastUpdate': '2022-03-08T08:17:09Z'})
+    detection_entity = input_data.response_detection.copy()
+    detection_entity["status"] = detection_status
+    mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": [detection_entity]})
+    reopen_statuses = "New,In progress,True positive,False positive,Reopened,Ignored"
+    mocker.patch.object(demisto, "params", return_value={"close_incident": close_incident, "reopen_statuses": reopen_statuses})
+
+    result = get_remote_data_command({"id": remote_id, "lastUpdate": "2022-03-08T08:17:09Z"})
     assert result.mirrored_object == mirrored_object
     assert result.entries == entries
+
+
+def test_get_remote_data_command_deprecated_incident(mocker):
+    """
+    Given:
+        - A remote incident ID with 'inc:' prefix (deprecated Endpoint Incident).
+    When:
+        - Running get_remote_data_command.
+    Then:
+        - The function returns an empty GetRemoteDataResponse without raising an exception.
+        - A debug log is emitted about the deprecated incident type.
+    """
+    from CrowdStrikeFalcon import get_remote_data_command
+
+    debug_mock = mocker.patch.object(demisto, "debug")
+    mocker.patch.object(demisto, "params", return_value={"close_incident": False, "reopen_statuses": ""})
+
+    result = get_remote_data_command({"id": "inc:abc123:def456", "lastUpdate": "2022-03-08T08:17:09Z"})
+
+    assert result.entries == []
+    assert "in_mirror_error" not in result.mirrored_object
+    assert any("deprecated Endpoint Incident" in str(call) for call in debug_mock.call_args_list)
 
 
 def test_find_incident_type():
     """
     Given
-        - an incident or detection ID on the remote system
+        - a detection ID on the remote system
     When
         - running get_remote_data_command or update_remote_system_command when we want to know the relevant incident type
     Then
         - returns the right incident type
     """
-    from CrowdStrikeFalcon import find_incident_type, IncidentType
-    assert find_incident_type(input_data.remote_incident_id) == IncidentType.INCIDENT
+    from CrowdStrikeFalcon import IncidentType, find_incident_type
+
     assert find_incident_type(input_data.remote_detection_id) == IncidentType.LEGACY_ENDPOINT_DETECTION
-    assert find_incident_type('') is None
-
-
-def test_get_remote_incident_data(mocker):
-    """
-    Given
-        - an incident ID on the remote system
-    When
-        - running get_remote_data_command with changes to make on an incident
-    Then
-        - returns the relevant incident entity from the remote system with the relevant incoming mirroring fields
-    """
-    from CrowdStrikeFalcon import get_remote_incident_data
-    incident_entity = input_data.response_incident.copy()
-    mocker.patch('CrowdStrikeFalcon.get_incidents_entities', return_value={'resources': [incident_entity.copy()]})
-    mirrored_data, updated_object = get_remote_incident_data(input_data.remote_incident_id)
-    incident_entity['status'] = 'New'
-    assert mirrored_data == incident_entity
-    assert updated_object == {'state': 'closed', 'status': 'New', 'tags': ['Objective/Keep Access'],
-                              'hosts.hostname': 'SFO-M-Y81WHJ', 'incident_type': 'incident', 'fine_score': 38,
-                              'incident_id': 'inc:afb5d1512a00480f53e9ad91dc3e4b55:1cf23a95678a421db810e11b5db693bd'}
+    assert find_incident_type(input_data.remote_ngsiem_detection_id) == IncidentType.NGSIEM_DETECTION
+    assert find_incident_type(input_data.remote_third_party_detection_id) == IncidentType.THIRD_PARTY
+    assert find_incident_type("") is None
 
 
 def test_get_remote_detection_data(mocker):
@@ -4172,23 +4083,22 @@ def test_get_remote_detection_data(mocker):
     Then
         - returns the relevant detection entity from the remote system with the relevant incoming mirroring fields
     """
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
     from CrowdStrikeFalcon import get_remote_detection_data
+
     detection_entity = input_data.response_detection.copy()
-    mocker.patch('CrowdStrikeFalcon.get_detections_entities', return_value={'resources': [detection_entity.copy()]})
+    mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": [detection_entity.copy()]})
     mirrored_data, updated_object = get_remote_detection_data(input_data.remote_detection_id)
-    detection_entity['severity'] = 2
+    detection_entity["severity"] = 0  # severity won't change in this case because we are using
+    # the new field "severity_name" and not the "max_severity_displayname" as was in legacy
     assert mirrored_data == detection_entity
-    assert updated_object == {'status': 'new', 'severity': 2, 'behaviors.tactic': 'Malware',
-                              'behaviors.scenario': 'suspicious_activity',
-                              'behaviors.objective': 'Falcon Detection Method',
-                              'behaviors.technique': 'Malicious File', 'device.hostname': 'FALCON-CROWDSTR',
-                              'incident_type': 'detection',
-                              'detection_id': 'ldt:15dbb9d8f06b89fe9f61eb46e829d986:528715079668',
-                              'behaviors.display_name': 'SampleTemplateDetection'}
+    assert updated_object == {  # since we removed legacy support, the mapping for the args doesn't exist
+        "status": "new",
+        "device.hostname": "FALCON-CROWDSTR",
+        "incident_type": "detection",
+    }
 
 
-def test_get_remote_edpoint_or_idp_or_mobile_detection_data__idp(mocker):
+def test_get_remote_detection_data_for_multiple_types__idp(mocker):
     """
     Given
         - an idp detection ID on the remote system
@@ -4197,21 +4107,28 @@ def test_get_remote_edpoint_or_idp_or_mobile_detection_data__idp(mocker):
     Then
         - returns the relevant detection entity from the remote system with the relevant incoming mirroring fields
     """
-    from CrowdStrikeFalcon import get_remote_epp_or_idp_or_mobile_detection_data
+    from CrowdStrikeFalcon import get_remote_detection_data_for_multiple_types
+
     detection_entity = input_data.response_idp_detection.copy()
-    mocker.patch('CrowdStrikeFalcon.get_detection_entities', return_value={'resources': [detection_entity.copy()]})
-    mocker.patch.object(demisto, 'debug', return_value=None)
-    mirrored_data, updated_object, detection_type = get_remote_epp_or_idp_or_mobile_detection_data(
-        input_data.remote_idp_detection_id)
-    detection_entity['severity'] = 2
+    mocker.patch("CrowdStrikeFalcon.get_detection_entities", return_value={"resources": [detection_entity.copy()]})
+    mocker.patch.object(demisto, "debug", return_value=None)
+    mirrored_data, updated_object, detection_type = get_remote_detection_data_for_multiple_types(
+        input_data.remote_idp_detection_id
+    )
+    detection_entity["severity"] = 2
     assert mirrored_data == detection_entity
-    assert detection_type == 'IDP'
-    assert updated_object == {'incident_type': 'IDP detection',
-                              'status': 'closed',
-                              'id': 'ind:20879a8064904ecfbb62c118a6a19411:C0BB6ACD-8FDC-4CBA-9CF9-EBF3E28B3E56'}
+    assert detection_type == "IDP"
+    assert updated_object == {
+        "incident_type": "IDP detection",
+        "status": "closed",
+        "id": "ind:20879a8064904ecfbb62c118a6a19411:C0BB6ACD-8FDC-4CBA-9CF9-EBF3E28B3E56",
+        "assigned_to_uid": "1",
+        "comments": [{"falcon_user_id": "1", "timestamp": "2025-06-10T10:39:02.408980782Z", "value": "1"}],
+        "tags": ["tag"],
+    }
 
 
-def test_get_remote_epp_or_idp_or_mobile_detection_data__mobile_detection(mocker):
+def test_get_remote_detection_data_for_multiple_types__mobile_detection(mocker):
     """
     Given
         - an idp detection ID on the remote system
@@ -4220,21 +4137,21 @@ def test_get_remote_epp_or_idp_or_mobile_detection_data__mobile_detection(mocker
     Then
         - returns the relevant detection entity from the remote system with the relevant incoming mirroring fields
     """
-    from CrowdStrikeFalcon import get_remote_epp_or_idp_or_mobile_detection_data
+    from CrowdStrikeFalcon import get_remote_detection_data_for_multiple_types
+
     detection_entity = input_data.response_mobile_detection.copy()
-    mocker.patch('CrowdStrikeFalcon.get_detection_entities', return_value={'resources': [detection_entity.copy()]})
-    mocker.patch.object(demisto, 'debug', return_value=None)
-    mirrored_data, updated_object, detection_type = get_remote_epp_or_idp_or_mobile_detection_data(
-        input_data.remote_mobile_detection_id)
-    detection_entity['severity'] = 90
+    mocker.patch("CrowdStrikeFalcon.get_detection_entities", return_value={"resources": [detection_entity.copy()]})
+    mocker.patch.object(demisto, "debug", return_value=None)
+    mirrored_data, updated_object, detection_type = get_remote_detection_data_for_multiple_types(
+        input_data.remote_mobile_detection_id
+    )
+    detection_entity["severity"] = 90
     assert mirrored_data == detection_entity
-    assert detection_type == 'Mobile'
-    assert updated_object == {'incident_type': 'MOBILE detection',
-                              'status': 'new',
-                              'mobile_detection_id': '1111111111111111111'}
+    assert detection_type == "Mobile"
+    assert updated_object == {"incident_type": "MOBILE detection", "status": "new", "mobile_detection_id": "1111111111111111111"}
 
 
-def test_get_remote_epp_or_idp_or_mobile_detection_data__endpoint_detection(mocker):
+def test_get_remote_detection_data_for_multiple_types__endpoint_detection(mocker):
     """
     Given
         - an endpoint detection ID on the remote system
@@ -4243,45 +4160,124 @@ def test_get_remote_epp_or_idp_or_mobile_detection_data__endpoint_detection(mock
     Then
         - returns the relevant detection entity from the remote system with the relevant incoming mirroring fields
     """
-    from CrowdStrikeFalcon import get_remote_epp_or_idp_or_mobile_detection_data
+    from CrowdStrikeFalcon import get_remote_detection_data_for_multiple_types
+
     detection_entity = input_data.response_detection_new_version.copy()
-    mocker.patch('CrowdStrikeFalcon.get_detection_entities', return_value={'resources': [detection_entity.copy()]})
-    mocker.patch.object(demisto, 'debug', return_value=None)
-    mirrored_data, updated_object, detection_type = get_remote_epp_or_idp_or_mobile_detection_data(
-        input_data.remote_detection_id_new_version)
-    detection_entity['severity'] = 90
+    mocker.patch("CrowdStrikeFalcon.get_detection_entities", return_value={"resources": [detection_entity.copy()]})
+    mocker.patch.object(demisto, "debug", return_value=None)
+    mirrored_data, updated_object, detection_type = get_remote_detection_data_for_multiple_types(
+        input_data.remote_detection_id_new_version
+    )
+    detection_entity["severity"] = 90
     assert mirrored_data == detection_entity
-    assert detection_type == 'Detection'
-    assert updated_object == {'incident_type': 'detection',
-                              'status': 'new',
-                              'severity': 90}
+    assert detection_type == "Detection"
+    assert updated_object == {"incident_type": "detection", "status": "new", "severity": 90}
 
 
-@pytest.mark.parametrize('updated_object, entry_content, close_incident', input_data.set_xsoar_incident_entries_args)
-def test_set_xsoar_incident_entries(mocker, updated_object, entry_content, close_incident):
+@pytest.mark.parametrize(
+    "detection_type, incident_type, entity_modifications",
+    [
+        ("ngsiem", "ngsiem_detection", {}),
+        ("Detection", "detection", {"type": "ldt", "product": "epp"}),
+        ("ofp", "OFP detection", {"type": "ofp"}),
+        ("ods", "On-Demand Scans detection", {"type": "ods", "product": "epp"}),
+    ],
+)
+def test_get_remote_detection_data_for_multiple_types(mocker, detection_type, incident_type, entity_modifications):
     """
     Given
-        - the incident status from the remote system
-        - the close_incident parameter that was set when setting the integration
+        - an endpoint detection ID on the remote system
     When
-        - running get_remote_data_command with changes to make on a incident
+        - running get_remote_data_command with changes to make on a detection
     Then
-        - adds the relevant entry (closure/reopen) to the entries
+        - returns the relevant detection entity from the remote system with the relevant incoming mirroring fields
     """
-    from CrowdStrikeFalcon import set_xsoar_incident_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': close_incident})
-    mocker.patch.object(demisto, 'debug', return_value=None)
-    entries = []
-    reopen_statuses = ['New', 'Reopened', 'In Progress']
-    set_xsoar_incident_entries(updated_object, entries, input_data.remote_incident_id, reopen_statuses)
-    if entry_content:
-        assert entry_content in entries[0].get('Contents')
-    else:
-        assert entries == []
+    from CrowdStrikeFalcon import get_remote_detection_data_for_multiple_types
+
+    generic_detection_id = input_data.remote_ngsiem_detection_id
+
+    detection_entity = input_data.response_ngsiem_detection.copy()
+    detection_entity.update(entity_modifications)
+
+    mocker.patch("CrowdStrikeFalcon.get_detection_entities", return_value={"resources": [detection_entity.copy()]})
+    mocker.patch.object(demisto, "debug", return_value=None)
+
+    mirrored_data, updated_object, returned_detection_type = get_remote_detection_data_for_multiple_types(generic_detection_id)
+
+    assert mirrored_data == detection_entity
+    assert returned_detection_type == detection_type
+    assert updated_object == {
+        "incident_type": incident_type,
+        "status": mirrored_data["status"],
+        "severity": mirrored_data["severity"],
+        "tactic": mirrored_data["tactic"],
+        "technique": mirrored_data["technique"],
+        "composite_id": mirrored_data["composite_id"],
+        "display_name": mirrored_data["display_name"],
+        "tags": mirrored_data["tags"],
+        "comments": mirrored_data["comments"],
+        "assigned_to_uid": mirrored_data["assigned_to_uid"],
+    }
 
 
-@pytest.mark.parametrize('updated_object', input_data.check_reopen_set_xsoar_incident_entries_args)
-def test_set_xsoar_incident_entries_reopen(mocker, updated_object):
+@pytest.mark.parametrize(
+    "function_name, num_ids, expected_calls",
+    [
+        # These are two different functions - calling both of them to verify the call architecture applies to both.
+        ("get_detections_entities", 0, 0),  # Edge case: no IDs
+        ("get_detections_entities", 500, 1),  # Less than the limit
+        ("get_detections_entities", 1000, 1),  # Exactly the limit
+        ("get_detections_entities", 1001, 2),  # More than the limit (specific request)
+        ("get_detections_entities", 2500, 3),  # More than the limit (many calls)
+        ("get_detection_entities", 0, 0),
+        ("get_detection_entities", 500, 1),
+        ("get_detection_entities", 1000, 1),
+        ("get_detection_entities", 1001, 2),
+        ("get_detection_entities", 2500, 3),
+    ],
+)
+def test_get_detections_entities_batches_requests(mocker, function_name, num_ids, expected_calls):
+    """
+    Given
+        - Number of ID's to fetch from the CrowdStrike Falcon Entity API.
+    When
+        - Running fetch detections entities functions with the ID's list
+    Then
+        - Return the number of calls to http_request based on the number of IDs provided.
+        - Return the number of resources based on the number of IDs provided.
+    """
+    import CrowdStrikeFalcon
+
+    mock_http_request = mocker.patch.object(CrowdStrikeFalcon, "http_request")
+
+    # Configure a side effect to return responses with the correct number of resources
+    def side_effect(method, url, data):
+        data_dict = json.loads(data)
+        ids_in_batch = data_dict.get("composite_ids") or data_dict.get("ids")
+        return {"meta": {"trace_id": "test_trace"}, "resources": [{"id": i} for i in ids_in_batch]}
+
+    mock_http_request.side_effect = side_effect
+
+    # Get the function to test dynamically
+    function_to_test = getattr(CrowdStrikeFalcon, function_name)
+
+    # Load and slice the IDs list from the JSON file
+    id_list_full = load_json("./test_data/mock_detections_id_list.json").get("Ids", {})[:num_ids]
+    detections_ids = id_list_full[:num_ids]
+
+    # Call the function with the mock IDs
+    result = function_to_test(detections_ids)
+
+    # Check that the number of http_request calls matches the expectation
+    assert mock_http_request.call_count == expected_calls
+
+    # Check that the number of resources returned matches the number of IDs
+    if "resources" in result:
+        assert len(result["resources"]) == num_ids
+
+
+@pytest.mark.parametrize("updated_object", input_data.check_reopen_set_xsoar_incident_entries_args)
+def test_set_xsoar_entries__reopen(mocker, updated_object):
     """
     Given
         - the incident status from the remote system
@@ -4292,20 +4288,21 @@ def test_set_xsoar_incident_entries_reopen(mocker, updated_object):
     Then
         - add the relevant entries only if the status is Reopened.
     """
-    from CrowdStrikeFalcon import set_xsoar_incident_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': True})
-    mocker.patch.object(demisto, 'debug', return_value=None)
+    from CrowdStrikeFalcon import set_xsoar_entries
+
+    mocker.patch.object(demisto, "params", return_value={"close_incident": True})
+    mocker.patch.object(demisto, "debug", return_value=None)
     entries = []
-    reopen_statuses = ['Reopened']  # Add a reopen entry only if the status in CS Falcon is reopened
-    set_xsoar_incident_entries(updated_object, entries, input_data.remote_incident_id, reopen_statuses)
-    if updated_object.get('status') == 'Reopened':
-        assert 'dbotIncidentReopen' in entries[0].get('Contents')
+    reopen_statuses = ["Reopened"]  # Add a reopen entry only if the status in CS Falcon is reopened
+    set_xsoar_entries(updated_object, entries, input_data.remote_incident_id, "Incident", reopen_statuses)
+    if updated_object.get("status") == "Reopened":
+        assert "dbotIncidentReopen" in entries[0].get("Contents")
     else:
         assert entries == []
 
 
-@pytest.mark.parametrize('updated_object', input_data.check_reopen_set_xsoar_incident_entries_args)
-def test_set_xsoar_incident_entries_empty(mocker, updated_object):
+@pytest.mark.parametrize("updated_object", input_data.check_reopen_set_xsoar_incident_entries_args)
+def test_set_xsoar_entries__empty(mocker, updated_object):
     """
     Given
         - the incident status from the remote system
@@ -4316,62 +4313,17 @@ def test_set_xsoar_incident_entries_empty(mocker, updated_object):
     Then
         - A reopen entry wasn't added in any case.
     """
-    from CrowdStrikeFalcon import set_xsoar_incident_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': True})
-    mocker.patch.object(demisto, 'debug', return_value=None)
+    from CrowdStrikeFalcon import set_xsoar_entries
+
+    mocker.patch.object(demisto, "params", return_value={"close_incident": True})
+    mocker.patch.object(demisto, "debug", return_value=None)
     entries = []
     reopen_statuses = []  # don't add a reopen entry in any case
-    set_xsoar_incident_entries(updated_object, entries, input_data.remote_incident_id, reopen_statuses)
+    set_xsoar_entries(updated_object, entries, input_data.remote_incident_id, "Incident", reopen_statuses)
     assert entries == []
 
 
-@pytest.mark.parametrize('updated_object, entry_content, close_incident', input_data.set_xsoar_detection_entries_args)
-def test_set_xsoar_detection_entries(mocker, updated_object, entry_content, close_incident):
-    """
-    Given
-        - the detection status from the remote system
-        - the close_incident parameter that was set when setting the integration
-    When
-        - running get_remote_data_command with changes to make on a detection
-    Then
-        - adds the relevant entry (closure/reopen) to the entries
-    """
-    from CrowdStrikeFalcon import set_xsoar_detection_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': close_incident})
-    entries = []
-    reopen_statuses = ['New', 'In progress', 'True positive', 'False positive', 'Reopened', 'Ignored']
-    set_xsoar_detection_entries(updated_object, entries, input_data.remote_incident_id, reopen_statuses)
-    if entry_content:
-        assert entry_content in entries[0].get('Contents')
-    else:
-        assert entries == []
-
-
-@pytest.mark.parametrize('updated_object', input_data.check_reopen_set_xsoar_detections_entries_args)
-def test_set_xsoar_detection_entries_reopen_check(mocker, updated_object):
-    """
-    Given
-        - the incident status from the remote system
-        - the close_incident parameter that was set when setting the integration
-        - the reopen statuses set.
-    When
-        - running get_remote_data_command with changes to make on a detection
-    Then
-        - add the relevant entries only if the status is Reopened.
-    """
-    from CrowdStrikeFalcon import set_xsoar_detection_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': True})
-    mocker.patch.object(demisto, 'debug', return_value=None)
-    entries = []
-    reopen_statuses = ['Reopened']  # Add a reopen entry only if the status in CS Falcon is reopened
-    set_xsoar_detection_entries(updated_object, entries, input_data.remote_detection_id, reopen_statuses)
-    if updated_object.get('status') == 'reopened':
-        assert 'dbotIncidentReopen' in entries[0].get('Contents')
-    else:
-        assert entries == []
-
-
-@pytest.mark.parametrize('updated_object', input_data.check_reopen_set_xsoar_detections_entries_args)
+@pytest.mark.parametrize("updated_object", input_data.check_reopen_set_xsoar_detections_entries_args)
 def test_set_xsoar_detection_entries_empty_check(mocker, updated_object):
     """
     Given
@@ -4383,17 +4335,18 @@ def test_set_xsoar_detection_entries_empty_check(mocker, updated_object):
     Then
         - add the relevant entries only if the status is Reopened.
     """
-    from CrowdStrikeFalcon import set_xsoar_detection_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': True})
-    mocker.patch.object(demisto, 'debug', return_value=None)
+    from CrowdStrikeFalcon import set_xsoar_entries
+
+    mocker.patch.object(demisto, "params", return_value={"close_incident": True})
+    mocker.patch.object(demisto, "debug", return_value=None)
     entries = []
     reopen_statuses = []  # don't add a reopen entry in any case
-    set_xsoar_detection_entries(updated_object, entries, input_data.remote_detection_id, reopen_statuses)
+    set_xsoar_entries(updated_object, entries, input_data.remote_detection_id, "Detection", reopen_statuses)
     assert entries == []
 
 
-@pytest.mark.parametrize('updated_object', input_data.set_xsoar_idp_or_mobile_detection_entries)
-def test_set_xsoar_idp_or_mobile_detection_entries(mocker, updated_object):
+@pytest.mark.parametrize("updated_object", input_data.set_xsoar_idp_or_mobile_detection_entries)
+def test_set_xsoar_entries___idp_or_mobile_detection(mocker, updated_object):
     """
     Given
         - the incident status from the remote system
@@ -4404,24 +4357,25 @@ def test_set_xsoar_idp_or_mobile_detection_entries(mocker, updated_object):
     Then
         - add the relevant entries only if the status is Reopened.
     """
-    from CrowdStrikeFalcon import set_xsoar_idp_or_mobile_detection_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': True})
-    mocker.patch.object(demisto, 'debug', return_value=None)
+    from CrowdStrikeFalcon import set_xsoar_entries
+
+    mocker.patch.object(demisto, "params", return_value={"close_incident": True})
+    mocker.patch.object(demisto, "debug", return_value=None)
     entries = []
-    reopen_statuses = ['Reopened']  # Add a reopen entry only if the status in CS Falcon is reopened
-    set_xsoar_idp_or_mobile_detection_entries(updated_object, entries, input_data.remote_idp_detection_id, 'IDP', reopen_statuses)
-    if updated_object.get('status') == 'reopened':
-        assert 'dbotIncidentReopen' in entries[0].get('Contents')
-    elif updated_object.get('status') == 'closed':
-        assert 'dbotIncidentClose' in entries[0].get('Contents')
-        assert 'closeReason' in entries[0].get('Contents')
-        assert entries[0].get('Contents', {}).get('closeReason') == 'IDP was closed on CrowdStrike Falcon'
+    reopen_statuses = ["Reopened"]  # Add a reopen entry only if the status in CS Falcon is reopened
+    set_xsoar_entries(updated_object, entries, input_data.remote_idp_detection_id, "IDP", reopen_statuses)
+    if updated_object.get("status") == "reopened":
+        assert "dbotIncidentReopen" in entries[0].get("Contents")
+    elif updated_object.get("status") == "closed":
+        assert "dbotIncidentClose" in entries[0].get("Contents")
+        assert "closeReason" in entries[0].get("Contents")
+        assert entries[0].get("Contents", {}).get("closeReason") == "IDP was closed on CrowdStrike Falcon"
     else:
         assert entries == []
 
 
-@pytest.mark.parametrize('updated_object', input_data.set_xsoar_idp_or_mobile_detection_entries)
-def test_set_xsoar_idp_or_mobile_detection_entries_empty_reopen_statuses(mocker, updated_object):
+@pytest.mark.parametrize("updated_object", input_data.set_xsoar_idp_or_mobile_detection_entries)
+def test_set_xsoar_entries__empty_reopen_statuses(mocker, updated_object):
     """
     Given
         - the incident status from the remote system
@@ -4432,21 +4386,22 @@ def test_set_xsoar_idp_or_mobile_detection_entries_empty_reopen_statuses(mocker,
     Then
         - add the relevant entries.
     """
-    from CrowdStrikeFalcon import set_xsoar_idp_or_mobile_detection_entries
-    mocker.patch.object(demisto, 'params', return_value={'close_incident': True})
-    mocker.patch.object(demisto, 'debug', return_value=None)
+    from CrowdStrikeFalcon import set_xsoar_entries
+
+    mocker.patch.object(demisto, "params", return_value={"close_incident": True})
+    mocker.patch.object(demisto, "debug", return_value=None)
     entries = []
     reopen_statuses = []  # don't add a reopen entry in any case
-    set_xsoar_idp_or_mobile_detection_entries(updated_object, entries, input_data.remote_idp_detection_id, 'IDP', reopen_statuses)
-    if updated_object.get('status') == 'closed':
-        assert 'dbotIncidentClose' in entries[0].get('Contents')
-        assert 'closeReason' in entries[0].get('Contents')
-        assert entries[0].get('Contents', {}).get('closeReason') == 'IDP was closed on CrowdStrike Falcon'
+    set_xsoar_entries(updated_object, entries, input_data.remote_idp_detection_id, "IDP", reopen_statuses)
+    if updated_object.get("status") == "closed":
+        assert "dbotIncidentClose" in entries[0].get("Contents")
+        assert "closeReason" in entries[0].get("Contents")
+        assert entries[0].get("Contents", {}).get("closeReason") == "IDP was closed on CrowdStrike Falcon"
     else:
         assert entries == []
 
 
-@pytest.mark.parametrize('updated_object, mirrored_data, mirroring_fields, output', input_data.set_updated_object_args)
+@pytest.mark.parametrize("updated_object, mirrored_data, mirroring_fields, output", input_data.set_updated_object_args)
 def test_set_updated_object(updated_object, mirrored_data, mirroring_fields, output):
     """
     Given
@@ -4458,6 +4413,7 @@ def test_set_updated_object(updated_object, mirrored_data, mirroring_fields, out
         - the updated object is set correctly, also for nested mirroring fields
     """
     from CrowdStrikeFalcon import set_updated_object
+
     set_updated_object(updated_object, mirrored_data, mirroring_fields)
     assert updated_object == output
 
@@ -4466,28 +4422,43 @@ def test_get_modified_remote_data_command(mocker):
     """
     Given
         - arguments - lastUpdate time
-        - raw incidents, detection, and idp_detection (results of get_incidents_ids, get_fetch_detections,
-          and get_detections_ids)
+        - raw detections and idp_detection (results of get_fetch_detections and get_detections_ids)
     When
         - running get_modified_remote_data_command
     Then
-        - returns a list of incidents, detections, and idp detections IDs that were modified since the lastUpdate time
+        - returns a list of detections and idp detections IDs that were modified since the lastUpdate time
     """
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', True)
     from CrowdStrikeFalcon import get_modified_remote_data_command
-    mock_get_incidents = mocker.patch('CrowdStrikeFalcon.get_incidents_ids',
-                                      return_value={'resources': [input_data.remote_incident_id]})
-    mock_get_detections = mocker.patch('CrowdStrikeFalcon.get_fetch_detections',
-                                       return_value={'resources': [input_data.remote_detection_id]})
-    last_update = '2022-03-08T08:17:09Z'
-    result = get_modified_remote_data_command({'lastUpdate': last_update})
-    assert mock_get_incidents.call_args.kwargs['last_updated_timestamp'] == last_update
-    assert mock_get_detections.call_args.kwargs['last_updated_timestamp'] == last_update
-    assert result.modified_incident_ids == [input_data.remote_incident_id, input_data.remote_detection_id]
+
+    mock_get_detections = mocker.patch(
+        "CrowdStrikeFalcon.get_fetch_detections", return_value={"resources": [input_data.remote_detection_id]}
+    )
+    last_update = "2022-03-08T08:17:09Z"
+    result = get_modified_remote_data_command({"lastUpdate": last_update})
+    assert mock_get_detections.call_args.kwargs["last_updated_timestamp"] == last_update
+    assert result.modified_incident_ids == [input_data.remote_detection_id]
 
 
-@pytest.mark.parametrize('status',
-                         ['new', 'in_progress', 'true_positive', 'false_positive', 'ignored', 'closed', 'reopened'])
+@pytest.mark.parametrize("status", ["new", "in_progress", "closed", "reopened"])
+def test_update_detection_request_good__legacy(mocker, status):
+    """
+    Given
+        - list of detections IDs
+        - status to change for the given detection in the remote system, which is one of the permitted statuses
+    When
+        - running update_remote_system_command
+    Then
+        - the resolve_detection command is called successfully with the right arguments
+    """
+    from CrowdStrikeFalcon import update_detection_request
+
+    mock_resolve_detection = mocker.patch("CrowdStrikeFalcon.resolve_detection")
+    update_detection_request([input_data.remote_detection_id], status)
+    assert mock_resolve_detection.call_args[1]["ids"] == [input_data.remote_detection_id]
+    assert mock_resolve_detection.call_args[1]["status"] == status
+
+
+@pytest.mark.parametrize("status", ["new", "in_progress", "closed", "reopened"])
 def test_update_detection_request_good(mocker, status):
     """
     Given
@@ -4499,14 +4470,15 @@ def test_update_detection_request_good(mocker, status):
         - the resolve_detection command is called successfully with the right arguments
     """
     from CrowdStrikeFalcon import update_detection_request
-    mock_resolve_detection = mocker.patch('CrowdStrikeFalcon.resolve_detection')
+
+    mock_resolve_detection = mocker.patch("CrowdStrikeFalcon.resolve_detection")
     update_detection_request([input_data.remote_detection_id], status)
-    assert mock_resolve_detection.call_args[1]['ids'] == [input_data.remote_detection_id]
-    assert mock_resolve_detection.call_args[1]['status'] == status
+    assert mock_resolve_detection.call_args[1]["ids"] == [input_data.remote_detection_id]
+    assert mock_resolve_detection.call_args[1]["status"] == status
 
 
-@pytest.mark.parametrize('status', ['other', ''])
-def test_update_detection_request_bad(status):
+@pytest.mark.parametrize("status", ["other", ""])
+def test_update_detection_request_bad__lagacy(status):
     """
     Given
         - list of detections IDs
@@ -4517,38 +4489,137 @@ def test_update_detection_request_bad(status):
         - an exception is raised
     """
     from CrowdStrikeFalcon import update_detection_request
+
     with pytest.raises(DemistoException) as de:
         update_detection_request([input_data.remote_detection_id], status)
-    assert 'CrowdStrike Falcon Error' in str(de.value)
+    assert "CrowdStrike Falcon Error" in str(de.value)
 
 
-@pytest.mark.parametrize('args, to_mock, call_args, remote_id, prev_tags, close_in_cs_falcon_param',
-                         input_data.update_remote_system_command_args)
-def test_update_remote_system_command(mocker, args, to_mock, call_args, remote_id, prev_tags, close_in_cs_falcon_param):
+@pytest.mark.parametrize("status", ["true_positive", ""])
+def test_update_detection_request_bad(status, mocker):
     """
     Given
-        - incident or detection changes (one of the mirroring field changed or it was closed in XSOAR)
+        - list of detections IDs
+        - status to change for the given detection in the remote system, which is not one of the permitted statuses
+            'true_positive' is not a valid status for the new version of the API
     When
-        - outgoing mirroring triggered by a change in the incident/detection
+        - running update_remote_system_command
     Then
-        - the relevant incident/detection is updated with the corresponding fields in the remote system
-        - the returned result corresponds to the incident/detection ID
+        - an exception is raised
+    """
+    from CrowdStrikeFalcon import update_detection_request
+
+    with pytest.raises(DemistoException) as de:
+        update_detection_request([input_data.remote_detection_id], status)
+    assert "CrowdStrike Falcon Error" in str(de.value)
+
+
+@pytest.mark.parametrize(
+    "remote_id, expected_mock",
+    [
+        (input_data.remote_detection_id, "update_remote_detection"),
+        (input_data.remote_idp_detection_id, "update_remote_for_multiple_detection_types"),
+        (input_data.remote_ngsiem_detection_id, "update_remote_for_multiple_detection_types"),
+        (input_data.remote_third_party_detection_id, "update_remote_for_multiple_detection_types"),
+    ],
+)
+def test_update_remote_system_command(mocker, remote_id, expected_mock):
+    """
+    Given:
+        - A remote incident ID of various types (legacy detection, IDP, NGSIEM, third-party).
+    When:
+        - Running update_remote_system_command with incident_changed=True and a status delta.
+    Then:
+        - The correct downstream update function is called based on the incident type.
+        - The function returns the remote_incident_id.
     """
     from CrowdStrikeFalcon import update_remote_system_command
-    mock_call = mocker.patch(f'CrowdStrikeFalcon.{to_mock}')
-    mocker.patch('CrowdStrikeFalcon.get_previous_tags', return_value=prev_tags)
-    mocker.patch.object(demisto, 'params', return_value={'close_in_cs_falcon': close_in_cs_falcon_param})
-    command_result = update_remote_system_command(args)
-    assert command_result == remote_id
-    for i, call in enumerate(call_args):
-        if to_mock == 'update_incident_request':
-            assert mock_call.call_args_list[i].kwargs == call
 
-        else:
-            assert mock_call.call_args_list[i][0] == call
+    mock_func = mocker.patch(f"CrowdStrikeFalcon.{expected_mock}")
+    mocker.patch.object(demisto, "params", return_value={"close_in_cs_falcon": True})
+
+    args = {
+        "remoteId": remote_id,
+        "incidentChanged": True,
+        "data": {"status": "closed"},
+        "status": 2,
+        "delta": {"status": "closed"},
+    }
+
+    result = update_remote_system_command(args)
+
+    assert result == remote_id
+    assert mock_func.called
 
 
-@pytest.mark.parametrize('delta, close_in_cs_falcon_param, to_close', input_data.close_in_cs_falcon_args)
+def test_update_remote_system_command_no_change(mocker):
+    """
+    Given:
+        - A remote incident ID with incident_changed=False.
+    When:
+        - Running update_remote_system_command.
+    Then:
+        - No downstream update function is called.
+        - The function returns the remote_incident_id.
+    """
+    from CrowdStrikeFalcon import update_remote_system_command
+
+    mock_detection = mocker.patch("CrowdStrikeFalcon.update_remote_detection")
+    mock_multiple = mocker.patch("CrowdStrikeFalcon.update_remote_for_multiple_detection_types")
+    mocker.patch.object(demisto, "params", return_value={"close_in_cs_falcon": True})
+
+    remote_id = input_data.remote_detection_id
+    args = {
+        "remoteId": remote_id,
+        "incidentChanged": False,
+        "data": {},
+        "status": 1,
+        "delta": {},
+    }
+
+    result = update_remote_system_command(args)
+
+    assert result == remote_id
+    assert not mock_detection.called
+    assert not mock_multiple.called
+
+
+def test_update_remote_system_command_deprecated_incident(mocker):
+    """
+    Given:
+        - A remote incident ID with 'inc:' prefix (deprecated Endpoint Incident) and incident_changed=True.
+    When:
+        - Running update_remote_system_command.
+    Then:
+        - The function returns the remote_incident_id without raising an exception.
+        - No downstream update functions are called.
+        - A debug log is emitted about the deprecated incident type.
+    """
+    from CrowdStrikeFalcon import update_remote_system_command
+
+    debug_mock = mocker.patch.object(demisto, "debug")
+    mock_detection = mocker.patch("CrowdStrikeFalcon.update_remote_detection")
+    mock_multiple = mocker.patch("CrowdStrikeFalcon.update_remote_for_multiple_detection_types")
+    mocker.patch.object(demisto, "params", return_value={"close_in_cs_falcon": True})
+
+    remote_id = "inc:abc123:def456"
+    args = {
+        "remoteId": remote_id,
+        "incidentChanged": True,
+        "data": {"status": "closed"},
+        "status": 2,
+        "delta": {"status": "closed"},
+    }
+
+    result = update_remote_system_command(args)
+
+    assert result == remote_id
+    assert not mock_detection.called
+    assert not mock_multiple.called
+    assert any("deprecated Endpoint Incident" in str(call) for call in debug_mock.call_args_list)
+
+
+@pytest.mark.parametrize("delta, close_in_cs_falcon_param, to_close", input_data.close_in_cs_falcon_args)
 def test_close_in_cs_falcon(mocker, delta, close_in_cs_falcon_param, to_close):
     """
     Given
@@ -4560,12 +4631,14 @@ def test_close_in_cs_falcon(mocker, delta, close_in_cs_falcon_param, to_close):
         - returns true if the incident/detection was closed in XSOAR and the close_in_cs_falcon parameter was set to true
     """
     from CrowdStrikeFalcon import close_in_cs_falcon
-    mocker.patch.object(demisto, 'params', return_value={'close_in_cs_falcon': close_in_cs_falcon_param})
+
+    mocker.patch.object(demisto, "params", return_value={"close_in_cs_falcon": close_in_cs_falcon_param})
     assert close_in_cs_falcon(delta) == to_close
 
 
-@pytest.mark.parametrize('delta, inc_status, close_in_cs_falcon, detection_request_status',
-                         input_data.update_remote_detection_args)
+@pytest.mark.parametrize(
+    "delta, inc_status, close_in_cs_falcon, detection_request_status", input_data.update_remote_detection_args
+)
 def test_update_remote_detection(mocker, delta, inc_status, close_in_cs_falcon, detection_request_status):
     """
     Given
@@ -4577,8 +4650,9 @@ def test_update_remote_detection(mocker, delta, inc_status, close_in_cs_falcon, 
         - the relevant detection is updated with the corresponding fields in the remote system
     """
     from CrowdStrikeFalcon import update_remote_detection
-    mocker.patch.object(demisto, 'params', return_value={'close_in_cs_falcon': close_in_cs_falcon})
-    mock_update_detection_request = mocker.patch('CrowdStrikeFalcon.update_detection_request')
+
+    mocker.patch.object(demisto, "params", return_value={"close_in_cs_falcon": close_in_cs_falcon})
+    mock_update_detection_request = mocker.patch("CrowdStrikeFalcon.update_detection_request")
     update_remote_detection(delta, inc_status, input_data.remote_detection_id)
     if detection_request_status:
         assert mock_update_detection_request.call_args[0][1] == detection_request_status
@@ -4586,205 +4660,108 @@ def test_update_remote_detection(mocker, delta, inc_status, close_in_cs_falcon, 
         assert mock_update_detection_request.call_count == 0
 
 
-def test_update_remote_incident(mocker):
-    """
-    Given
-        - incident changes (one of the mirroring field changed or it was closed in XSOAR)
-        - arguments - delta (the change in the relevant fields), XSOAR status and remote incident id
-    When
-        - outgoing mirroring triggered by a change in the incident
-    Then
-        - the relevant incident is updated with the corresponding fields in the remote system
-    """
-    from CrowdStrikeFalcon import update_remote_incident
-    mock_update_tags = mocker.patch('CrowdStrikeFalcon.update_remote_incident_tags')
-    mock_update_status = mocker.patch('CrowdStrikeFalcon.update_remote_incident_status')
-    update_remote_incident({}, IncidentStatus.ACTIVE, input_data.remote_incident_id)
-    assert mock_update_tags.called
-    assert mock_update_status.called
-
-
-@pytest.mark.parametrize('delta, inc_status, close_in_cs_falcon, resolve_incident_status',
-                         input_data.update_remote_incident_status_args)
-def test_update_remote_incident_status(mocker, delta, inc_status, close_in_cs_falcon, resolve_incident_status):
-    """
-    Given
-        - incident status changes
-        - arguments - delta (the change in the relevant fields), XSOAR status and remote incident id
-    When
-        - outgoing mirroring triggered by a change in the incident status
-    Then
-        - the relevant incident is updated with the corresponding status in the remote system
-    """
-    import CrowdStrikeFalcon
-
-    mocker.patch.object(demisto, 'params', return_value={'close_in_cs_falcon': close_in_cs_falcon})
-    mock_http_request = mocker.patch.object(CrowdStrikeFalcon, 'http_request')
-    CrowdStrikeFalcon.update_remote_incident_status(delta, inc_status, input_data.remote_incident_id)
-    if resolve_incident_status:
-        expected_status_value = CrowdStrikeFalcon.STATUS_TEXT_TO_NUM[resolve_incident_status]
-        assert mock_http_request.call_args_list[0].kwargs['json']['action_parameters'][0]['value'] == expected_status_value
-    else:
-        assert mock_http_request.call_count == 0
-
-
-def test_update_remote_incident_tags(mocker):
-    """
-    Given
-        - incident tags changes
-        - arguments - delta (the change in the relevant fields) and remote incident id
-    When
-        - outgoing mirroring triggered by a change in the incident tags
-    Then
-        - the relevant incident is updated with the corresponding tags (added or removed) in the remote system
-    """
-    from CrowdStrikeFalcon import update_remote_incident_tags
-    mocker.patch('CrowdStrikeFalcon.get_previous_tags', return_value={'tag_stays', 'old_tag'})
-    mock_remote_incident_handle_tags = mocker.patch('CrowdStrikeFalcon.remote_incident_handle_tags')
-    update_remote_incident_tags({'tag': ['new_tag', 'tag_stays']}, input_data.remote_incident_id)
-    assert mock_remote_incident_handle_tags.call_args_list[0][0][0] == {'old_tag'}
-    assert mock_remote_incident_handle_tags.call_args_list[0][0][1] == 'delete_tag'
-    assert mock_remote_incident_handle_tags.call_args_list[1][0][0] == {'new_tag'}
-    assert mock_remote_incident_handle_tags.call_args_list[1][0][1] == 'add_tag'
-
-
-def test_get_previous_tags(mocker):
-    """
-    Given
-        - incident tags changes
-    When
-        - outgoing mirroring triggered by a change in the incident tags
-    Then
-        - returns the current remote system tags
-    """
-    from CrowdStrikeFalcon import get_previous_tags
-    incident_response = {'meta': {'query_time': 0.013811475, 'powered_by': 'incident-api',
-                                  'trace_id': '7fce39d4-d695-4aac-bdcf-2d9138bea57c'},
-                         'resources': [input_data.response_incident],
-                         'errors': []}
-    mock_get_incidents_entities = mocker.patch('CrowdStrikeFalcon.get_incidents_entities',
-                                               return_value=incident_response)
-    assert get_previous_tags(input_data.remote_incident_id) == set(input_data.response_incident["tags"])
-    assert mock_get_incidents_entities.call_args[0][0] == [input_data.remote_incident_id]
-
-
-@pytest.mark.parametrize('tags, action_name', input_data.remote_incident_handle_tags_args)
-def test_remote_incident_handle_tags(mocker, tags, action_name):
-    """
-    Given
-        - incident tag changes
-    When
-        - outgoing mirroring triggered by a change in the incident tags
-    Then
-        - sends the right request to the remote system
-    """
-    import CrowdStrikeFalcon
-    mock_update_incident_request = mocker.patch.object(CrowdStrikeFalcon, 'http_request')
-    CrowdStrikeFalcon.remote_incident_handle_tags(tags, action_name, input_data.remote_incident_id)
-    assert mock_update_incident_request.call_count == len(tags)
-    if len(tags):
-        assert mock_update_incident_request.call_args_list[0].kwargs['json']['action_parameters'][0]['name'] == action_name
-
-
-def test_get_mapping_fields_command():
+def test_get_mapping_fields_command(mocker):
     """
     Given
         - nothing
     When
-        - running get_mapping_fields_command
+        - running get_mapping_fields_command on the new version of the API
     Then
         - the result fits the expected mapping scheme
     """
     from CrowdStrikeFalcon import get_mapping_fields_command
+
     result = get_mapping_fields_command()
-    assert result.scheme_types_mappings[0].type_name == 'CrowdStrike Falcon Incident'
-    assert result.scheme_types_mappings[0].fields.keys() == {'status', 'tag'}
-    assert result.scheme_types_mappings[1].type_name == 'CrowdStrike Falcon Detection'
-    assert result.scheme_types_mappings[1].fields.keys() == {'status'}
+    assert result.scheme_types_mappings[0].type_name == "CrowdStrike Falcon Detection"
+    assert result.scheme_types_mappings[0].fields.keys() == {"status"}
+    assert result.scheme_types_mappings[1].type_name == "CrowdStrike Falcon OFP Detection"
+    assert result.scheme_types_mappings[1].fields.keys() == {"status"}
+    assert result.scheme_types_mappings[2].type_name == "CrowdStrike Falcon On-Demand Scans Detection"
+    assert result.scheme_types_mappings[2].fields.keys() == {"status"}
 
 
-def test_error_in_get_detections_by_behaviors(mocker):
+def test_get_mapping_fields_command__legacy(mocker):
     """
     Given
-        - Error occurred in call to get_detections_by_behaviors
+        - nothing
     When
-        - Run the cs-falcon-get-detections-for-incident command
+        - running get_mapping_fields_command on the legacy version of the API
     Then
-        - Assert empty object returned and demisto.error was called
+        - the result fits the expected mapping scheme
     """
+    from CrowdStrikeFalcon import get_mapping_fields_command
 
-    # prepare
-    from CrowdStrikeFalcon import get_detection_for_incident_command
-    mocker.patch('CrowdStrikeFalcon.get_behaviors_by_incident',
-                 return_value={'resources': [{'dummy': 'test'}], 'meta': {'pagination': {'total': 1}}})
-
-    def excpetion_raiser(*args, **kwargs):
-        raise Exception
-
-    mocker.patch('CrowdStrikeFalcon.http_request', side_effect=excpetion_raiser)
-    mocker.patch.object(demisto, 'error')
-
-    res = get_detection_for_incident_command(incident_id='zz')
-    assert res.readable_output
-    demisto.error.assert_called_once_with('Error occurred when trying to get detections by behaviors: ')
+    result = get_mapping_fields_command()
+    assert result.scheme_types_mappings[0].type_name == "CrowdStrike Falcon Detection"
+    assert result.scheme_types_mappings[0].fields.keys() == {"status"}
+    assert len(result.scheme_types_mappings) == 3
 
 
 ARGS_vulnerability = [
     (
-        {'display_remediation_info': 'True',
-         'display_evaluation_logic_info': 'True',
-         'display_host_info': 'False',
-         'limit': '1'}, False,
-        None, 'Please add a at least one filter argument'
+        {"display_remediation_info": "True", "display_evaluation_logic_info": "True", "display_host_info": "False", "limit": "1"},
+        False,
+        None,
+        "Please add a at least one filter argument",
     ),
     (
-        {"cve_severity": "LOW", 'display_remediation_info': 'True',
-         'display_evaluation_logic_info': 'True',
-         'display_host_info': 'False', 'status': "open,closed"},
+        {
+            "cve_severity": "LOW",
+            "display_remediation_info": "True",
+            "display_evaluation_logic_info": "True",
+            "display_host_info": "False",
+            "status": "open,closed",
+        },
         True,  # Valid case
-        {"resources":
-         [
-             {"id": "id1",
-              "cid": "cid1",
-              "aid": "aid1",
-              "created_timestamp": "2021-09-16T15:12:42Z",
-              "updated_timestamp": "2022-10-19T00:54:43Z",
-              "status": "open",
-              "cve": {
-               "id": "cveid1",
-               "base_score": 3.3,
-               "severity": "LOW",
-               "exploit_status": 0,
-               "exprt_rating": "LOW",
-               "remediation_level": "O",
-               "spotlight_published_date": "2021-09-15T18:33:00Z",
-               "description": "secd",
-               "published_date": "2021-09-15T12:15:00Z"}},
-             {"id": "ID2",
-              "cid": "cid2",
-              "aid": "aid2",
-              "created_timestamp": "2022-10-12T22:12:49Z",
-              "updated_timestamp": "2022-10-18T02:54:43Z",
-              "status": "open",
-              "cve": {"id": "idcve4",
+        {
+            "resources": [
+                {
+                    "id": "id1",
+                    "cid": "cid1",
+                    "aid": "aid1",
+                    "created_timestamp": "2021-09-16T15:12:42Z",
+                    "updated_timestamp": "2022-10-19T00:54:43Z",
+                    "status": "open",
+                    "cve": {
+                        "id": "cveid1",
+                        "base_score": 3.3,
+                        "severity": "LOW",
+                        "exploit_status": 0,
+                        "exprt_rating": "LOW",
+                        "remediation_level": "O",
+                        "spotlight_published_date": "2021-09-15T18:33:00Z",
+                        "description": "secd",
+                        "published_date": "2021-09-15T12:15:00Z",
+                    },
+                },
+                {
+                    "id": "ID2",
+                    "cid": "cid2",
+                    "aid": "aid2",
+                    "created_timestamp": "2022-10-12T22:12:49Z",
+                    "updated_timestamp": "2022-10-18T02:54:43Z",
+                    "status": "open",
+                    "cve": {
+                        "id": "idcve4",
                         "spotlight_published_date": "2022-10-12T14:57:00Z",
                         "description": "desc3",
                         "published_date": "2022-10-11T19:15:00Z",
                         "exploitability_score": 1.8,
-                        "impact_score": 1.4}}
-         ]
-         },
-        '### List Vulnerabilities\n'
-        '|ID|Severity|Status|Base Score|Published Date|Impact Score|Exploitability Score|\n'
-        '|---|---|---|---|---|---|---|\n'
-        '| cveid1 | LOW | open | 3.3 | 2021-09-15T12:15:00Z |  |  |\n'
-        '| idcve4 |  | open |  | 2022-10-11T19:15:00Z | 1.4 | 1.8 |\n'  # args list
-
-    )
+                        "impact_score": 1.4,
+                    },
+                },
+            ]
+        },
+        "### List Vulnerabilities\n"
+        "|ID|Severity|Status|Base Score|Published Date|Impact Score|Exploitability Score|\n"
+        "|---|---|---|---|---|---|---|\n"
+        "| cveid1 | LOW | open | 3.3 | 2021-09-15T12:15:00Z |  |  |\n"
+        "| idcve4 |  | open |  | 2022-10-11T19:15:00Z | 1.4 | 1.8 |\n",  # args list
+    ),
 ]
 
 
-@pytest.mark.parametrize('args, is_valid, result_key_json, expected_hr', ARGS_vulnerability)
+@pytest.mark.parametrize("args, is_valid, result_key_json, expected_hr", ARGS_vulnerability)
 def test_cs_falcon_spotlight_search_vulnerability_command(mocker, args, is_valid, result_key_json, expected_hr):
     """
     Test cs_falcon_spotlight_search_vulnerability_command,
@@ -4796,17 +4773,171 @@ def test_cs_falcon_spotlight_search_vulnerability_command(mocker, args, is_valid
     Then
      - Return a CrowdStrike Falcon Vulnerability context output
      - Return an Endpoint context output
-     """
-    from CrowdStrikeFalcon import cs_falcon_spotlight_search_vulnerability_command
+    """
     from CommonServerPython import DemistoException
+    from CrowdStrikeFalcon import cs_falcon_spotlight_search_vulnerability_command
+
     mocker.patch("CrowdStrikeFalcon.http_request", return_value=result_key_json)
     if is_valid:
         outputs = cs_falcon_spotlight_search_vulnerability_command(args)
-        assert outputs.readable_output == expected_hr
+        assert outputs[0].readable_output == expected_hr
     else:
         with pytest.raises(DemistoException) as e:
             cs_falcon_spotlight_search_vulnerability_command(args)
         assert str(e.value) == expected_hr
+
+
+def _find_token_cr(results):
+    """Return the CommandResults whose outputs_prefix is the pagination-token prefix, or None."""
+    for cr in results:
+        if getattr(cr, "outputs_prefix", None) == "CrowdStrike.VulnerabilityNextToken":
+            return cr
+    return None
+
+
+def test_cs_falcon_spotlight_search_vulnerability_command_pagination(mocker):
+    """
+    Verify the pagination contract: the cursor is always emitted to context when the
+    API returns a non-empty `after`, and is never rendered in human-readable output.
+
+    (a) next_token is forwarded to the API as `&after=`.
+    (b) A populated server cursor is surfaced as `CrowdStrike.VulnerabilityNextToken`.
+    (c) An empty server cursor causes the cursor entry to be omitted entirely.
+    (d) limit > 2500 is silently capped to 2500 in the outgoing URL.
+    (e) The cursor entry is emitted regardless of the requested limit when the API
+        returned one.
+    (f) Over-cap limit still emits the cursor entry.
+    (g) The cursor entry's `readable_output` is empty while the data entry carries
+        the markdown table.
+    (h) 404 "Search context expired" path raises the friendly intercept.
+    (i) next_token with URL-special chars is correctly percent-encoded.
+    """
+    from CrowdStrikeFalcon import cs_falcon_spotlight_search_vulnerability_command
+
+    # display_* args must be supplied because the production code unconditionally
+    # routes them through argToBoolean(), which raises ValueError on None.
+    base_args = {
+        "filter": "status:'open'",
+        "display_remediation_info": "False",
+        "display_evaluation_logic_info": "False",
+        "display_host_info": "False",
+    }
+
+    # ---- (a) + (b): cursor forwarded; populated server cursor surfaces ----
+    http_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={
+            "resources": [{"id": "vuln-1"}],
+            "meta": {"pagination": {"after": "CURSOR_VALUE"}},
+        },
+    )
+    results = cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "1", "next_token": "PREV_CURSOR"})
+    call_args, _ = http_mock.call_args
+    url_suffix = call_args[1] if len(call_args) > 1 else http_mock.call_args.kwargs.get("url_suffix")
+    assert "after=PREV_CURSOR" in url_suffix  # (a)
+    token_cr = _find_token_cr(results)
+    assert token_cr is not None  # (b)
+    assert token_cr.outputs == "CURSOR_VALUE"  # (b)
+
+    # ---- (c): empty server cursor -> cursor entry omitted ----
+    mocker.resetall()
+    http_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={
+            "resources": [{"id": "vuln-2"}],
+            "meta": {"pagination": {"after": ""}},
+        },
+    )
+    results = cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "1"})
+    assert len(results) == 1
+    assert _find_token_cr(results) is None  # (c)
+
+    # ---- (d): limit > 2500 is silently capped to 2500 ----
+    mocker.resetall()
+    http_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={
+            "resources": [{"id": "vuln-3"}],
+            "meta": {"pagination": {"after": "ANY"}},
+        },
+    )
+    cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "3000"})
+    call_args, _ = http_mock.call_args
+    url_suffix = call_args[1] if len(call_args) > 1 else http_mock.call_args.kwargs.get("url_suffix")
+    assert "limit=2500" in url_suffix
+    assert "limit=3000" not in url_suffix  # (d)
+
+    # ---- (e): small limit + server cursor -> cursor entry still emitted ----
+    mocker.resetall()
+    mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={
+            "resources": [{"id": "vuln-4"}],
+            "meta": {"pagination": {"after": "ANY"}},
+        },
+    )
+    results = cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "100"})
+    assert len(results) == 2
+    assert _find_token_cr(results) is not None  # (e)
+
+    # ---- (f): over-cap limit -> cursor entry still emitted ----
+    mocker.resetall()
+    mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={
+            "resources": [{"id": "vuln-5"}],
+            "meta": {"pagination": {"after": "ANY"}},
+        },
+    )
+    results = cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "3000"})
+    assert len(results) == 2
+    assert _find_token_cr(results) is not None  # (f)
+
+    # ---- (g): cursor entry advertises the token via its readable_output;
+    # data entry carries the markdown table with the vulnerability rows. ----
+    mocker.resetall()
+    mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={
+            "resources": [{"cve": {"id": "CVE-2024-0001"}, "status": "open"}],
+            "meta": {"pagination": {"after": "ANY"}},
+        },
+    )
+    results = cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "100"})
+    assert len(results) == 2
+    token_cr = _find_token_cr(results)
+    assert token_cr is not None
+    assert token_cr.readable_output
+    assert "VulnerabilityNextToken" in token_cr.readable_output
+    data_cr = next(cr for cr in results if cr is not token_cr)
+    assert data_cr.readable_output
+    assert "CVE-2024-0001" in data_cr.readable_output
+
+    # ---- (i): next_token with URL-special chars is correctly percent-encoded ----
+    mocker.resetall()
+    http_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        return_value={"resources": [], "meta": {"pagination": {"after": ""}}},
+    )
+    cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "1", "next_token": "a+b/c=d&e"})
+    call_args = http_mock.call_args.args
+    url_suffix = call_args[1]
+    assert "after=a%2Bb%2Fc%3Dd%26e" in url_suffix
+
+    # ---- (h): 404 "Search context expired" path raises the friendly intercept ----
+    mocker.resetall()
+    http_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request",
+        side_effect=DemistoException(
+            "Error in API call to CrowdStrike Falcon: code: 404 - reason: Not Found\n"
+            "Search context expired, 'after' key no longer valid"
+        ),
+    )
+    return_error_mock = mocker.patch("CrowdStrikeFalcon.return_error", side_effect=SystemExit)
+    with pytest.raises(SystemExit):
+        cs_falcon_spotlight_search_vulnerability_command({**base_args, "limit": "1"})
+    assert return_error_mock.call_count == 1
+    assert "cursor has expired" in return_error_mock.call_args.args[0]
 
 
 def test_cs_falcon_spotlight_search_vulnerability_host_by_command(mocker):
@@ -4820,7 +4951,7 @@ def test_cs_falcon_spotlight_search_vulnerability_host_by_command(mocker):
     Then
      - Return a CrowdStrike Falcon Vulnerability context output
      - Return an Endpoint context output
-     """
+    """
     from CrowdStrikeFalcon import cs_falcon_spotlight_list_host_by_vulnerability_command
 
     result_key_json = {
@@ -4846,19 +4977,19 @@ def test_cs_falcon_spotlight_search_vulnerability_host_by_command(mocker):
                     "service_provider_account_id": "id1_account",
                     "service_provider": "id_ser_prov",
                     "os_build": "1",
-                    "product_type_desc": "Server"
+                    "product_type_desc": "Server",
                 },
-                "cve": {
-                    "id": "CVE-2013-3900"
-                }
+                "cve": {"id": "CVE-2013-3900"},
             }
         ]
     }
-    expected_hr = '### List Vulnerabilities For Host\n'\
-                  '|CVE ID|hostname|os Version|Product Type Desc|Local IP|\n' \
-                  '|---|---|---|---|---|\n' \
-                  '| CVE-2013-3900 | host | os_ver_example | Server | ip_addr |\n'
-    args = {'cve_ids': 'CVE-2013-3900', 'limit': 1}
+    expected_hr = (
+        "### List Vulnerabilities For Host\n"
+        "|CVE ID|hostname|os Version|Product Type Desc|Local IP|\n"
+        "|---|---|---|---|---|\n"
+        "| CVE-2013-3900 | host | os_ver_example | Server | ip_addr |\n"
+    )
+    args = {"cve_ids": "CVE-2013-3900", "limit": 1}
     mocker.patch("CrowdStrikeFalcon.http_request", return_value=result_key_json)
 
     outputs = cs_falcon_spotlight_list_host_by_vulnerability_command(args)
@@ -4867,292 +4998,332 @@ def test_cs_falcon_spotlight_search_vulnerability_host_by_command(mocker):
 
 def test_create_ml_exclusion_command(requests_mock):
     from CrowdStrikeFalcon import create_ml_exclusion_command
-    requests_mock.post(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1',
-        json=load_json('test_data/create_ml_exclusion.json')
-    )
 
-    results = create_ml_exclusion_command({'value': '/test', 'excluded_from': ['blocking'], 'groups': 123456})
+    requests_mock.post(f"{SERVER_URL}/policy/entities/ml-exclusions/v1", json=load_json("test_data/create_ml_exclusion.json"))
+
+    results = create_ml_exclusion_command({"value": "/test", "excluded_from": ["blocking"], "groups": 123456})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('value') == '/test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("value") == "/test"
 
 
 def test_update_ml_exclusion_command_with_args(requests_mock):
     from CrowdStrikeFalcon import update_ml_exclusion_command
-    requests_mock.patch(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1',
-        json=load_json('test_data/create_ml_exclusion.json')
-    )
 
-    results = update_ml_exclusion_command({'id': 123456, 'value': '/test', 'excluded_from': ['blocking'], 'groups': 123456})
+    requests_mock.patch(f"{SERVER_URL}/policy/entities/ml-exclusions/v1", json=load_json("test_data/create_ml_exclusion.json"))
+
+    results = update_ml_exclusion_command({"id": 123456, "value": "/test", "excluded_from": ["blocking"], "groups": 123456})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('value') == '/test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("value") == "/test"
 
 
 def test_update_ml_exclusion_command_without_args(requests_mock):
     from CrowdStrikeFalcon import update_ml_exclusion_command
-    requests_mock.patch(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1',
-        json=load_json('test_data/create_ml_exclusion.json')
-    )
+
+    requests_mock.patch(f"{SERVER_URL}/policy/entities/ml-exclusions/v1", json=load_json("test_data/create_ml_exclusion.json"))
 
     with pytest.raises(Exception) as e:
-        update_ml_exclusion_command({'id': 123456})
+        update_ml_exclusion_command({"id": 123456})
 
-    assert str(e.value) == 'At least one argument (besides the id argument) should be provided to update the exclusion.'
+    assert str(e.value) == "At least one argument (besides the id argument) should be provided to update the exclusion."
 
 
 def test_delete_ml_exclusion_command(requests_mock):
     from CrowdStrikeFalcon import delete_ml_exclusion_command
-    requests_mock.delete(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1',
-        json=load_json('test_data/create_ml_exclusion.json')
-    )
 
-    results = delete_ml_exclusion_command({'ids': '123456 789456'})
+    requests_mock.delete(f"{SERVER_URL}/policy/entities/ml-exclusions/v1", json=load_json("test_data/create_ml_exclusion.json"))
+
+    results = delete_ml_exclusion_command({"ids": "123456 789456"})
 
     assert results.readable_output == "The machine learning exclusions with IDs 123456 789456 was successfully deleted."
 
 
 def test_search_ml_exclusion_command_by_ids(requests_mock):
     from CrowdStrikeFalcon import search_ml_exclusion_command
+
     requests_mock.get(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1?ids=123456&ids=789012',
-        json=load_json('test_data/create_ml_exclusion.json')
+        f"{SERVER_URL}/policy/entities/ml-exclusions/v1?ids=123456&ids=789012",
+        json=load_json("test_data/create_ml_exclusion.json"),
     )
 
-    results = search_ml_exclusion_command({'ids': '123456,789012'})
+    results = search_ml_exclusion_command({"ids": "123456,789012"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('value') == '/test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("value") == "/test"
 
 
 def test_search_ml_exclusion_command_by_value(requests_mock):
     from CrowdStrikeFalcon import search_ml_exclusion_command
+
     requests_mock.get(
-        f'{SERVER_URL}/policy/queries/ml-exclusions/v1?filter=value%3A%27%2Ftest%27',
-        json={'resources': ['123456']}
+        f"{SERVER_URL}/policy/queries/ml-exclusions/v1?filter=value%3A%27%2Ftest%27", json={"resources": ["123456"]}
     )
     requests_mock.get(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1?ids=123456',
-        json=load_json('test_data/create_ml_exclusion.json')
+        f"{SERVER_URL}/policy/entities/ml-exclusions/v1?ids=123456", json=load_json("test_data/create_ml_exclusion.json")
     )
 
-    results = search_ml_exclusion_command({'value': '/test'})
+    results = search_ml_exclusion_command({"value": "/test"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('value') == '/test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("value") == "/test"
 
 
 def test_search_ml_exclusion_command_by_value_no_results(requests_mock):
     from CrowdStrikeFalcon import search_ml_exclusion_command
-    requests_mock.get(
-        f'{SERVER_URL}/policy/queries/ml-exclusions/v1?filter=value%3A%27%2Ftest-mock%27',
-        json={}
-    )
 
-    results = search_ml_exclusion_command({'value': '/test-mock'})
+    requests_mock.get(f"{SERVER_URL}/policy/queries/ml-exclusions/v1?filter=value%3A%27%2Ftest-mock%27", json={})
 
-    assert results.readable_output == 'The arguments/filters you provided did not match any exclusion.'
+    results = search_ml_exclusion_command({"value": "/test-mock"})
+
+    assert results.readable_output == "The arguments/filters you provided did not match any exclusion."
 
 
 def test_search_ml_exclusion_command_by_filter(requests_mock):
     from CrowdStrikeFalcon import search_ml_exclusion_command
+
     requests_mock.get(
-        f'{SERVER_URL}/policy/queries/ml-exclusions/v1?filter=value%3A%27%2Ftest%27',
-        json={'resources': ['123456']}
+        f"{SERVER_URL}/policy/queries/ml-exclusions/v1?filter=value%3A%27%2Ftest%27", json={"resources": ["123456"]}
     )
     requests_mock.get(
-        f'{SERVER_URL}/policy/entities/ml-exclusions/v1?ids=123456',
-        json=load_json('test_data/create_ml_exclusion.json')
+        f"{SERVER_URL}/policy/entities/ml-exclusions/v1?ids=123456", json=load_json("test_data/create_ml_exclusion.json")
     )
 
-    results = search_ml_exclusion_command({'filter': 'value:\'/test\''})
+    results = search_ml_exclusion_command({"filter": "value:'/test'"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('value') == '/test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("value") == "/test"
 
 
 def test_create_ioa_exclusion_command(requests_mock):
     from CrowdStrikeFalcon import create_ioa_exclusion_command
-    requests_mock.post(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1',
-        json=load_json('test_data/create_ioa_exclusion.json')
-    )
 
-    results = create_ioa_exclusion_command({'exclusion_name': 'test', 'pattern_id': 123456, 'groups': 123456})
+    requests_mock.post(f"{SERVER_URL}/policy/entities/ioa-exclusions/v1", json=load_json("test_data/create_ioa_exclusion.json"))
+
+    results = create_ioa_exclusion_command({"exclusion_name": "test", "pattern_id": 123456, "groups": 123456})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('name') == 'test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("name") == "test"
 
 
 def test_update_ioa_exclusion_command_with_args(requests_mock):
     from CrowdStrikeFalcon import update_ioa_exclusion_command
-    requests_mock.patch(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1',
-        json=load_json('test_data/create_ioa_exclusion.json')
-    )
 
-    results = update_ioa_exclusion_command({'id': 123456, 'exclusion_name': 'test'})
+    requests_mock.patch(f"{SERVER_URL}/policy/entities/ioa-exclusions/v1", json=load_json("test_data/create_ioa_exclusion.json"))
+
+    results = update_ioa_exclusion_command({"id": 123456, "exclusion_name": "test"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('name') == 'test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("name") == "test"
 
 
 def test_update_ioa_exclusion_command_without_args(requests_mock):
     from CrowdStrikeFalcon import update_ioa_exclusion_command
-    requests_mock.patch(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1',
-        json=load_json('test_data/create_ioa_exclusion.json')
-    )
+
+    requests_mock.patch(f"{SERVER_URL}/policy/entities/ioa-exclusions/v1", json=load_json("test_data/create_ioa_exclusion.json"))
 
     with pytest.raises(Exception) as e:
-        update_ioa_exclusion_command({'id': 123456})
+        update_ioa_exclusion_command({"id": 123456})
 
-    assert str(e.value) == 'At least one argument (besides the id argument) should be provided to update the exclusion.'
+    assert str(e.value) == "At least one argument (besides the id argument) should be provided to update the exclusion."
 
 
 def test_delete_ioa_exclusion_command(requests_mock):
     from CrowdStrikeFalcon import delete_ioa_exclusion_command
-    requests_mock.delete(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1',
-        json=load_json('test_data/create_ioa_exclusion.json')
-    )
 
-    results = delete_ioa_exclusion_command({'ids': '123456, 456789'})
+    requests_mock.delete(f"{SERVER_URL}/policy/entities/ioa-exclusions/v1", json=load_json("test_data/create_ioa_exclusion.json"))
+
+    results = delete_ioa_exclusion_command({"ids": "123456, 456789"})
 
     assert results.readable_output == "The IOA exclusions with IDs 123456 456789 was successfully deleted."
 
 
 def test_search_ioa_exclusion_command_by_ids(requests_mock):
     from CrowdStrikeFalcon import search_ioa_exclusion_command
+
     requests_mock.get(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1?ids=123456&ids=789012',
-        json=load_json('test_data/create_ioa_exclusion.json')
+        f"{SERVER_URL}/policy/entities/ioa-exclusions/v1?ids=123456&ids=789012",
+        json=load_json("test_data/create_ioa_exclusion.json"),
     )
 
-    results = search_ioa_exclusion_command({'ids': '123456,789012'})
+    results = search_ioa_exclusion_command({"ids": "123456,789012"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('name') == 'test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("name") == "test"
 
 
 def test_search_ioa_exclusion_command_by_name(requests_mock):
     from CrowdStrikeFalcon import search_ioa_exclusion_command
+
+    requests_mock.get(f"{SERVER_URL}/policy/queries/ioa-exclusions/v1?filter=name%3A~%27test%27", json={"resources": ["123456"]})
     requests_mock.get(
-        f'{SERVER_URL}/policy/queries/ioa-exclusions/v1?filter=name%3A~%27test%27',
-        json={'resources': ['123456']}
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1?ids=123456',
-        json=load_json('test_data/create_ioa_exclusion.json')
+        f"{SERVER_URL}/policy/entities/ioa-exclusions/v1?ids=123456", json=load_json("test_data/create_ioa_exclusion.json")
     )
 
-    results = search_ioa_exclusion_command({'name': 'test'})
+    results = search_ioa_exclusion_command({"name": "test"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('name') == 'test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("name") == "test"
 
 
 def test_search_ioa_exclusion_command_by_name_no_results(requests_mock):
     from CrowdStrikeFalcon import search_ioa_exclusion_command
-    requests_mock.get(
-        f'{SERVER_URL}/policy/queries/ioa-exclusions/v1?filter=name%3A~%27test-mock%27',
-        json={}
-    )
 
-    results = search_ioa_exclusion_command({'name': 'test-mock'})
+    requests_mock.get(f"{SERVER_URL}/policy/queries/ioa-exclusions/v1?filter=name%3A~%27test-mock%27", json={})
 
-    assert results.readable_output == 'The arguments/filters you provided did not match any exclusion.'
+    results = search_ioa_exclusion_command({"name": "test-mock"})
+
+    assert results.readable_output == "The arguments/filters you provided did not match any exclusion."
 
 
 def test_search_ioa_exclusion_command_by_filter(requests_mock):
     from CrowdStrikeFalcon import search_ioa_exclusion_command
+
+    requests_mock.get(f"{SERVER_URL}/policy/queries/ioa-exclusions/v1?filter=name%3A%27test%27", json={"resources": ["123456"]})
     requests_mock.get(
-        f'{SERVER_URL}/policy/queries/ioa-exclusions/v1?filter=name%3A%27test%27',
-        json={'resources': ['123456']}
-    )
-    requests_mock.get(
-        f'{SERVER_URL}/policy/entities/ioa-exclusions/v1?ids=123456',
-        json=load_json('test_data/create_ioa_exclusion.json')
+        f"{SERVER_URL}/policy/entities/ioa-exclusions/v1?ids=123456", json=load_json("test_data/create_ioa_exclusion.json")
     )
 
-    results = search_ioa_exclusion_command({'filter': 'name:\'test\''})
+    results = search_ioa_exclusion_command({"filter": "name:'test'"})
 
     assert len(results.outputs) == 1
-    assert results.outputs[0].get('id') == '123456'
-    assert results.outputs[0].get('name') == 'test'
+    assert results.outputs[0].get("id") == "123456"
+    assert results.outputs[0].get("name") == "test"
 
 
 def test_list_quarantined_file_command(requests_mock):
     from CrowdStrikeFalcon import list_quarantined_file_command
+
     requests_mock.get(
-        f'{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=hostname%3A%27%5B%27INSTANCE-1%27%5D%27&limit=50',
-        json={'resources': ['121212', '171717']}
+        f"{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=hostname%3A%27INSTANCE-1%27&limit=50",
+        json={"resources": ["121212", "171717"]},
     )
     requests_mock.post(
-        f'{SERVER_URL}/quarantine/entities/quarantined-files/GET/v1',
-        json=load_json('test_data/list_quarantine_files.json')
+        f"{SERVER_URL}/quarantine/entities/quarantined-files/GET/v1", json=load_json("test_data/list_quarantine_files.json")
     )
 
-    results = list_quarantined_file_command({'hostname': 'INSTANCE-1'})
+    results = list_quarantined_file_command({"hostname": "INSTANCE-1"})
 
     assert len(results.outputs) == 2
-    assert results.outputs[0].get('id') == '121212'
-    assert results.outputs[1].get('id') == '171717'
+    assert results.outputs[0].get("id") == "121212"
+    assert results.outputs[1].get("id") == "171717"
 
 
 def test_list_quarantined_file_command_no_results(requests_mock):
     from CrowdStrikeFalcon import list_quarantined_file_command
-    requests_mock.get(
-        f'{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=hostname%3A%27%5B%27INSTANCE-1%27%5D%27&limit=50',
-        json={}
-    )
 
-    results = list_quarantined_file_command({'hostname': 'INSTANCE-1'})
+    requests_mock.get(f"{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=hostname%3A%27INSTANCE-1%27&limit=50", json={})
 
-    assert results.readable_output == 'The arguments/filters you provided did not match any files.'
+    results = list_quarantined_file_command({"hostname": "INSTANCE-1"})
+
+    assert results.readable_output == "The arguments/filters you provided did not match any files."
 
 
 def test_apply_quarantine_file_action_command(requests_mock):
     from CrowdStrikeFalcon import apply_quarantine_file_action_command
-    requests_mock.get(
-        f'{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=hostname%3A%27%5B%27INSTANCE-1%27%5D%27&limit=50',
-        json={'resources': ['121212', '171717']}
-    )
-    mock_request = requests_mock.patch(
-        f'{SERVER_URL}/quarantine/entities/quarantined-files/v1',
-        json={}
-    )
 
-    results = apply_quarantine_file_action_command({'hostname': 'INSTANCE-1', 'comment': 'Added a test comment.'})
+    requests_mock.get(
+        f"{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=hostname%3A%27INSTANCE-1%27&limit=50",
+        json={"resources": ["121212", "171717"]},
+    )
+    mock_request = requests_mock.patch(f"{SERVER_URL}/quarantine/entities/quarantined-files/v1", json={})
+
+    results = apply_quarantine_file_action_command({"hostname": "INSTANCE-1", "comment": "Added a test comment."})
 
     assert results.readable_output == "The Quarantined File with IDs ['121212', '171717'] was successfully updated."
     assert mock_request.last_request.text == '{"ids": ["121212", "171717"], "comment": "Added a test comment."}'
 
 
-filter_args = {'key1': 'val1,val2', 'key2': 'val3', 'key3': None}
+def test_apply_quarantine_file_action_command_no_matches(requests_mock):
+    """
+    Given:
+        - search arguments (filename) that do not match any quarantined file in CrowdStrike.
+    When:
+        - apply_quarantine_file_action_command is called.
+    Then:
+        - The command returns a friendly readable output and does NOT issue a PATCH
+          to /quarantine/entities/quarantined-files/v1 (which would 400 with no ids).
+        - Verifies the fix for XSUP-68290.
+    """
+    from CrowdStrikeFalcon import apply_quarantine_file_action_command
+
+    requests_mock.get(
+        f"{SERVER_URL}/quarantine/queries/quarantined-files/v1?q=filename%3A%27a.txt%27&limit=50",
+        json={"resources": []},
+    )
+    patch_mock = requests_mock.patch(f"{SERVER_URL}/quarantine/entities/quarantined-files/v1", json={})
+
+    results = apply_quarantine_file_action_command({"filename": "a.txt", "action": "unrelease", "comment": "test"})
+
+    assert results.readable_output == "The arguments/filters you provided did not match any files."
+    assert patch_mock.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "query_params, expected",
+    [
+        # empty dict -> empty string
+        ({}, ""),
+        # scalar value (back-compat)
+        ({"name": "test"}, "name:'test'"),
+        # multiple scalar values joined with '+'
+        ({"name": "test", "os_name": "WINDOWS"}, "name:'test'+os_name:'WINDOWS'"),
+        # single-element list -> unwrapped (regression test for XSUP-68290)
+        ({"filename": ["a.txt"]}, "filename:'a.txt'"),
+        # multi-element list -> FQL bracket multi-value notation
+        ({"filename": ["a.txt", "b.txt"]}, "filename:['a.txt','b.txt']"),
+        # mixed scalar + single-element list
+        ({"hostname": "INSTANCE-1", "filename": ["a.txt"]}, "hostname:'INSTANCE-1'+filename:'a.txt'"),
+        # empty list -> key is skipped
+        ({"filename": []}, ""),
+        # empty list mixed with scalar -> only scalar is rendered
+        ({"hostname": "INSTANCE-1", "filename": []}, "hostname:'INSTANCE-1'"),
+        # None value -> key is skipped
+        ({"hostname": "INSTANCE-1", "filename": None}, "hostname:'INSTANCE-1'"),
+        # single quote in value -> escaped with backslash
+        ({"filename": "O'Brien.txt"}, "filename:'O\\'Brien.txt'"),
+        # single quote in list value -> escaped with backslash
+        ({"filename": ["O'Brien.txt", "b.txt"]}, "filename:['O\\'Brien.txt','b.txt']"),
+    ],
+)
+def test_build_query_params(query_params, expected):
+    """
+    Given:
+        - A dict of FQL query params with scalar and/or list values.
+    When:
+        - build_query_params is called (used to construct the ``q=`` parameter for
+          /quarantine/queries/quarantined-files/v1).
+    Then:
+        - List values are unwrapped (single element) or rendered in FQL multi-value
+          bracket notation (multiple elements). Without this, list values were
+          interpolated as a Python repr (``filename:'['a.txt']'``) and silently
+          returned zero matches, ultimately causing XSUP-68290.
+    """
+    from CrowdStrikeFalcon import build_query_params
+
+    assert build_query_params(query_params) == expected
+
+
+filter_args = {"key1": "val1,val2", "key2": "val3", "key3": None}
 custom_filter = 'key1:"val1"+key2:["val3","val4"]'
 
 
 @pytest.mark.parametrize(
-    'filter_args, custom_filter, output_filter',
+    "filter_args, custom_filter, output_filter",
     (
-        (filter_args, custom_filter, 'key1:"val1"%2Bkey2:["val3","val4"]%2Bkey1:[\'val1\', \'val2\']%2Bkey2:[\'val3\']'),
-        (filter_args, None, 'key1:[\'val1\', \'val2\']%2Bkey2:[\'val3\']'),
-        ({}, custom_filter, 'key1:"val1"%2Bkey2:["val3","val4"]')
-    )
+        (filter_args, custom_filter, "key1:\"val1\"%2Bkey2:[\"val3\",\"val4\"]%2Bkey1:['val1', 'val2']%2Bkey2:['val3']"),
+        (filter_args, None, "key1:['val1', 'val2']%2Bkey2:['val3']"),
+        ({}, custom_filter, 'key1:"val1"%2Bkey2:["val3","val4"]'),
+    ),
 )
 def test_build_cs_falcon_filter(filter_args, custom_filter, output_filter):
     """
@@ -5175,16 +5346,22 @@ def test_build_cs_falcon_filter(filter_args, custom_filter, output_filter):
 
 
 @pytest.mark.parametrize(
-    'command_args, query_result, entites_result, readable_output',
+    "command_args, query_result, entites_result, readable_output",
     (
-        ({'wait_for_result': False}, [], {}, 'No scans match the arguments/filter.'),
-        ({'wait_for_result': False}, ['123456'], {'resources': [{'id': '123456'}]},
-         ('### CrowdStrike Falcon ODS Scans\n'
-          '|ID|Status|Severity|File Count|Description|Hosts/Host groups|End time|Start time|Run by|\n'
-          '|---|---|---|---|---|---|---|---|---|\n'
-          '| 123456 |  |  |  |  |  |  |  |  |\n')),
-        ({'wait_for_result': True, 'ids': '123456'}, [], {'resources': [{'status': 'pending'}]}, 'Retrieving scan results:'),
-    )
+        ({"wait_for_result": False}, [], {}, "No scans match the arguments/filter."),
+        (
+            {"wait_for_result": False},
+            ["123456"],
+            {"resources": [{"id": "123456"}]},
+            (
+                "### CrowdStrike Falcon ODS Scans\n"
+                "|ID|Status|Severity|File Count|Description|Hosts/Host groups|End time|Start time|Run by|\n"
+                "|---|---|---|---|---|---|---|---|---|\n"
+                "| 123456 |  |  |  |  |  |  |  |  |\n"
+            ),
+        ),
+        ({"wait_for_result": True, "ids": "123456"}, [], {"resources": [{"status": "pending"}]}, "Retrieving scan results:"),
+    ),
 )
 def test_cs_falcon_ODS_query_scans_command(mocker, command_args, query_result, entites_result, readable_output):
     """
@@ -5202,9 +5379,9 @@ def test_cs_falcon_ODS_query_scans_command(mocker, command_args, query_result, e
 
     from CrowdStrikeFalcon import cs_falcon_ODS_query_scans_command
 
-    mocker.patch.object(ScheduledCommand, 'raise_error_if_not_supported')
-    mocker.patch('CrowdStrikeFalcon.get_ODS_scan_ids', return_value=query_result)
-    mocker.patch('CrowdStrikeFalcon.ODS_get_scans_by_id_request', return_value=entites_result)
+    mocker.patch.object(ScheduledCommand, "raise_error_if_not_supported")
+    mocker.patch("CrowdStrikeFalcon.get_ODS_scan_ids", return_value=query_result)
+    mocker.patch("CrowdStrikeFalcon.ODS_get_scans_by_id_request", return_value=entites_result)
 
     result = cs_falcon_ODS_query_scans_command(command_args)
 
@@ -5212,11 +5389,8 @@ def test_cs_falcon_ODS_query_scans_command(mocker, command_args, query_result, e
 
 
 @pytest.mark.parametrize(
-    'input_params, call_params',
-    (
-        ({'key1': 'val1', 'key2': None}, 'key1=val1'),
-        ({'key1': 'val1', 'key2': 'val2'}, 'key1=val1&key2=val2')
-    )
+    "input_params, call_params",
+    (({"key1": "val1", "key2": None}, "key1=val1"), ({"key1": "val1", "key2": "val2"}, "key1=val1&key2=val2")),
 )
 def test_ODS_query_scans_request(mocker, input_params, call_params):
     """
@@ -5234,9 +5408,9 @@ def test_ODS_query_scans_request(mocker, input_params, call_params):
 
     from CrowdStrikeFalcon import ODS_query_scans_request
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
     ODS_query_scans_request(**input_params)
-    http_request.assert_called_with('GET', f'/ods/queries/scans/v1?{call_params}')
+    http_request.assert_called_with("GET", f"/ods/queries/scans/v1?{call_params}")
 
 
 def test_ODS_get_scans_by_id_request(mocker):
@@ -5255,13 +5429,13 @@ def test_ODS_get_scans_by_id_request(mocker):
 
     from CrowdStrikeFalcon import ODS_get_scans_by_id_request
 
-    ids_list = ['<id1>', '<id2>', '<id3>']
-    ids_string = 'ids=<id1>&ids=<id2>&ids=<id3>'
+    ids_list = ["<id1>", "<id2>", "<id3>"]
+    ids_string = "ids=<id1>&ids=<id2>&ids=<id3>"
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
 
     ODS_get_scans_by_id_request(ids_list)
-    http_request.assert_called_with('GET', f'/ods/entities/scans/v1?{ids_string}')
+    http_request.assert_called_with("GET", f"/ods/entities/scans/v1?{ids_string}")
 
 
 def test_map_scan_resource_to_UI(mocker):
@@ -5284,9 +5458,7 @@ def test_map_scan_resource_to_UI(mocker):
         "cid": "20879a8064904ecfbb62c118a6a19411",
         "profile_id": "0e313756da21480c8eb5cf37da77a97a",
         "description": "desc3456346",
-        "scan_inclusions": [
-            "*"
-        ],
+        "scan_inclusions": ["*"],
         "initiated_from": "cloud_scheduled",
         "quarantine": True,
         "cpu_priority": 2,
@@ -5296,37 +5468,23 @@ def test_map_scan_resource_to_UI(mocker):
                 "host_id": "046761c46ec84f40b27b6f79ce7cd32c",
                 "host_scan_id": "38588c1b29aa9946a3de95e997ad7948",
                 "scan_host_metadata_id": "6aec6c04ab2e4c99b4e843637d3e37d0",
-                "filecount": {
-                    "scanned": 0,
-                    "malicious": 0,
-                    "quarantined": 0,
-                    "skipped": 0,
-                    "traversed": 518464
-                },
+                "filecount": {"scanned": 0, "malicious": 0, "quarantined": 0, "skipped": 0, "traversed": 518464},
                 "status": "completed",
                 "started_on": "2023-03-15T15:57:37.59543591Z",
                 "completed_on": "2023-03-15T16:02:20.845829991Z",
-                "last_updated": "2023-03-15T16:02:20.845909034Z"
+                "last_updated": "2023-03-15T16:02:20.845909034Z",
             },
             {
                 "host_id": "15dbb9d8f06b45fe9f61eb46e829d986",
                 "scan_host_metadata_id": "2e99e4fc7a4f4b1e9254e0af210a6994",
-                "filecount": {
-                    "scanned": 0,
-                    "malicious": 0,
-                    "quarantined": 0,
-                    "skipped": 0,
-                    "traversed": 209
-                },
+                "filecount": {"scanned": 0, "malicious": 0, "quarantined": 0, "skipped": 0, "traversed": 209},
                 "status": "failed",
-                "last_updated": "2023-04-05T02:23:10.316500752Z"
-            }
+                "last_updated": "2023-04-05T02:23:10.316500752Z",
+            },
         ],
         "filecount": {},
         "status": "failed",
-        "host_groups": [
-            "7471ba0636b34cbb8c65fae7979a6a9b"
-        ],
+        "host_groups": ["7471ba0636b34cbb8c65fae7979a6a9b"],
         "endpoint_notification": True,
         "pause_duration": 2,
         "max_duration": 2,
@@ -5343,23 +5501,23 @@ def test_map_scan_resource_to_UI(mocker):
         "scan_completed_on": "2023-04-18T14:56:38.527255649Z",
         "created_on": "2023-03-15T15:57:37.59543591Z",
         "created_by": "f7acf1bd5d3d4b40afe77546cbbaefde",
-        "last_updated": "2023-04-05T02:23:10.316500752Z"
+        "last_updated": "2023-04-05T02:23:10.316500752Z",
     }
     mapped_resource = {
-        'ID': "91000dbf0a4e4f5eb2a02528c00fa902",
-        'Status': "failed",
-        'Severity': None,
-        'Description': "desc3456346",
-        'File Count': ('scanned: 0\nmalicious: 0\n'
-                       'quarantined: 0\nskipped: 0\ntraversed: 518464'
-                       '\n-\nscanned: 0\nmalicious: 0\n'
-                       'quarantined: 0\nskipped: 0\ntraversed: 209'),
-        'Hosts/Host groups': [
-            "7471ba0636b34cbb8c65fae7979a6a9b"
-        ],
-        'Start time': "2023-03-15T15:57:37.59543591Z",
-        'End time': "2023-04-18T14:56:38.527255649Z",
-        'Run by': "f7acf1bd5d3d4b40afe77546cbbaefde"
+        "ID": "91000dbf0a4e4f5eb2a02528c00fa902",
+        "Status": "failed",
+        "Severity": None,
+        "Description": "desc3456346",
+        "File Count": (
+            "scanned: 0\nmalicious: 0\n"
+            "quarantined: 0\nskipped: 0\ntraversed: 518464"
+            "\n-\nscanned: 0\nmalicious: 0\n"
+            "quarantined: 0\nskipped: 0\ntraversed: 209"
+        ),
+        "Hosts/Host groups": ["7471ba0636b34cbb8c65fae7979a6a9b"],
+        "Start time": "2023-03-15T15:57:37.59543591Z",
+        "End time": "2023-04-18T14:56:38.527255649Z",
+        "Run by": "f7acf1bd5d3d4b40afe77546cbbaefde",
     }
 
     output = map_scan_resource_to_UI(resource)
@@ -5368,11 +5526,8 @@ def test_map_scan_resource_to_UI(mocker):
 
 
 @pytest.mark.parametrize(
-    'input_params, call_params',
-    (
-        ({'key1': 'val1', 'key2': None}, 'key1=val1'),
-        ({'key1': 'val1', 'key2': 'val2'}, 'key1=val1&key2=val2')
-    )
+    "input_params, call_params",
+    (({"key1": "val1", "key2": None}, "key1=val1"), ({"key1": "val1", "key2": "val2"}, "key1=val1&key2=val2")),
 )
 def test_ODS_query_scheduled_scans_request(mocker, input_params, call_params):
     """
@@ -5390,9 +5545,9 @@ def test_ODS_query_scheduled_scans_request(mocker, input_params, call_params):
 
     from CrowdStrikeFalcon import ODS_query_scheduled_scans_request
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
     ODS_query_scheduled_scans_request(**input_params)
-    http_request.assert_called_with('GET', f'/ods/queries/scheduled-scans/v1?{call_params}')
+    http_request.assert_called_with("GET", f"/ods/queries/scheduled-scans/v1?{call_params}")
 
 
 def test_ODS_get_scheduled_scans_by_id_request(mocker):
@@ -5411,13 +5566,13 @@ def test_ODS_get_scheduled_scans_by_id_request(mocker):
 
     from CrowdStrikeFalcon import ODS_get_scheduled_scans_by_id_request
 
-    ids_list = ['<id1>', '<id2>', '<id3>']
-    ids_string = 'ids=<id1>&ids=<id2>&ids=<id3>'
+    ids_list = ["<id1>", "<id2>", "<id3>"]
+    ids_string = "ids=<id1>&ids=<id2>&ids=<id3>"
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
 
     ODS_get_scheduled_scans_by_id_request(ids_list)
-    http_request.assert_called_with('GET', f'/ods/entities/scheduled-scans/v1?{ids_string}')
+    http_request.assert_called_with("GET", f"/ods/entities/scheduled-scans/v1?{ids_string}")
 
 
 def test_map_scheduled_scan_resource_to_UI(mocker):
@@ -5439,23 +5594,14 @@ def test_map_scheduled_scan_resource_to_UI(mocker):
         "id": "9055945bdfbc4b42bf7c9c16976186ca",
         "cid": "20879a8064904ecfbb62c118a6a19411",
         "description": "desc3456346",
-        "scan_inclusions": [
-            "*"
-        ],
+        "scan_inclusions": ["*"],
         "initiated_from": "cloud_scheduled",
         "quarantine": True,
         "cpu_priority": 2,
         "preemption_priority": 15,
-        "metadata": [
-            {
-                "host_id": "046761c46ec84f40b27b6f79ce7cd32c",
-                "last_updated": "2023-05-01T13:54:48.51553853Z"
-            }
-        ],
+        "metadata": [{"host_id": "046761c46ec84f40b27b6f79ce7cd32c", "last_updated": "2023-05-01T13:54:48.51553853Z"}],
         "status": "scheduled",
-        "host_groups": [
-            "7471ba0636b34cbb8c65fae7979a6a9b"
-        ],
+        "host_groups": ["7471ba0636b34cbb8c65fae7979a6a9b"],
         "endpoint_notification": True,
         "pause_duration": 2,
         "max_duration": 2,
@@ -5467,23 +5613,20 @@ def test_map_scheduled_scan_resource_to_UI(mocker):
         "policy_setting": [
             26439818674573,
         ],
-        "schedule": {
-            "start_timestamp": "2023-06-15T15:57",
-            "interval": 0
-        },
+        "schedule": {"start_timestamp": "2023-06-15T15:57", "interval": 0},
         "created_on": "2023-05-01T13:54:48.51553853Z",
         "created_by": "f7acf1bd5d3d4b40afe77546cbbaefde",
         "last_updated": "2023-05-01T13:54:48.51553853Z",
-        "deleted": False
+        "deleted": False,
     }
 
     mapped_resource = {
-        'ID': '9055945bdfbc4b42bf7c9c16976186ca',
-        'Hosts targeted': 1,
-        'Description': 'desc3456346',
-        'Host groups': ['7471ba0636b34cbb8c65fae7979a6a9b'],
-        'Start time': '2023-06-15T15:57',
-        'Created by': 'f7acf1bd5d3d4b40afe77546cbbaefde',
+        "ID": "9055945bdfbc4b42bf7c9c16976186ca",
+        "Hosts targeted": 1,
+        "Description": "desc3456346",
+        "Host groups": ["7471ba0636b34cbb8c65fae7979a6a9b"],
+        "Start time": "2023-06-15T15:57",
+        "Created by": "f7acf1bd5d3d4b40afe77546cbbaefde",
     }
 
     output = map_scheduled_scan_resource_to_UI(resource)
@@ -5492,11 +5635,8 @@ def test_map_scheduled_scan_resource_to_UI(mocker):
 
 
 @pytest.mark.parametrize(
-    'input_params, call_params',
-    (
-        ({'key1': 'val1', 'key2': None}, 'key1=val1'),
-        ({'key1': 'val1', 'key2': 'val2'}, 'key1=val1&key2=val2')
-    )
+    "input_params, call_params",
+    (({"key1": "val1", "key2": None}, "key1=val1"), ({"key1": "val1", "key2": "val2"}, "key1=val1&key2=val2")),
 )
 def test_ODS_query_scan_hosts_request(mocker, input_params, call_params):
     """
@@ -5514,9 +5654,9 @@ def test_ODS_query_scan_hosts_request(mocker, input_params, call_params):
 
     from CrowdStrikeFalcon import ODS_query_scan_hosts_request
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
     ODS_query_scan_hosts_request(**input_params)
-    http_request.assert_called_with('GET', f'/ods/queries/scan-hosts/v1?{call_params}')
+    http_request.assert_called_with("GET", f"/ods/queries/scan-hosts/v1?{call_params}")
 
 
 def test_ODS_get_scan_hosts_by_id_request(mocker):
@@ -5535,13 +5675,13 @@ def test_ODS_get_scan_hosts_by_id_request(mocker):
 
     from CrowdStrikeFalcon import ODS_get_scan_hosts_by_id_request
 
-    ids_list = ['<id1>', '<id2>', '<id3>']
-    ids_string = 'ids=<id1>&ids=<id2>&ids=<id3>'
+    ids_list = ["<id1>", "<id2>", "<id3>"]
+    ids_string = "ids=<id1>&ids=<id2>&ids=<id3>"
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
 
     ODS_get_scan_hosts_by_id_request(ids_list)
-    http_request.assert_called_with('GET', f'/ods/entities/scan-hosts/v1?{ids_string}')
+    http_request.assert_called_with("GET", f"/ods/entities/scan-hosts/v1?{ids_string}")
 
 
 def test_map_scan_host_resource_to_UI(mocker):
@@ -5566,32 +5706,22 @@ def test_map_scan_host_resource_to_UI(mocker):
         "profile_id": "ddf8914cca5f4ac595272fe8122e308f",
         "host_id": "82395m302t8zea2u25978416be1973c5",
         "host_scan_id": "7e80aa16a44d30cb819e27144d2603b0",
-        "filecount": {
-            "scanned": 1021,
-            "malicious": 104,
-            "quarantined": 0,
-            "skipped": 9328
-        },
+        "filecount": {"scanned": 1021, "malicious": 104, "quarantined": 0, "skipped": 9328},
         "status": "completed",
         "severity": 70,
         "started_on": "2022-11-01T18:54:59.39861174Z",
         "completed_on": "2022-11-01T19:08:17.903700092Z",
-        "last_updated": "2022-11-01T19:08:17.903732519Z"
+        "last_updated": "2022-11-01T19:08:17.903732519Z",
     }
 
     mapped_resource = {
-        'ID': "185a0ad5e159418e8927d956c1a793d8",
-        'Scan ID': "fadde07ee8a44a07988e009b3152e339",
-        'Host ID': "82395m302t8zea2u25978416be1973c5",
-        'Filecount': {
-            "scanned": 1021,
-            "malicious": 104,
-            "quarantined": 0,
-            "skipped": 9328
-        },
-        'Status': "completed",
-        'Severity': 70,
-        'Started on': "2022-11-01T18:54:59.39861174Z",
+        "ID": "185a0ad5e159418e8927d956c1a793d8",
+        "Scan ID": "fadde07ee8a44a07988e009b3152e339",
+        "Host ID": "82395m302t8zea2u25978416be1973c5",
+        "Filecount": {"scanned": 1021, "malicious": 104, "quarantined": 0, "skipped": 9328},
+        "Status": "completed",
+        "Severity": 70,
+        "Started on": "2022-11-01T18:54:59.39861174Z",
     }
 
     output = map_scan_host_resource_to_UI(resource)
@@ -5600,11 +5730,8 @@ def test_map_scan_host_resource_to_UI(mocker):
 
 
 @pytest.mark.parametrize(
-    'input_params, call_params',
-    (
-        ({'key1': 'val1', 'key2': None}, 'key1=val1'),
-        ({'key1': 'val1', 'key2': 'val2'}, 'key1=val1&key2=val2')
-    )
+    "input_params, call_params",
+    (({"key1": "val1", "key2": None}, "key1=val1"), ({"key1": "val1", "key2": "val2"}, "key1=val1&key2=val2")),
 )
 def test_ODS_query_malicious_files_request(mocker, input_params, call_params):
     """
@@ -5622,9 +5749,9 @@ def test_ODS_query_malicious_files_request(mocker, input_params, call_params):
 
     from CrowdStrikeFalcon import ODS_query_malicious_files_request
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
     ODS_query_malicious_files_request(**input_params)
-    http_request.assert_called_with('GET', f'/ods/queries/malicious-files/v1?{call_params}')
+    http_request.assert_called_with("GET", f"/ods/queries/malicious-files/v1?{call_params}")
 
 
 def test_ODS_get_malicious_files_by_id_request(mocker):
@@ -5643,13 +5770,13 @@ def test_ODS_get_malicious_files_by_id_request(mocker):
 
     from CrowdStrikeFalcon import ODS_get_malicious_files_by_id_request
 
-    ids_list = ['<id1>', '<id2>', '<id3>']
-    ids_string = 'ids=<id1>&ids=<id2>&ids=<id3>'
+    ids_list = ["<id1>", "<id2>", "<id3>"]
+    ids_string = "ids=<id1>&ids=<id2>&ids=<id3>"
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
 
     ODS_get_malicious_files_by_id_request(ids_list)
-    http_request.assert_called_with('GET', f'/ods/entities/malicious-files/v1?{ids_string}')
+    http_request.assert_called_with("GET", f"/ods/entities/malicious-files/v1?{ids_string}")
 
 
 def test_map_malicious_file_resource_to_UI(mocker):
@@ -5679,15 +5806,15 @@ def test_map_malicious_file_resource_to_UI(mocker):
         "pattern_id": 4004,
         "severity": 70,
         "quarantined": True,
-        "last_updated": "2022-11-01T17:06:18.900620631Z"
+        "last_updated": "2022-11-01T17:06:18.900620631Z",
     }
     mapped_resource = {
-        'ID': 'd684849d4cea435daec706e473743863',
-        'Scan id': '81c8009a59be4570b5c66f8946559205',
-        'Filename': 'mimilib.dll',
-        'Hash': '9ff1a527861a69b436b51a8d464aaee8d416e39ff1a52aee16e39b436b564a78',
-        'Severity': 70,
-        'Last updated': '2022-11-01T17:06:18.900620631Z',
+        "ID": "d684849d4cea435daec706e473743863",
+        "Scan id": "81c8009a59be4570b5c66f8946559205",
+        "Filename": "mimilib.dll",
+        "Hash": "9ff1a527861a69b436b51a8d464aaee8d416e39ff1a52aee16e39b436b564a78",
+        "Severity": 70,
+        "Last updated": "2022-11-01T17:06:18.900620631Z",
     }
 
     output = map_malicious_file_resource_to_UI(resource)
@@ -5696,12 +5823,15 @@ def test_map_malicious_file_resource_to_UI(mocker):
 
 
 @pytest.mark.parametrize(
-    'args, is_scheduled, expected_result',
+    "args, is_scheduled, expected_result",
     (
-        ({'quarantine': 'false', 'schedule_interval': 'every other week',
-          'schedule_start_timestamp': 'tomorrow'}, True, {'quarantine': False}),
-        ({'cpu_priority': 'Low', 'max_duration': 1}, False, {'cpu_priority': 2, 'max_duration': 1}),
-    )
+        (
+            {"quarantine": "false", "schedule_interval": "every other week", "schedule_start_timestamp": "tomorrow"},
+            True,
+            {"quarantine": False},
+        ),
+        ({"cpu_priority": "Low", "max_duration": 1}, False, {"cpu_priority": 2, "max_duration": 1}),
+    ),
 )
 def test_make_create_scan_request_body(args, is_scheduled, expected_result):
     """
@@ -5722,23 +5852,23 @@ def test_make_create_scan_request_body(args, is_scheduled, expected_result):
     output = make_create_scan_request_body(args, is_scheduled)
 
     if is_scheduled:
-        assert 'hosts' not in output
-        assert isinstance(output['schedule']['interval'], int)  # function doesn't enforce this
+        assert "hosts" not in output
+        assert isinstance(output["schedule"]["interval"], int)  # function doesn't enforce this
     else:
-        assert 'hosts' in output
-        assert 'schedule' not in output
+        assert "hosts" in output
+        assert "schedule" not in output
 
     for key, value in expected_result.items():
         assert output[key] == value
 
 
 @pytest.mark.parametrize(
-    'args, is_error, expected_error_info',
+    "args, is_error, expected_error_info",
     (
-        ({}, True, 'MUST set either hosts OR host_groups.'),
-        ({'hosts': 'john doe'}, True, 'MUST set either file_paths OR scan_inclusions.'),
-        ({'hosts': 'john doe', 'file_paths': '*'}, False, None),
-    )
+        ({}, True, "MUST set either hosts OR host_groups."),
+        ({"hosts": "john doe"}, True, "MUST set either file_paths OR scan_inclusions."),
+        ({"hosts": "john doe", "file_paths": "*"}, False, None),
+    ),
 )
 def test_ODS_verify_create_scan_command(args, is_error, expected_error_info):
     """
@@ -5779,17 +5909,46 @@ def test_cs_falcon_ods_create_scan_command(mocker):
 
     from CrowdStrikeFalcon import cs_falcon_ods_create_scan_command
 
-    mocker.patch('CrowdStrikeFalcon.ods_create_scan', return_value={'id': 'random_id'})
-    query_scans_command = mocker.patch('CrowdStrikeFalcon.cs_falcon_ODS_query_scans_command')
+    mocker.patch("CrowdStrikeFalcon.ods_create_scan", return_value={"id": "random_id"})
+    query_scans_command = mocker.patch("CrowdStrikeFalcon.cs_falcon_ODS_query_scans_command")
 
-    cs_falcon_ods_create_scan_command({'interval_in_seconds': 1, 'timeout_in_seconds': 1})
+    cs_falcon_ods_create_scan_command({"interval_in_seconds": 1, "timeout_in_seconds": 1})
 
-    query_scans_command.assert_called_with({
-        'ids': 'random_id',
-        'wait_for_result': True,
-        'interval_in_seconds': 1,
-        'timeout_in_seconds': 1,
-    })
+    query_scans_command.assert_called_with(
+        {
+            "ids": "random_id",
+            "wait_for_result": True,
+            "interval_in_seconds": 1,
+            "timeout_in_seconds": 1,
+        }
+    )
+
+
+def test_cs_falcon_ods_create_scan_command_no_polling(mocker):
+    """
+    Test cs_falcon_ods_create_scan_command with polling=false.
+
+    Given
+        - Arguments to create a scan with polling set to false.
+
+    When
+        - The user runs the "cs-falcon-ods-create-scan" command with polling=false.
+
+    Then
+        - Create an ODS scan and return CommandResults immediately without calling cs_falcon_ODS_query_scans_command.
+    """
+
+    from CrowdStrikeFalcon import cs_falcon_ods_create_scan_command
+
+    mocker.patch("CrowdStrikeFalcon.ods_create_scan", return_value={"id": "random_id"})
+    query_scans_command = mocker.patch("CrowdStrikeFalcon.cs_falcon_ODS_query_scans_command")
+
+    result = cs_falcon_ods_create_scan_command({"interval_in_seconds": 1, "timeout_in_seconds": 1, "polling": "false"})
+
+    query_scans_command.assert_not_called()
+    assert result.readable_output == "Successfully created scan with ID: random_id"
+    assert result.outputs == {"id": "random_id"}
+    assert result.outputs_prefix == "CrowdStrike.ODSScan"
 
 
 def test_cs_falcon_ods_create_scheduled_scan_command(mocker):
@@ -5808,20 +5967,21 @@ def test_cs_falcon_ods_create_scheduled_scan_command(mocker):
 
     from CrowdStrikeFalcon import cs_falcon_ods_create_scheduled_scan_command
 
-    mocker.patch('CrowdStrikeFalcon.ods_create_scan', return_value={'id': 'random_id'})
-    result = cs_falcon_ods_create_scheduled_scan_command(
-        {'quarantine': 'false', 'schedule_interval': 'every other week'})
-    assert result.readable_output == 'Successfully created scheduled scan with ID: random_id'
+    mocker.patch("CrowdStrikeFalcon.ods_create_scan", return_value={"id": "random_id"})
+    result = cs_falcon_ods_create_scheduled_scan_command({"quarantine": "false", "schedule_interval": "every other week"})
+    assert result.readable_output == "Successfully created scheduled scan with ID: random_id"
 
 
 @pytest.mark.parametrize(
-    'args, is_scheduled, body',
+    "args, is_scheduled, body",
     (
-        ({'quarantine': 'false', 'schedule_interval': 'every other week',
-          'schedule_start_timestamp': 'tomorrow'}, True,
-         {'quarantine': False, 'schedule': {'interval': 14, 'start_timestamp': '2020-09-27T17:22'}}),
-        ({'cpu_priority': 'Low'}, False, {'cpu_priority': 2}),
-    )
+        (
+            {"quarantine": "false", "schedule_interval": "every other week", "schedule_start_timestamp": "tomorrow"},
+            True,
+            {"quarantine": False, "schedule": {"interval": 14, "start_timestamp": "2020-09-27T17:22"}},
+        ),
+        ({"cpu_priority": "Low"}, False, {"cpu_priority": 2}),
+    ),
 )
 @freeze_time("2020-09-26 17:22:13 UTC")
 def test_ODS_create_scan_request(mocker, args, is_scheduled, body):
@@ -5840,18 +6000,18 @@ def test_ODS_create_scan_request(mocker, args, is_scheduled, body):
 
     from CrowdStrikeFalcon import ODS_create_scan_request
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
     ODS_create_scan_request(args, is_scheduled)
-    http_request.assert_called_with('POST', f'/ods/entities/{"scheduled-scans" if is_scheduled else "scans"}/v1', json=body)
+    http_request.assert_called_with("POST", f'/ods/entities/{"scheduled-scans" if is_scheduled else "scans"}/v1', json=body)
 
 
 @pytest.mark.parametrize(
-    'ids, scans_filter, url_params',
+    "ids, scans_filter, url_params",
     (
-        (['id1', 'id2'], None, 'ids=id1&ids=id2'),
-        ([], 'key1:val1+key2:val2', 'filter=key1:val1%2Bkey2:val2'),
-        (['id1', 'id2'], 'key1:val1+key2:val2', 'ids=id1&ids=id2&filter=key1:val1%2Bkey2:val2'),
-    )
+        (["id1", "id2"], None, "ids=id1&ids=id2"),
+        ([], "key1:val1+key2:val2", "filter=key1:val1%2Bkey2:val2"),
+        (["id1", "id2"], "key1:val1+key2:val2", "ids=id1&ids=id2&filter=key1:val1%2Bkey2:val2"),
+    ),
 )
 def test_ODS_delete_scheduled_scans_request(mocker, ids, scans_filter, url_params):
     """
@@ -5869,9 +6029,9 @@ def test_ODS_delete_scheduled_scans_request(mocker, ids, scans_filter, url_param
 
     from CrowdStrikeFalcon import ODS_delete_scheduled_scans_request
 
-    http_request = mocker.patch('CrowdStrikeFalcon.http_request')
+    http_request = mocker.patch("CrowdStrikeFalcon.http_request")
     ODS_delete_scheduled_scans_request(ids, scans_filter)
-    http_request.assert_called_with('DELETE', f'/ods/entities/scheduled-scans/v1?{url_params}', status_code=500)
+    http_request.assert_called_with("DELETE", f"/ods/entities/scheduled-scans/v1?{url_params}", status_code=500)
 
 
 class mocker_gql_client:
@@ -5881,7 +6041,7 @@ class mocker_gql_client:
         self.index = 0
 
     def execute(self, idp_query, variable_values):
-        if 'after' not in variable_values or self.expected_after == variable_values.get('after', ""):
+        if "after" not in variable_values or self.expected_after == variable_values.get("after", ""):
             response = self.mock_responses[self.index]
             self.index += 1
             return response
@@ -5891,33 +6051,34 @@ class mocker_gql_client:
 @pytest.mark.parametrize("test_case", ["test_case_1", "test_case_2"])
 def test_list_identity_entities_command(mocker, test_case):
     """
-        Given:
-        - test case that point to the relevant test case in the json test data which include:
-          args, response mock, expected_after, expected_raw_response_len, expected hr, and expected_ec.
-        - Case 1: args with limit=1, some filter args, mock_response with 1 identity entity, and an empty expected_after
-        - Case 2: args with limit=50, page=size=1, page=2 mock_response with 2 response each have 1 identity entity,
-        and an empty expected_after that matches the endCursor of the first response.
+    Given:
+    - test case that point to the relevant test case in the json test data which include:
+      args, response mock, expected_after, expected_raw_response_len, expected hr, and expected_ec.
+    - Case 1: args with limit=1, some filter args, mock_response with 1 identity entity, and an empty expected_after
+    - Case 2: args with limit=50, page=size=1, page=2 mock_response with 2 response each have 1 identity entity,
+    and an empty expected_after that matches the endCursor of the first response.
 
-        When:
-        - Running list_identity_entities_command.
+    When:
+    - Running list_identity_entities_command.
 
-        Then:
-        - Ensure that the response was parsed correctly and right HR, raw_response, and EC are returned.
-        - Case 1: Should return the parsed identity from the response and 1 response in the rew_response list.
-        - Case 2: Should return onle the second identity entity, and have 2 responses in the rew_response list.
+    Then:
+    - Ensure that the response was parsed correctly and right HR, raw_response, and EC are returned.
+    - Case 1: Should return the parsed identity from the response and 1 response in the rew_response list.
+    - Case 2: Should return onle the second identity entity, and have 2 responses in the rew_response list.
     """
-    from CrowdStrikeFalcon import list_identity_entities_command
     import CrowdStrikeFalcon
+    from CrowdStrikeFalcon import list_identity_entities_command
+
     test_data = load_json("./test_data/test_list_identity_entities_command.json").get(test_case, {})
-    expected_after = test_data.get('expected_after', "")
-    mock_responses = test_data.get('mock_responses', "")
+    expected_after = test_data.get("expected_after", "")
+    mock_responses = test_data.get("mock_responses", "")
     mock_client = mocker_gql_client(mock_responses, expected_after)
     mocker.patch.object(CrowdStrikeFalcon, "create_gql_client", return_value=mock_client)
     args = test_data.get("args", {})
     command_results = list_identity_entities_command(args)
-    assert test_data.get('expected_hr') == command_results.readable_output
-    assert test_data.get('expected_ec') == command_results.outputs
-    assert test_data.get('expected_res_len') == len(command_results.raw_response)
+    assert test_data.get("expected_hr") == command_results.readable_output
+    assert test_data.get("expected_ec") == command_results.outputs
+    assert test_data.get("expected_res_len") == len(command_results.raw_response)
 
 
 @pytest.mark.parametrize("timeout, expected_timeout", [(60, 60), (None, 30)])
@@ -5931,17 +6092,21 @@ def test_run_batch_write_cmd_timeout_argument(mocker, timeout, expected_timeout)
         - Asserst the expected timeout called with the http request function
     """
     from CrowdStrikeFalcon import run_batch_write_cmd
-    batch_id = '12345'
-    command_type = 'ls'
-    full_command = 'ls -l'
-    request_mock = mocker.patch('CrowdStrikeFalcon.http_request', return_value={})
+
+    batch_id = "12345"
+    command_type = "ls"
+    full_command = "ls -l"
+    request_mock = mocker.patch("CrowdStrikeFalcon.http_request", return_value={})
     run_batch_write_cmd(batch_id, command_type, full_command, timeout=timeout)
-    assert request_mock.call_args[1].get('params').get('timeout') == expected_timeout
+    assert request_mock.call_args[1].get("params").get("timeout") == expected_timeout
 
 
-def assert_command_results(command_results_to_assert: CommandResults, expected_outputs: list | dict,
-                           expected_outputs_key_field: str | list[str],
-                           expected_outputs_prefix: str):
+def assert_command_results(
+    command_results_to_assert: CommandResults,
+    expected_outputs: list | dict,
+    expected_outputs_key_field: str | list[str],
+    expected_outputs_prefix: str,
+):
     """This function is used to assert the command results object returned from running command using mocked data.
     It checks the three important fields, which are:
     1. outputs
@@ -5956,11 +6121,10 @@ def assert_command_results(command_results_to_assert: CommandResults, expected_o
     """
     assert command_results_to_assert.outputs == expected_outputs
     assert command_results_to_assert.outputs_key_field == expected_outputs_key_field
-    assert command_results_to_assert. outputs_prefix == expected_outputs_prefix
+    assert command_results_to_assert.outputs_prefix == expected_outputs_prefix
 
 
 class TestCSFalconCSPMListPolicyDetialsCommand:
-
     def test_http_request_with_status_code_400_500_207(self, mocker: MockerFixture):
         """
         Given:
@@ -5972,9 +6136,10 @@ class TestCSFalconCSPMListPolicyDetialsCommand:
             since we deal with them manually.
         """
         from CrowdStrikeFalcon import cspm_list_policy_details_request
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        cspm_list_policy_details_request(policy_ids=['1', '2'])
-        assert http_request_mocker.call_args_list[0][1].get('status_code') == [500, 400, 207]
+
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        cspm_list_policy_details_request(policy_ids=["1", "2"])
+        assert http_request_mocker.call_args_list[0][1].get("status_code") == [500, 400, 207]
 
     def test_get_policy_details(self, mocker: MockerFixture):
         """
@@ -5986,12 +6151,17 @@ class TestCSFalconCSPMListPolicyDetialsCommand:
             - Validate the data of the CommandResults object returned.
         """
         from CrowdStrikeFalcon import cs_falcon_cspm_list_policy_details_command
-        raw_response = load_json('test_data/policy_details/policy_details_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        command_results = cs_falcon_cspm_list_policy_details_command(args={'policy_ids': '1,2'})
-        expected_context_data = load_json('test_data/policy_details/policy_details_context_data.json')
-        assert_command_results(command_results_to_assert=command_results, expected_outputs=expected_context_data,
-                               expected_outputs_key_field='ID', expected_outputs_prefix='CrowdStrike.CSPMPolicy')
+
+        raw_response = load_json("test_data/policy_details/policy_details_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
+        command_results = cs_falcon_cspm_list_policy_details_command(args={"policy_ids": "1,2"})
+        expected_context_data = load_json("test_data/policy_details/policy_details_context_data.json")
+        assert_command_results(
+            command_results_to_assert=command_results,
+            expected_outputs=expected_context_data,
+            expected_outputs_key_field="ID",
+            expected_outputs_prefix="CrowdStrike.CSPMPolicy",
+        )
 
     def test_get_policy_details_error_500(self, mocker: MockerFixture):
         """
@@ -6003,11 +6173,12 @@ class TestCSFalconCSPMListPolicyDetialsCommand:
             - Validate that we output an error with the correct message.
         """
         from CrowdStrikeFalcon import cs_falcon_cspm_list_policy_details_command
-        raw_response = load_json('test_data/policy_details/policy_details_error_500_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
+
+        raw_response = load_json("test_data/policy_details/policy_details_error_500_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
         with pytest.raises(DemistoException) as e:
-            cs_falcon_cspm_list_policy_details_command(args={'policy_ids': '12123123123123'})
-        assert 'Perhaps the policy IDs are invalid?' in str(e)
+            cs_falcon_cspm_list_policy_details_command(args={"policy_ids": "12123123123123"})
+        assert "Perhaps the policy IDs are invalid?" in str(e)
 
     def test_get_policy_details_error_400(self, mocker: MockerFixture):
         """
@@ -6019,20 +6190,24 @@ class TestCSFalconCSPMListPolicyDetialsCommand:
             - Validate that we output a warning with the correct message.
         """
         from CrowdStrikeFalcon import cs_falcon_cspm_list_policy_details_command
-        raw_response = load_json('test_data/policy_details/policy_details_error_400_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        demisto_results_mocker = mocker.patch.object(demisto, 'results')
-        command_results = cs_falcon_cspm_list_policy_details_command(args={'policy_ids': '1,121231'})
-        expected_context_data = load_json('test_data/policy_details/policy_details_error_400_context_data.json')
-        assert_command_results(command_results_to_assert=command_results, expected_outputs=expected_context_data,
-                               expected_outputs_key_field='ID', expected_outputs_prefix='CrowdStrike.CSPMPolicy')
+
+        raw_response = load_json("test_data/policy_details/policy_details_error_400_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
+        demisto_results_mocker = mocker.patch.object(demisto, "results")
+        command_results = cs_falcon_cspm_list_policy_details_command(args={"policy_ids": "1,121231"})
+        expected_context_data = load_json("test_data/policy_details/policy_details_error_400_context_data.json")
+        assert_command_results(
+            command_results_to_assert=command_results,
+            expected_outputs=expected_context_data,
+            expected_outputs_key_field="ID",
+            expected_outputs_prefix="CrowdStrike.CSPMPolicy",
+        )
         # Entry type '11' means warning
-        assert demisto_results_mocker.call_args_list[0][0][0].get('Type') == 11
-        assert 'Invalid policy ID 121231 provided' in demisto_results_mocker.call_args_list[0][0][0].get('Contents')
+        assert demisto_results_mocker.call_args_list[0][0][0].get("Type") == 11
+        assert "Invalid policy ID 121231 provided" in demisto_results_mocker.call_args_list[0][0][0].get("Contents")
 
 
 class TestCSFalconCSPMListServicePolicySettingsCommand:
-
     def test_http_request_arguments(self, mocker: MockerFixture):
         """
         Given:
@@ -6044,11 +6219,15 @@ class TestCSFalconCSPMListServicePolicySettingsCommand:
             and that the arguments are mapped correctly to the appropriate params.
         """
         from CrowdStrikeFalcon import cspm_list_service_policy_settings_request
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        cspm_list_service_policy_settings_request(policy_id='1', cloud_platform='aws', service='IAM')
-        assert http_request_mocker.call_args_list[0][1].get('status_code') == [207]
-        assert http_request_mocker.call_args_list[0][1].get('params') == {'service': 'IAM', 'policy-id': '1',
-                                                                          'cloud-platform': 'aws'}
+
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        cspm_list_service_policy_settings_request(policy_id="1", cloud_platform="aws", service="IAM")
+        assert http_request_mocker.call_args_list[0][1].get("status_code") == [207]
+        assert http_request_mocker.call_args_list[0][1].get("params") == {
+            "service": "IAM",
+            "policy-id": "1",
+            "cloud-platform": "aws",
+        }
 
     def test_get_service_policy_settings(self, mocker: MockerFixture):
         """
@@ -6060,13 +6239,17 @@ class TestCSFalconCSPMListServicePolicySettingsCommand:
             - Validate the data of the CommandResults object returned.
         """
         from CrowdStrikeFalcon import cs_falcon_cspm_list_service_policy_settings_command
-        raw_response = load_json('test_data/service_policy_settings/policy_settings_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        command_results = cs_falcon_cspm_list_service_policy_settings_command(args={'cloud_platform': 'aws',
-                                                                                    'service': 'IAM'})
-        expected_context_data = load_json('test_data/service_policy_settings/policy_settings_context_data.json')
-        assert_command_results(command_results_to_assert=command_results, expected_outputs=expected_context_data,
-                               expected_outputs_key_field='policy_id', expected_outputs_prefix='CrowdStrike.CSPMPolicySetting')
+
+        raw_response = load_json("test_data/service_policy_settings/policy_settings_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
+        command_results = cs_falcon_cspm_list_service_policy_settings_command(args={"cloud_platform": "aws", "service": "IAM"})
+        expected_context_data = load_json("test_data/service_policy_settings/policy_settings_context_data.json")
+        assert_command_results(
+            command_results_to_assert=command_results,
+            expected_outputs=expected_context_data,
+            expected_outputs_key_field="policy_id",
+            expected_outputs_prefix="CrowdStrike.CSPMPolicySetting",
+        )
 
     def test_get_service_policy_settings_manual_pagination(self, mocker: MockerFixture):
         """
@@ -6079,16 +6262,17 @@ class TestCSFalconCSPMListServicePolicySettingsCommand:
         """
         # The raw response in the test data has 2 values, we set a limit of 1 to assert the manual pagination
         from CrowdStrikeFalcon import cs_falcon_cspm_list_service_policy_settings_command
-        raw_response = load_json('test_data/service_policy_settings/policy_settings_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        command_results = cs_falcon_cspm_list_service_policy_settings_command(args={'cloud_platform': 'aws',
-                                                                                    'service': 'IAM', 'limit': '1'})
+
+        raw_response = load_json("test_data/service_policy_settings/policy_settings_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
+        command_results = cs_falcon_cspm_list_service_policy_settings_command(
+            args={"cloud_platform": "aws", "service": "IAM", "limit": "1"}
+        )
         assert isinstance(command_results.outputs, list)
         assert len(command_results.outputs) == 1
 
 
 class TestCSFalconCSPMUpdatePolicySettingsCommand:
-
     def test_http_request_arguments(self, mocker: MockerFixture):
         """
         Given:
@@ -6100,14 +6284,24 @@ class TestCSFalconCSPMUpdatePolicySettingsCommand:
             and that the arguments are mapped correctly to the json body.
         """
         from CrowdStrikeFalcon import cspm_update_policy_settings_request
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        cspm_update_policy_settings_request(account_id='12', enabled=True, policy_id=1,
-                                            regions=['eu-west', 'eu-east'], severity='high', tag_excluded=False)
-        assert http_request_mocker.call_args_list[0][1].get('status_code') == 500
-        assert http_request_mocker.call_args_list[0][1].get('json') == {'resources':
-                                                                        [{'account_id': '12', 'enabled': True, 'policy_id': 1,
-                                                                          'regions': ['eu-west', 'eu-east'], 'severity': 'high',
-                                                                          'tag_excluded': False}]}
+
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        cspm_update_policy_settings_request(
+            account_id="12", enabled=True, policy_id=1, regions=["eu-west", "eu-east"], severity="high", tag_excluded=False
+        )
+        assert http_request_mocker.call_args_list[0][1].get("status_code") == 500
+        assert http_request_mocker.call_args_list[0][1].get("json") == {
+            "resources": [
+                {
+                    "account_id": "12",
+                    "enabled": True,
+                    "policy_id": 1,
+                    "regions": ["eu-west", "eu-east"],
+                    "severity": "high",
+                    "tag_excluded": False,
+                }
+            ]
+        }
 
     def test_update_policy_settings_error_500(self, mocker: MockerFixture):
         """
@@ -6119,12 +6313,12 @@ class TestCSFalconCSPMUpdatePolicySettingsCommand:
             - Validate that we output an error with the correct message.
         """
         from CrowdStrikeFalcon import cs_falcon_cspm_update_policy_settings_command
-        raw_response = load_json('test_data/update_policy_settings/update_settings_error_500_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
+
+        raw_response = load_json("test_data/update_policy_settings/update_settings_error_500_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
         with pytest.raises(DemistoException) as e:
-            cs_falcon_cspm_update_policy_settings_command(args={'account_id': 'wrong_account_id',
-                                                                'policy_id': 1})
-        assert 'Perhaps the policy ID or account ID are invalid?' in str(e)
+            cs_falcon_cspm_update_policy_settings_command(args={"account_id": "wrong_account_id", "policy_id": 1})
+        assert "Perhaps the policy ID or account ID are invalid?" in str(e)
 
     def test_update_policy_settings(self, mocker: MockerFixture):
         """
@@ -6136,18 +6330,20 @@ class TestCSFalconCSPMUpdatePolicySettingsCommand:
             - Validate the data of the CommandResults object returned.
         """
         from CrowdStrikeFalcon import cs_falcon_cspm_update_policy_settings_command
-        raw_response = load_json('test_data/update_policy_settings/update_settings_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        command_results = cs_falcon_cspm_update_policy_settings_command(args={'policy_id': 1})
+
+        raw_response = load_json("test_data/update_policy_settings/update_settings_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
+        command_results = cs_falcon_cspm_update_policy_settings_command(args={"policy_id": 1})
         assert isinstance(command_results.readable_output, str)
-        assert 'Policy 1 was updated successfully' in command_results.readable_output
+        assert "Policy 1 was updated successfully" in command_results.readable_output
 
 
 class TestCSFalconResolveIdentityDetectionCommand:
-    @pytest.mark.parametrize('Legacy_version, url_suffix, ids_request_key', [
-        (False, '/alerts/entities/alerts/v3', 'composite_ids'),
-        (True, '/alerts/entities/alerts/v2', 'ids')])
-    def test_http_request_arguments(self, mocker: MockerFixture, Legacy_version, url_suffix, ids_request_key):
+    @pytest.mark.parametrize(
+        "url_suffix, ids_request_key",
+        [("/alerts/entities/alerts/v3", "composite_ids")],
+    )
+    def test_http_request_arguments(self, mocker: MockerFixture, url_suffix, ids_request_key):
         """
         Given:
             - Arguments for the cs-falcon-resolve-identity-detection command.
@@ -6162,15 +6358,17 @@ class TestCSFalconResolveIdentityDetectionCommand:
                 case 2: url_suffix should be '/alerts/entities/alerts/v2' and the ids_request_key should be 'ids'
         """
         from CrowdStrikeFalcon import resolve_detections_request
-        mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        ids = ['1,2']
-        action_param_values = {'update_status': 'new', 'assign_to_name': 'bot'}
-        action_params_http_body = [{'name': 'update_status', 'value': 'new'}, {'name': 'assign_to_name', 'value': 'bot'}]
+
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        ids = ["1,2"]
+        action_param_values = {"update_status": "new", "assign_to_name": "bot"}
+        action_params_http_body = [{"name": "update_status", "value": "new"}, {"name": "assign_to_name", "value": "bot"}]
         resolve_detections_request(ids=ids, **action_param_values)
-        assert http_request_mocker.call_args_list[0][1].get('url_suffix') == url_suffix
-        assert http_request_mocker.call_args_list[0][1].get('json') == {'action_parameters': action_params_http_body,
-                                                                        ids_request_key: ids}
+        assert http_request_mocker.call_args_list[0][1].get("url_suffix") == url_suffix
+        assert http_request_mocker.call_args_list[0][1].get("json") == {
+            "action_parameters": action_params_http_body,
+            ids_request_key: ids,
+        }
 
     def test_resolve_identity_detection(self, mocker: MockerFixture):
         """
@@ -6182,10 +6380,11 @@ class TestCSFalconResolveIdentityDetectionCommand:
             - Validate the data of the CommandResults object returned.
         """
         from CrowdStrikeFalcon import cs_falcon_resolve_identity_detection
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=requests.Response())
-        command_results = cs_falcon_resolve_identity_detection(args={'ids': '1,2'})
+
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=requests.Response())
+        command_results = cs_falcon_resolve_identity_detection(args={"ids": "1,2"})
         assert isinstance(command_results.readable_output, str)
-        assert 'IDP Detection(s) 1, 2 were successfully updated' in command_results.readable_output
+        assert "IDP Detection(s) 1, 2 were successfully updated" in command_results.readable_output
 
     def test_resolve_mobile_detection(self, mocker: MockerFixture):
         """
@@ -6197,298 +6396,294 @@ class TestCSFalconResolveIdentityDetectionCommand:
             - Validate the data of the CommandResults object returned.
         """
         from CrowdStrikeFalcon import cs_falcon_resolve_mobile_detection
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=requests.Response())
-        command_results = cs_falcon_resolve_mobile_detection(args={'ids': '1,2'})
+
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=requests.Response())
+        command_results = cs_falcon_resolve_mobile_detection(args={"ids": "1,2"})
         assert isinstance(command_results.readable_output, str)
-        assert 'Mobile Detection(s) 1, 2 were successfully updated' in command_results.readable_output
+        assert "Mobile Detection(s) 1, 2 were successfully updated" in command_results.readable_output
+
+    def test_handle_resolve_detections(self, mocker: MockerFixture):
+        """
+        Given:
+            - Arguments for the handle_resolve_detections function.
+        When:
+            - Calling the handle_resolve_detections function.
+        Then:
+            - Verify that the http_request function is called once with the correct arguments.
+            - Validate the error message when assigning both assign_to_name and assign_to_user_id.
+        """
+        from CrowdStrikeFalcon import handle_resolve_detections
+
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        args = {"assign_to_name": "name"}
+        handle_resolve_detections(args, "")
+        assert http_request_mocker.call_count == 1
+
+        with pytest.raises(ValueError) as e:
+            args = {"assign_to_name": "name", "assign_to_user_id": "id"}
+            handle_resolve_detections(args, "")
+        assert "Only one of the arguments assign_to_uuid, assign_to_name, assign_to_user_id should be provided." in str(e)
 
 
 class TestIOAFetch:
-    # Since this integration fetches multiple incidents, the last run object contains a list of
-    # last run objects for each incident type, for IOA, that is the 5th position
-    @pytest.mark.parametrize('fetch_query, error_message',
-                             [('account_id=1', 'A cloud provider is required as part of the IOA fetch query'),
-                              ("cloud_provider!='aws'", 'An unsupported parameter has been entered'),
-                              ("cloud_provider='aws'&weird_param=val",
-                               'An unsupported parameter has been entered'),
-                              ("cloud_provider='aws'&state=", 'cannot be an empty string'),
-                              ("cloud_provider='aws'&state:val", 'does not match the parameter=value format'),
-                              ("cloud_provider='aws'&state==val", 'does not match the parameter=value format')])
-    def test_validate_ioa_fetch_query_error(self, fetch_query, error_message):
-        """
-        Given:
-            - An incorrect IOA fetch query to validate.
-        When
-            - Validating the query supplied by the user.
-        Then
-            - Validate that the correct error message is returned for the incorrect fetch query.
-        """
-        from CrowdStrikeFalcon import validate_ioa_fetch_query
-        with pytest.raises(DemistoException) as e:
-            validate_ioa_fetch_query(ioa_fetch_query=fetch_query)
-        assert error_message in str(e)
+    """Tests for IOA fetching via the new /alerts/queries/alerts/v2 + /alerts/entities/alerts/v2 flow."""
 
-    def test_fetch_query_with_paginating(self, mocker: MockerFixture):
-        """
-        Given:
-            - The query of the last fetch, and the next token.
-        When
-            - Performing pagination and receiving the next token from the previous run.
-        Then
-            - Validate that the last fetch query is used in the current run, and the next token is added to the API call.
-        """
-        from CrowdStrikeFalcon import fetch_incidents
-        fetch_query = 'cloud_provider=aws'
-        last_fetch_query = f'{fetch_query}&date_time_since=some_time'
-        ioa_next_token = 'dummy_token'
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'ioa_next_token': ioa_next_token,
-                                                  'last_fetch_query': last_fetch_query,
-                                                  'last_date_time_since': '2023-01-01T00:00:00Z'}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': fetch_query})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        fetch_incidents()
-        assert last_fetch_query in http_request_mocker.call_args_list[0][1].get('url_suffix')
-        assert f'next_token={ioa_next_token}' in http_request_mocker.call_args_list[0][1].get('url_suffix')
+    IOA_SAMPLE_ALERT = {
+        "composite_id": "20879a8064904ecfbb62c118a6a19411:fcs:ioa-211:d4724ce3-669d-43e7-9a08-5da491879e97",
+        "created_timestamp": "2026-04-20T22:49:16.583865066Z",
+        "updated_timestamp": "2026-04-20T22:49:16.583865066Z",
+        "id": "fcs:ioa-211:d4724ce3-669d-43e7-9a08-5da491879e97",
+        "product": "fcs",
+        "type": "cloud-ioa",
+        "severity": 70,
+        "severity_name": "High",
+        "name": "EC2 security group modified with new ingress rule allowing traffic from the public internet",
+        "display_name": "EC2 security group modified with new ingress rule allowing traffic from the public internet",
+        "cloud_provider": "aws",
+        "cloud_account_id": "537409938058",
+        "status": "new",
+    }
 
-    def test_fetch_query_with_paginating_empty_last_filter_error(self, mocker: MockerFixture):
-        """
-        Given:
-            - An empty query as the last fetch query, and the next token.
-        When
-            - Performing pagination and receiving the next token from the previous run.
-        Then
-            - Validate that an error is thrown if the last fetch filter is an empty string.
-        """
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'ioa_next_token': 'dummy_token',
-                                                  'last_fetch_query': '',
-                                                  'last_date_time_since': '2023-01-01T00:00:00Z'}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': 'cloud_provider=aws'})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.http_request')
-        with pytest.raises(DemistoException) as e:
-            fetch_incidents()
-        assert 'Last fetch query must not be empty when doing pagination' in str(e)
+    @staticmethod
+    def _build_query_response(composite_ids):
+        return {
+            "meta": {"pagination": {"offset": 0, "limit": 100, "total": len(composite_ids)}},
+            "resources": composite_ids,
+        }
 
-    def test_fetch_query_without_pagination(self, mocker: MockerFixture):
-        """
-        Given:
-            - The date_time_since date from the previous fetch, and the fetch query.
-        When
-            - Performing fetch without pagination.
-        Then
-            - Validate that the passed date_date_since date is appended to the supplied fetch query.
-        """
-        from CrowdStrikeFalcon import fetch_incidents
-        last_date_time_since = '2023-01-01T00:00:00Z'
-        fetch_query = 'cloud_provider=aws'
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'last_date_time_since': last_date_time_since}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': fetch_query})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        fetch_incidents()
-        assert fetch_query in http_request_mocker.call_args_list[0][1].get('url_suffix')
-        assert f'date_time_since={last_date_time_since}' in http_request_mocker.call_args_list[0][1].get('url_suffix')
+    @staticmethod
+    def _patch_xsoar_params(mocker, ioa_fetch_query: str = ""):
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "fetch_incidents_or_detections": ["Indicator of Attack"],
+                "ioa_fetch_query": ioa_fetch_query,
+                "incidents_per_fetch": 15,
+                "fetch_time": "3 days",
+            },
+        )
 
-    @pytest.mark.parametrize('next_toke_object, expected_next_token', [({'next_token': 'dummy_token'}, 'dummy_token'),
-                                                                       ({}, None)])
-    def test_return_values_get_ioa_events(self, mocker: MockerFixture, next_toke_object, expected_next_token):
-        """
-        Given:
-            - The response of the API when a pagination object is returned or not.
-        When
-            - Doing an API call to retrieve the IOA events.
-        Then
-            - Validate that we extract the events and next token from the raw response, if they exist.
-        """
-        from CrowdStrikeFalcon import get_ioa_events
-        exepcted_events = ['event_1', 'event_2']
-        raw_response = {'meta':
-                        {
-                            'pagination': next_toke_object
-                        },
-                        'resources': {'events': exepcted_events}
-                        }
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        events, next_token = get_ioa_events(ioa_fetch_query='some_query', ioa_next_token='not_important')
-        assert exepcted_events == events
-        assert expected_next_token == next_token
+    @staticmethod
+    def _last_run_with_ioa(last_run_size: int, ioa_data: dict | None = None):
+        last_run = create_empty_last_run(last_run_size)
+        if ioa_data is not None:
+            from CrowdStrikeFalcon import LastRunIndex, set_last_run_per_type
 
-    def test_ioa_events_pagination(self, mocker: MockerFixture):
-        """
-        Given:
-            - 2 responses from the API that includes a pagination object.
-        When
-            - Fetching incidents, and the fetch limit is greater than the API limit of a single call (If the fetch limit is 4,
-            and the API limit is 2, that means in each fetch, we should do 2 API calls, using pagination, to acquire 4 results, or
-            until no more results are found).
-        Then
-            - Validate that we do API calls using the correct pagination arguments, and that we get the next token so it can be
-            used in the next fetch round.
-        """
-        # We saved two responses, where both of them return a next token. We have that the api_limit=2,
-        # and the fetch_limit=3, that way, we would need to do a request twice, and on the second request,
-        # we would make it while having a limit of 1. We will check the arguments of the method get_ioa_events,
-        # and the return values of ioa_events_pagination.
-        from CrowdStrikeFalcon import ioa_events_pagination, get_ioa_events
-        page_1_raw_response = load_json('test_data/ioa_fetch_incidents.json/ioa_events_page_1_raw_response.json')
-        page_2_raw_response = load_json('test_data/ioa_fetch_incidents.json/ioa_events_page_2_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', side_effect=[page_1_raw_response, page_2_raw_response])
-        get_events_for_fetch_mocker = mocker.patch(
-            'CrowdStrikeFalcon.get_ioa_events', side_effect=get_ioa_events)
-        events, next_token = ioa_events_pagination(ioa_fetch_query='dummy_fetch_query',
-                                                   ioa_next_token='dummy_token',
-                                                   fetch_limit=3,
-                                                   api_limit=2)
-        # We retrieved 3 events from the pagination phase, therefore, we assert that we acquire them
-        assert events == [{'event_id': 'event_1'}, {'event_id': 'event_2'}, {'event_id': 'event_3'}]
-        # The first time we do pagination, we won't have any fetched incidents, and since the fetch limit is 3,
-        # and api limit is 2, that means we do an API request to retrieve the first 2 events
-        assert get_events_for_fetch_mocker.call_args_list[0][1].get('limit') == 2
-        # After the first API request, the second one should use the token that was retrieved from the previous request
-        assert get_events_for_fetch_mocker.call_args_list[1][1].get('ioa_next_token') == 'next_token_1'
-        # After the first pagination, we would have fetched two incidents, and only 1 incident is left, therefore, we
-        # do an API request with a limit of 1 in order to get the last incident of the current round
-        assert get_events_for_fetch_mocker.call_args_list[1][1].get('limit') == 1
-        # Since there are more results to be returned from the API, we assert that we get the next token so we can
-        # use it in the next fetching round
-        assert next_token == 'next_token_2'
+            set_last_run_per_type(last_run, index=LastRunIndex.IOA, data=ioa_data)
+        return last_run
 
-    def test_no_ioa_events_added_if_found_in_last_run(self, mocker: MockerFixture):
+    def test_fetch_items_ioa_happy_path(self, mocker: MockerFixture):
         """
         Given:
-            - The event ids of the last fetch run.
-        When
-            - Converting the fetched events to incidents.
-        Then
-            - Validate that we do not create incidents of events that have been fetched in the previous round.
+            - The IOA fetch type is selected and the query+entities endpoints return one alert.
+        When:
+            - Calling fetch_items.
+        Then:
+            - Validate the alerts/v2 query endpoint is hit with the compound product:'fcs'+type:'cloud-ioa' filter.
+            - Validate the alerts/v2 entities endpoint is hit with the composite id payload.
+            - Validate the resulting incident has the expected name/occurred/severity.
         """
-        # Make last_event_ids have the values ['1', '2'], and return the values ['2', '3'] when fetching,
-        # and once we enter the for loop to go over the fetched events, '2' will not get picked up, since it
-        # was already fetched, therfore, we check that in the returned incidents object, only the event with id '3'
-        # was added as an incident
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'last_event_ids': ['1', '2']}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': 'cloud_provider=aws'})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        # The function ioa_events_pagination returns the fetched events, and the next token (for the sake of testing, it is None)
-        mocker.patch('CrowdStrikeFalcon.ioa_events_pagination',
-                     return_value=([{'event_id': '2', 'event_created': '2023-01-01T00:00:00Z'},
-                                    {'event_id': '3', 'event_created': '2023-01-01T00:00:00Z'}], None))
-        mocker.patch('CrowdStrikeFalcon.reformat_timestamp', return_value='2023-01-01T00:00:00Z')
-        fetched_incidents = fetch_incidents()
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR
+
+        self._patch_xsoar_params(mocker)
+        mocker.patch.object(demisto, "getLastRun", return_value=self._last_run_with_ioa(TOTAL_FETCH_TYPE_XSOAR))
+
+        composite_id = self.IOA_SAMPLE_ALERT["composite_id"]
+        query_response = self._build_query_response([composite_id])
+        entities_response = {"resources": [dict(self.IOA_SAMPLE_ALERT)]}
+
+        http_request_mocker = mocker.patch(
+            "CrowdStrikeFalcon.http_request",
+            side_effect=[query_response, entities_response],
+        )
+        mocker.patch.object(demisto, "setLastRun")
+
+        _, fetched_incidents = fetch_items()
+
+        # Assert at least one HTTP request was issued and the first one targets the queries endpoint.
+        assert http_request_mocker.call_count >= 2
+        query_call = http_request_mocker.call_args_list[0]
+        query_url = query_call[0][1]
+        assert query_url.startswith("/alerts/queries/alerts/v2?filter=")
+        # The URL-encoded compound product+type filter must appear in the URL.
+        assert "product%3A%27fcs%27%2Btype%3A%27cloud-ioa%27" in query_url
+
+        # The second call should be the entities POST with the composite_ids payload.
+        entities_call = http_request_mocker.call_args_list[1]
+        assert entities_call[0][0] == "POST"
+        assert entities_call[0][1] == "/alerts/entities/alerts/v2"
+        entities_payload = json.loads(entities_call[1]["data"])
+        assert entities_payload == {"composite_ids": [composite_id]}
+
         assert len(fetched_incidents) == 1
-        rawJSON = json.loads(fetched_incidents[0].get('rawJSON'))
-        assert rawJSON.get('incident_type') == 'ioa_events'
-        assert rawJSON.get('event_id') == '3'
+        incident = fetched_incidents[0]
+        assert incident["name"] == f"Indicator of Attack ID: {composite_id}"
+        assert incident["occurred"] == self.IOA_SAMPLE_ALERT["created_timestamp"][:26] + "Z"
+        # severity_name="High" -> severity_string_to_int returns 3.
+        assert incident["severity"] == 3
+        raw = json.loads(incident["rawJSON"])
+        assert raw["composite_id"] == composite_id
+        assert raw["incident_type"] == "ioa_detection"
 
-    def test_save_fetched_events_when_paginating(self, mocker: MockerFixture):
+    def test_fetch_items_ioa_empty_response(self, mocker: MockerFixture):
         """
         Given:
-            - The event ids of the last fetch run.
-        When
-            - Saving the fetched event ids.
-        Then
-            - Validate that we add the newly fetched event ids to the previous ones, and not override them, when we are
-            doing pagination.
+            - The IOA fetch type is selected and the queries endpoint returns zero composite ids.
+        When:
+            - Calling fetch_items.
+        Then:
+            - Validate that only the queries endpoint is hit (the entities endpoint is skipped).
+            - Validate that no incidents are produced.
+            - Validate that setLastRun is still invoked so the cursor advances normally.
         """
-        # Make sure that we save all the events that have been fetched throught the whole pagination process,
-        # which can span on many fetches. We will have ids in last_event_ids (['1']), and configure that we are
-        # doing pagination, and that we fetched event '2', and in the new returned last run, the key last_event_ids
-        # has a value of ['1', '2']
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'last_event_ids': ['1']}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': 'cloud_provider=aws'})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.ioa_events_pagination',
-                     return_value=([{'event_id': '2', 'event_created': '2023-01-01T00:00:00Z'}], 'next_token'))
-        mocker.patch('CrowdStrikeFalcon.reformat_timestamp', return_value='2023-01-01T00:00:00Z')
-        set_last_run_mocker = mocker.patch.object(demisto, 'setLastRun', side_effect=demisto.setLastRun)
-        fetch_incidents()
-        assert set_last_run_mocker.call_args_list[0][0][0][4].get('last_event_ids') == ['2', '1']
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR
 
-    def test_save_fetched_events_when_starting_pagination(self, mocker: MockerFixture):
+        self._patch_xsoar_params(mocker)
+        mocker.patch.object(demisto, "getLastRun", return_value=self._last_run_with_ioa(TOTAL_FETCH_TYPE_XSOAR))
+
+        # Queries endpoint returns an empty `resources` list -> entities endpoint must not be called.
+        query_response = self._build_query_response([])
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request", return_value=query_response)
+        set_last_run_mocker = mocker.patch.object(demisto, "setLastRun")
+
+        _, fetched_incidents = fetch_items()
+
+        # Exactly one HTTP call: the queries endpoint. No entities POST when there are no ids.
+        assert http_request_mocker.call_count == 1
+        assert http_request_mocker.call_args_list[0][0][1].startswith("/alerts/queries/alerts/v2?filter=")
+        # No incidents from an empty response.
+        assert fetched_incidents == []
+        # last_run is still persisted so the time window advances.
+        assert set_last_run_mocker.call_count == 1
+
+    def test_fetch_items_ioa_api_error_propagates(self, mocker: MockerFixture):
         """
         Given:
-            - The event ids of the last fetch run.
-        When
-            - Saving the fetched event ids.
-        Then
-            - Validate that we add the newly fetched event ids to the previous ones, and not override them, when we are
-            going to start pagination in the next fetch run.
+            - The IOA fetch type is selected and the queries endpoint raises a DemistoException
+              (e.g. the alerts/v2 endpoint returned a non-200 response).
+        When:
+            - Calling fetch_items.
+        Then:
+            - The DemistoException propagates out of fetch_items (no silent swallow).
+            - The entities endpoint is never called and no last_run is persisted for this run.
         """
-        # Make sure that we save all the events that have been fetched before when starting the pagination process.
-        # We will have ids in last_event_ids (['1']), and configure that we are, doing pagination, and that we fetched event '2',
-        # and in the new returned last run, the key last_event_ids has a value of ['1', '2']
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'last_event_ids': ['1'], 'ioa_next_token': 'next_token',
-                                                  'last_fetch_query': 'cloud_provider=aws'}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': 'cloud_provider=aws'})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.ioa_events_pagination',
-                     return_value=([{'event_id': '2', 'event_created': '2023-01-01T00:00:00Z'}], None))
-        mocker.patch('CrowdStrikeFalcon.reformat_timestamp', return_value='2023-01-01T00:00:00Z')
-        set_last_run_mocker = mocker.patch.object(demisto, 'setLastRun', side_effect=demisto.setLastRun)
-        fetch_incidents()
-        assert set_last_run_mocker.call_args_list[0][0][0][4].get('last_event_ids') == ['2', '1']
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR
 
-    def test_fetch_ioa_events(self, mocker: MockerFixture):
+        self._patch_xsoar_params(mocker)
+        mocker.patch.object(demisto, "getLastRun", return_value=self._last_run_with_ioa(TOTAL_FETCH_TYPE_XSOAR))
+
+        api_error = DemistoException("Error in API call to CrowdStrike Falcon: code: 500 - reason: Internal Server Error")
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request", side_effect=api_error)
+        set_last_run_mocker = mocker.patch.object(demisto, "setLastRun")
+
+        with pytest.raises(DemistoException) as exc_info:
+            fetch_items()
+
+        assert "Internal Server Error" in str(exc_info.value)
+        # Only the queries call was attempted; the entities POST never happened.
+        assert http_request_mocker.call_count == 1
+        # Last run must not advance when the fetch failed.
+        set_last_run_mocker.assert_not_called()
+
+    def test_fetch_items_ioa_user_fetch_query_is_anded(self, mocker: MockerFixture):
         """
         Given:
-            - A last run object.
-        When
-            - Fetching IOA events.
-        Then
-            - Validate that we construct the correct last run object for the next run by:
-                1. The next token is saved.
-                2. The largest date_time_since date between the dates of all fetched events is saved.
-                3. The fetch query that was used in the API call is saved.
-                4. The fetched event ids are saved.
+            - A user-provided ioa_fetch_query value.
+        When:
+            - Calling fetch_items.
+        Then:
+            - Validate the filter URL is wrapped as `(<base>)+(<fetch_query>)`, URL-encoded.
         """
-        # A successful fetch of incidents
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {}, {},
-                                                 {'last_event_ids': ['1'], 'ioa_next_token': 'next_token',
-                                                  'last_fetch_query': 'last_dummy_query',
-                                                  'last_date_time_since': '2022-01-01T00:00:00Z'}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Attack',
-                                          'ioa_fetch_query': 'cloud_provider=aws'})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.ioa_events_pagination',
-                     return_value=([{'event_id': '3', 'event_created': '2024-01-01T00:00:00Z'},
-                                    {'event_id': '2', 'event_created': '2023-01-01T00:00:00Z'}], 'new_next_token'))
-        set_last_run_mocker = mocker.patch.object(demisto, 'setLastRun', side_effect=demisto.setLastRun)
-        fetched_incidents = fetch_incidents()
-        assert set_last_run_mocker.call_args_list[0][0][0][4] == {'ioa_next_token': 'new_next_token',
-                                                                  'last_date_time_since': '2024-01-01T00:00:00Z',
-                                                                  'last_fetch_query': 'last_dummy_query',
-                                                                  'last_event_ids': ['3', '2', '1']}
-        assert len(fetched_incidents) == 2
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR
+
+        user_fetch_query = "cloud_provider:'aws'"
+        self._patch_xsoar_params(mocker, ioa_fetch_query=user_fetch_query)
+        mocker.patch.object(demisto, "getLastRun", return_value=self._last_run_with_ioa(TOTAL_FETCH_TYPE_XSOAR))
+
+        query_response = self._build_query_response([])
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request", return_value=query_response)
+        mocker.patch.object(demisto, "setLastRun")
+
+        fetch_items()
+
+        query_url = http_request_mocker.call_args_list[0][0][1]
+        # The encoded base filter should appear wrapped in parentheses, followed by the encoded user query.
+        assert unquote(query_url).startswith("/alerts/queries/alerts/v2?filter=")
+        decoded_filter = unquote(query_url).split("?filter=", 1)[1]
+        assert decoded_filter.startswith("(product:'fcs'+type:'cloud-ioa'+created_timestamp:>'")
+        assert decoded_filter.endswith(f")+({user_fetch_query})")
+
+    def test_fetch_items_ioa_dedup_on_second_run(self, mocker: MockerFixture):
+        """
+        Given:
+            - A first fetch that consumes one IOA alert.
+        When:
+            - Running fetch_items a second time with the produced last_run and the same alert returned by the API.
+        Then:
+            - The second fetch must not produce duplicate incidents.
+        """
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR
+
+        self._patch_xsoar_params(mocker)
+
+        composite_id = self.IOA_SAMPLE_ALERT["composite_id"]
+        query_response = self._build_query_response([composite_id])
+        entities_response = {"resources": [dict(self.IOA_SAMPLE_ALERT)]}
+
+        # First fetch starts with an empty last_run and returns the alert.
+        # Second fetch reuses the produced last_run and is presented with the same alert again,
+        # which should be filtered out by the dedup machinery (latest_ids in update_last_run_object).
+        last_run_first = self._last_run_with_ioa(TOTAL_FETCH_TYPE_XSOAR)
+        last_run_for_fetch: list = [last_run_first]
+        mocker.patch.object(demisto, "getLastRun", side_effect=lambda: last_run_for_fetch[-1])
+
+        # Two fetch_items calls -> 4 http_request calls in total
+        # (1 query + 1 entities per call), all returning the same alert.
+        mocker.patch(
+            "CrowdStrikeFalcon.http_request",
+            side_effect=[query_response, entities_response, query_response, entities_response],
+        )
+
+        captured_last_runs: list = []
+        mocker.patch.object(demisto, "setLastRun", side_effect=lambda lr: captured_last_runs.append(lr))
+
+        _, first_incidents = fetch_items()
+        assert len(first_incidents) == 1
+        assert captured_last_runs, "Expected setLastRun to be invoked after the first fetch"
+
+        # Hand the produced last_run back to the next fetch via the side_effect closure.
+        last_run_for_fetch.append(captured_last_runs[-1])
+        _, second_incidents = fetch_items()
+        assert second_incidents == []
+
+    @pytest.mark.parametrize(
+        "severity_name, expected_xsoar_severity",
+        [
+            ("Critical", 3),
+            ("High", 3),
+            ("Medium", 2),
+            ("Low", 2),
+            ("Informational", 0),
+        ],
+    )
+    def test_ioa_severity_name_to_xsoar_severity(self, severity_name, expected_xsoar_severity):
+        """
+        Given:
+            - A severity_name string from an IOA alert payload.
+        When:
+            - Mapping it to an XSOAR severity via the shared severity_string_to_int helper.
+        Then:
+            - The expected XSOAR severity bucket is returned.
+        """
+        from CrowdStrikeFalcon import severity_string_to_int
+
+        assert severity_string_to_int(severity_name) == expected_xsoar_severity
 
 
 class TestIOMFetch:
     # Since this integration fetches multiple incidents, the last run object contains a list of
-    # last run objects for each incident type, for IOM, that is the 4th position
+    # last run objects for each incident type, for IOM, that is the 7th position
     def test_validate_iom_fetch_query(self):
         """
         Given:
@@ -6499,9 +6694,10 @@ class TestIOMFetch:
             - Validate that the correct error message is returned for the incorrect fetch query.
         """
         from CrowdStrikeFalcon import validate_iom_fetch_query
+
         with pytest.raises(DemistoException) as e:
-            validate_iom_fetch_query(iom_fetch_query='scan_time: >some_time')
-        assert 'scan_time is not allowed as part of the IOM fetch query' in str(e)
+            validate_iom_fetch_query(iom_fetch_query="scan_time: >some_time")
+        assert "scan_time is not allowed as part of the IOM fetch query" in str(e)
 
     def test_fetch_query_with_paginating(self, mocker: MockerFixture):
         """
@@ -6512,23 +6708,32 @@ class TestIOMFetch:
         Then
             - Validate that the last fetch query is used in the current run, and the next token is added to the API call.
         """
-        from CrowdStrikeFalcon import fetch_incidents
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
         fetch_filter = "cloud_provider: 'aws'"
-        last_fetch_filter = f'scan_time: some_time+{fetch_filter}'
-        iom_next_token = 'dummy_token'
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'iom_next_token': iom_next_token,
-                                                  'last_fetch_filter': last_fetch_filter,
-                                                  'last_scan_time': '2023-01-01T00:00:00.000000Z'},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': fetch_filter})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        fetch_incidents()
-        assert http_request_mocker.call_args_list[0][1].get('params').get('filter') == last_fetch_filter
-        assert http_request_mocker.call_args_list[0][1].get('params').get('next_token') == iom_next_token
+        last_fetch_filter = f"scan_time: some_time+{fetch_filter}"
+        iom_next_token = "dummy_token"
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object,
+            index=LastRunIndex.IOM,
+            data={
+                "iom_next_token": iom_next_token,
+                "last_fetch_filter": last_fetch_filter,
+                "last_scan_time": "2023-01-01T00:00:00.000000Z",
+            },
+        )
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={"fetch_incidents_or_detections": "Indicator of Misconfiguration", "iom_fetch_query": fetch_filter},
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        fetch_items()
+        assert http_request_mocker.call_args_list[0][1].get("params").get("filter") == last_fetch_filter
+        assert http_request_mocker.call_args_list[0][1].get("params").get("next_token") == iom_next_token
 
     def test_fetch_query_with_paginating_empty_last_filter_error(self, mocker: MockerFixture):
         """
@@ -6539,20 +6744,27 @@ class TestIOMFetch:
         Then
             - Validate that an error is thrown if the last fetch filter is an empty string.
         """
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'iom_next_token': 'dummy_token',
-                                                  'last_fetch_filter': '',
-                                                  'last_scan_time': '2023-01-01T00:00:00.000000Z'},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': "cloud_provider: 'aws'"})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.http_request')
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object,
+            index=LastRunIndex.IOM,
+            data={"iom_next_token": "dummy_token", "last_fetch_filter": "", "last_scan_time": "2023-01-01T00:00:00.000000Z"},
+        )
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "fetch_incidents_or_detections": "Indicator of Misconfiguration",
+                "iom_fetch_query": "cloud_provider: 'aws'",
+            },
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        mocker.patch("CrowdStrikeFalcon.http_request")
         with pytest.raises(DemistoException) as e:
-            fetch_incidents()
-        assert 'Last fetch filter must not be empty when doing pagination' in str(e)
+            fetch_items()
+        assert "Last fetch filter must not be empty when doing pagination" in str(e)
 
     def test_fetch_query_without_pagination_and_not_first_run(self, mocker: MockerFixture):
         """
@@ -6563,20 +6775,23 @@ class TestIOMFetch:
         Then
             - Validate that we append the last_scan_time date, while using '>' in the fetch query.
         """
-        from CrowdStrikeFalcon import fetch_incidents
-        last_scan_time = '2023-01-01T00:00:00.000000Z'
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        last_scan_time = "2023-01-01T00:00:00.000000Z"
         fetch_filter = "cloud_provider: 'aws'"
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'last_scan_time': last_scan_time},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': fetch_filter})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        fetch_incidents()
-        assert f"scan_time: >'{last_scan_time}'+{fetch_filter}" == \
-            http_request_mocker.call_args_list[0][1].get('params').get('filter')
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(last_run_object, index=LastRunIndex.IOM, data={"last_scan_time": last_scan_time})
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={"fetch_incidents_or_detections": "Indicator of Misconfiguration", "iom_fetch_query": fetch_filter},
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        fetch_items()
+        assert f"scan_time: >'{last_scan_time}'+{fetch_filter}" == http_request_mocker.call_args_list[0][1].get("params").get(
+            "filter"
+        )
 
     @freeze_time("2023-01-04T00:00:00Z")
     def test_fetch_query_without_pagination_and_first_run(self, mocker: MockerFixture):
@@ -6588,24 +6803,27 @@ class TestIOMFetch:
         Then
             - Validate that we append the last_scan_time date, while using '>=' in the fetch query.
         """
-        from CrowdStrikeFalcon import fetch_incidents
-        # The date configured in @freeze_time minues 3 days, which is the default FETCH_TIME
-        last_scan_time = '2023-01-01T00:00:00.000000Z'
-        fetch_filter = "cloud_provider: 'aws'"
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': fetch_filter})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
-        fetch_incidents()
-        assert f"scan_time: >='{last_scan_time}'+{fetch_filter}" == \
-            http_request_mocker.call_args_list[0][1].get('params').get('filter')
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR
 
-    @pytest.mark.parametrize('next_toke_object, expected_next_token', [({'next_token': 'dummy_token'}, 'dummy_token'),
-                                                                       ({}, None)])
+        # The date configured in @freeze_time minues 3 days, which is the default FETCH_TIME
+        last_scan_time = "2023-01-01T00:00:00.000000Z"
+        fetch_filter = "cloud_provider: 'aws'"
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={"fetch_incidents_or_detections": "Indicator of Misconfiguration", "iom_fetch_query": fetch_filter},
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+        fetch_items()
+        assert f"scan_time: >='{last_scan_time}'+{fetch_filter}" == http_request_mocker.call_args_list[0][1].get("params").get(
+            "filter"
+        )
+
+    @pytest.mark.parametrize(
+        "next_toke_object, expected_next_token", [({"next_token": "dummy_token"}, "dummy_token"), ({}, None)]
+    )
     def test_return_values_get_iom_resource_ids(self, mocker: MockerFixture, next_toke_object, expected_next_token):
         """
         Given:
@@ -6616,15 +6834,11 @@ class TestIOMFetch:
             - Validate that we extract the resources and next token from the raw response, if they exist.
         """
         from CrowdStrikeFalcon import get_iom_ids_for_fetch
-        exepcted_resource_ids = ['resource_1', 'resource_2']
-        raw_response = {'meta':
-                        {
-                            'pagination': next_toke_object
-                        },
-                        'resources': exepcted_resource_ids
-                        }
-        mocker.patch('CrowdStrikeFalcon.http_request', return_value=raw_response)
-        resource_ids, next_token = get_iom_ids_for_fetch(filter='some_filter', iom_next_token='not_important')
+
+        exepcted_resource_ids = ["resource_1", "resource_2"]
+        raw_response = {"meta": {"pagination": next_toke_object}, "resources": exepcted_resource_ids}
+        mocker.patch("CrowdStrikeFalcon.http_request", return_value=raw_response)
+        resource_ids, next_token = get_iom_ids_for_fetch(filter="some_filter", iom_next_token="not_important")
         assert exepcted_resource_ids == resource_ids
         assert expected_next_token == next_token
 
@@ -6644,29 +6858,26 @@ class TestIOMFetch:
         # and the fetch_limit=3, that way, we would need to do a request twice, and on the second request,
         # we would make it while having a limit of 1. We will check the arguments of the method get_iom_ids_for_fetch,
         # and the return values of iom_ids_pagination.
-        from CrowdStrikeFalcon import iom_ids_pagination, get_iom_ids_for_fetch
-        page_1_raw_response = load_json('test_data/iom_fetch_incidents/iom_resource_ids_page_1_raw_response.json')
-        page_2_raw_response = load_json('test_data/iom_fetch_incidents/iom_resource_ids_page_2_raw_response.json')
-        mocker.patch('CrowdStrikeFalcon.http_request', side_effect=[page_1_raw_response, page_2_raw_response])
-        get_events_for_fetch_mocker = mocker.patch(
-            'CrowdStrikeFalcon.get_iom_ids_for_fetch', side_effect=get_iom_ids_for_fetch)
-        events, next_token = iom_ids_pagination(filter='dummy_filter',
-                                                iom_next_token='dummy_token',
-                                                fetch_limit=3,
-                                                api_limit=2)
+        from CrowdStrikeFalcon import get_iom_ids_for_fetch, iom_ids_pagination
+
+        page_1_raw_response = load_json("test_data/iom_fetch_incidents/iom_resource_ids_page_1_raw_response.json")
+        page_2_raw_response = load_json("test_data/iom_fetch_incidents/iom_resource_ids_page_2_raw_response.json")
+        mocker.patch("CrowdStrikeFalcon.http_request", side_effect=[page_1_raw_response, page_2_raw_response])
+        get_events_for_fetch_mocker = mocker.patch("CrowdStrikeFalcon.get_iom_ids_for_fetch", side_effect=get_iom_ids_for_fetch)
+        events, next_token = iom_ids_pagination(filter="dummy_filter", iom_next_token="dummy_token", fetch_limit=3, api_limit=2)
         # We retrieved 3 events from the pagination phase, therefore, we assert that we acquire them
-        assert events == ['resource_1', 'resource_2', 'resource_3']
+        assert events == ["resource_1", "resource_2", "resource_3"]
         # The first time we do pagination, we won't have any fetched incidents, and since the fetch limit is 3,
         # and api limit is 2, that means we do an API request to retrieve the first 2 events
-        assert get_events_for_fetch_mocker.call_args_list[0][1].get('limit') == 2
+        assert get_events_for_fetch_mocker.call_args_list[0][1].get("limit") == 2
         # After the first API request, the second one should use the token that was retrieved from the previous request
-        assert get_events_for_fetch_mocker.call_args_list[1][1].get('iom_next_token') == 'next_token_1'
+        assert get_events_for_fetch_mocker.call_args_list[1][1].get("iom_next_token") == "next_token_1"
         # After the first pagination, we would have fetched two incidents, and only 1 incident is left, therefore, we
         # do an API request with a limit of 1 in order to get the last incident of the current round
-        assert get_events_for_fetch_mocker.call_args_list[1][1].get('limit') == 1
+        assert get_events_for_fetch_mocker.call_args_list[1][1].get("limit") == 1
         # Since there are more results to be returned from the API, we assert that we get the next token so we can
         # use it in the next fetching round
-        assert next_token == 'next_token_2'
+        assert next_token == "next_token_2"
 
     def test_no_iom_resources_added_if_found_in_last_run(self, mocker: MockerFixture):
         """
@@ -6681,26 +6892,35 @@ class TestIOMFetch:
         # and once we enter the for loop to go over the fetched resources, '2' will not get picked up, since it
         # was already fetched, therfore, we check that in the returned incidents object, only the resource with id '3'
         # was added as an incident
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'last_resource_ids': ['1', '2']},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': "cloud_provider: 'aws'"})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(last_run_object, index=LastRunIndex.IOM, data={"last_resource_ids": ["1", "2"]})
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "fetch_incidents_or_detections": "Indicator of Misconfiguration",
+                "iom_fetch_query": "cloud_provider: 'aws'",
+            },
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
         # The function iom_ids_pagination returns the ids of the fetched events, and the
         # next token (for the sake of testing, it is None)
-        mocker.patch('CrowdStrikeFalcon.iom_ids_pagination', return_value=(['2', '3'], None))
-        mocker.patch('CrowdStrikeFalcon.get_iom_resources',
-                     return_value=[{'id': '2', 'scan_time': '2023-01-01T00:00:00.00Z'},
-                                   {'id': '3', 'scan_time': '2023-01-01T00:00:00.00Z'}])
-        mocker.patch('CrowdStrikeFalcon.reformat_timestamp', return_value='2023-01-01T00:00:00.00Z')
-        fetched_incidents = fetch_incidents()
+        mocker.patch("CrowdStrikeFalcon.iom_ids_pagination", return_value=(["2", "3"], None))
+        mocker.patch(
+            "CrowdStrikeFalcon.get_iom_resources",
+            return_value=[
+                {"id": "2", "scan_time": "2023-01-01T00:00:00.00Z"},
+                {"id": "3", "scan_time": "2023-01-01T00:00:00.00Z"},
+            ],
+        )
+        mocker.patch("CrowdStrikeFalcon.reformat_timestamp", return_value="2023-01-01T00:00:00.00Z")
+        _, fetched_incidents = fetch_items()
         assert len(fetched_incidents) == 1
-        rawJSON = json.loads(fetched_incidents[0].get('rawJSON'))
-        assert rawJSON.get('incident_type') == 'iom_configurations'
-        assert rawJSON.get('id') == '3'
+        rawJSON = json.loads(fetched_incidents[0].get("rawJSON"))
+        assert rawJSON.get("incident_type") == "iom_configurations"
+        assert rawJSON.get("id") == "3"
 
     def test_save_fetched_resources_when_paginating(self, mocker: MockerFixture):
         """
@@ -6716,21 +6936,25 @@ class TestIOMFetch:
         # which can span on many fetches. We will have ids in last_resource_ids (['1']), and configure that we are
         # doing pagination, and that we fetched resource '2', and in the new returned last run, the key last_resource_ids
         # has a value of ['1', '2']
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'last_resource_ids': ['1']},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': "cloud_provider: 'aws'"})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.iom_ids_pagination', return_value=(['2'], 'next_token'))
-        mocker.patch('CrowdStrikeFalcon.get_iom_resources',
-                     return_value=[{'id': '2', 'scan_time': '2023-01-01T00:00:00.00Z'}])
-        mocker.patch('CrowdStrikeFalcon.reformat_timestamp', return_value='2023-01-01T00:00:00.00Z')
-        set_last_run_mocker = mocker.patch.object(demisto, 'setLastRun', side_effect=demisto.setLastRun)
-        fetch_incidents()
-        assert set_last_run_mocker.call_args_list[0][0][0][3].get('last_resource_ids') == ['2', '1']
+        from CrowdStrikeFalcon import fetch_items, LastRunIndex, TOTAL_FETCH_TYPE_XSOAR, set_last_run_per_type
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(last_run_object, index=LastRunIndex.IOM, data={"last_resource_ids": ["1"]})
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "fetch_incidents_or_detections": "Indicator of Misconfiguration",
+                "iom_fetch_query": "cloud_provider: 'aws'",
+            },
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        mocker.patch("CrowdStrikeFalcon.iom_ids_pagination", return_value=(["2"], "next_token"))
+        mocker.patch("CrowdStrikeFalcon.get_iom_resources", return_value=[{"id": "2", "scan_time": "2023-01-01T00:00:00.00Z"}])
+        mocker.patch("CrowdStrikeFalcon.reformat_timestamp", return_value="2023-01-01T00:00:00.00Z")
+        set_last_run_mocker = mocker.patch.object(demisto, "setLastRun", side_effect=demisto.setLastRun)
+        fetch_items()
+        assert set_last_run_mocker.call_args_list[0][0][0][LastRunIndex.IOM].get("last_resource_ids") == ["2", "1"]
 
     def test_save_fetched_resources_when_starting_pagination(self, mocker: MockerFixture):
         """
@@ -6745,22 +6969,29 @@ class TestIOMFetch:
         # Make sure that we save all the resources that have been fetched before when starting the pagination process.
         # We will have ids in last_resource_ids (['1']), and configure that we are, doing pagination, and that we fetched
         # resource '2', and in the new returned last run, the key last_resource_ids has a value of ['1', '2']
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'last_resource_ids': ['1'], 'iom_next_token': 'next_token',
-                                                  'last_fetch_filter': 'previous_filter'},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': "cloud_provider: 'aws'"})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
-        mocker.patch('CrowdStrikeFalcon.iom_ids_pagination', return_value=(['2'], None))
-        mocker.patch('CrowdStrikeFalcon.get_iom_resources',
-                     return_value=[{'id': '2', 'scan_time': '2023-01-01T00:00:00.00Z'}])
-        mocker.patch('CrowdStrikeFalcon.reformat_timestamp', return_value='2023-01-01T00:00:00.00Z')
-        set_last_run_mocker = mocker.patch.object(demisto, 'setLastRun', side_effect=demisto.setLastRun)
-        fetch_incidents()
-        assert set_last_run_mocker.call_args_list[0][0][0][3].get('last_resource_ids') == ['2', '1']
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
+
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object,
+            index=LastRunIndex.IOM,
+            data={"last_resource_ids": ["1"], "iom_next_token": "next_token", "last_fetch_filter": "previous_filter"},
+        )
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "fetch_incidents_or_detections": "Indicator of Misconfiguration",
+                "iom_fetch_query": "cloud_provider: 'aws'",
+            },
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+        mocker.patch("CrowdStrikeFalcon.iom_ids_pagination", return_value=(["2"], None))
+        mocker.patch("CrowdStrikeFalcon.get_iom_resources", return_value=[{"id": "2", "scan_time": "2023-01-01T00:00:00.00Z"}])
+        mocker.patch("CrowdStrikeFalcon.reformat_timestamp", return_value="2023-01-01T00:00:00.00Z")
+        set_last_run_mocker = mocker.patch.object(demisto, "setLastRun", side_effect=demisto.setLastRun)
+        fetch_items()
+        assert set_last_run_mocker.call_args_list[0][0][0][LastRunIndex.IOM].get("last_resource_ids") == ["2", "1"]
 
     def test_fetch_iom_events(self, mocker: MockerFixture):
         """
@@ -6776,27 +7007,45 @@ class TestIOMFetch:
                 4. The fetched resource ids are saved.
         """
         # A successful fetch of incidents
-        from CrowdStrikeFalcon import fetch_incidents
-        last_run_object: list[dict[str, Any]] = [{}, {}, {},
-                                                 {'last_resource_ids': ['1'], 'iom_next_token': 'next_token',
-                                                  'last_fetch_filter': 'last_dummy_filter',
-                                                  'last_scan_time': '2022-01-01T00:00:00.00Z'},
-                                                 {}]
-        mocker.patch.object(demisto, 'params',
-                            return_value={'fetch_incidents_or_detections': 'Indicator of Misconfiguration',
-                                          'iom_fetch_query': "cloud_provider: 'aws'"})
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run_object)
+        from CrowdStrikeFalcon import fetch_items, TOTAL_FETCH_TYPE_XSOAR, LastRunIndex, set_last_run_per_type
 
-        mocker.patch('CrowdStrikeFalcon.iom_ids_pagination', return_value=(['3', '2'], 'new_next_token'))
-        mocker.patch('CrowdStrikeFalcon.get_iom_resources',
-                     return_value=[{'id': '3', 'scan_time': '2024-01-01T00:00:00.00Z'},
-                                   {'id': '2', 'scan_time': '2023-01-01T00:00:00.00Z'}])
-        set_last_run_mocker = mocker.patch.object(demisto, 'setLastRun', side_effect=demisto.setLastRun)
-        fetched_incidents = fetch_incidents()
-        assert set_last_run_mocker.call_args_list[0][0][0][3] == {'iom_next_token': 'new_next_token',
-                                                                  'last_scan_time': '2024-01-01T00:00:00.000000Z',
-                                                                  'last_fetch_filter': 'last_dummy_filter',
-                                                                  'last_resource_ids': ['3', '2', '1']}
+        last_run_object = create_empty_last_run(TOTAL_FETCH_TYPE_XSOAR)
+        set_last_run_per_type(
+            last_run_object,
+            index=LastRunIndex.IOM,
+            data={
+                "last_resource_ids": ["1"],
+                "iom_next_token": "next_token",
+                "last_fetch_filter": "last_dummy_filter",
+                "last_scan_time": "2022-01-01T00:00:00.00Z",
+            },
+        )
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "fetch_incidents_or_detections": "Indicator of Misconfiguration",
+                "iom_fetch_query": "cloud_provider: 'aws'",
+            },
+        )
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run_object)
+
+        mocker.patch("CrowdStrikeFalcon.iom_ids_pagination", return_value=(["3", "2"], "new_next_token"))
+        mocker.patch(
+            "CrowdStrikeFalcon.get_iom_resources",
+            return_value=[
+                {"id": "3", "scan_time": "2024-01-01T00:00:00.00Z"},
+                {"id": "2", "scan_time": "2023-01-01T00:00:00.00Z"},
+            ],
+        )
+        set_last_run_mocker = mocker.patch.object(demisto, "setLastRun", side_effect=demisto.setLastRun)
+        _, fetched_incidents = fetch_items()
+        assert set_last_run_mocker.call_args_list[0][0][0][LastRunIndex.IOM] == {
+            "iom_next_token": "new_next_token",
+            "last_scan_time": "2024-01-01T00:00:00.000000Z",
+            "last_fetch_filter": "last_dummy_filter",
+            "last_resource_ids": ["3", "2", "1"],
+        }
         assert len(fetched_incidents) == 2
 
 
@@ -6813,10 +7062,17 @@ def test_list_detection_summaries_command_no_results(mocker):
      - The command not fails
     """
     from CrowdStrikeFalcon import list_detection_summaries_command
-    response = {'meta': {'query_time': 0.028057688, }, 'resources': [], 'errors': []}
-    mocker.patch('CrowdStrikeFalcon.http_request', return_value=response)
+
+    response = {
+        "meta": {
+            "query_time": 0.028057688,
+        },
+        "resources": [],
+        "errors": [],
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=response)
     res = list_detection_summaries_command()
-    assert res.readable_output == '### CrowdStrike Detections\n**No entries.**\n'
+    assert res.readable_output == "### CrowdStrike Detections\n**No entries.**\n"
 
 
 def test_run_command_batch_id(requests_mock, mocker):
@@ -6831,46 +7087,36 @@ def test_run_command_batch_id(requests_mock, mocker):
      - Check that the batch_id is correct.
     """
     from CrowdStrikeFalcon import run_command
-    args = {
-        'host_ids': 'host_id',
-        'command_type': 'ls',
-        'full_command': 'ls',
-        'batch_id': 'batch_id'
-    }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value=args
-    )
-    response = load_json('test_data/run_command/run_command_with_batch.json')
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-command/v1',
-        json=response,
-        status_code=201
-    )
+
+    args = {"host_ids": "host_id", "command_type": "ls", "full_command": "ls", "batch_id": "batch_id"}
+    mocker.patch.object(demisto, "args", return_value=args)
+    response = load_json("test_data/run_command/run_command_with_batch.json")
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-command/v1", json=response, status_code=201)
     results = run_command()
     expected_results = {
-        'CrowdStrike': {
-            'Command': [{
-                "BaseCommand": "ls",
-                "BatchID": "batch_id",
-                "Command": "ls",
-                "HostID": "aid",
-                "SessionID": "session_id",
-                "Stderr": "",
-                "Stdout": 'Directory listing for C:\\ -\n\n'
-                          'Name                                     Type         Size (bytes)    Size (MB)       '
-                          'Last Modified (UTC+2)     Created (UTC+2)          \n'
-                          '----                                     ----         ------------    ---------       '
-                          '---------------------     ---------------          \n'
-                          '$Recycle.Bin                             <Directory>  --              --              '
-                          '6/19/2023 4:11:43 PM      9/15/2018 10:19:00 AM    \n'
-                          'Config.Msi                               <Directory>  --              --              '
-                          '11/14/2023 1:56:25 AM     8/17/2023 1:49:07 AM     \n'
-            }]
+        "CrowdStrike": {
+            "Command": [
+                {
+                    "BaseCommand": "ls",
+                    "BatchID": "batch_id",
+                    "Command": "ls",
+                    "HostID": "aid",
+                    "SessionID": "session_id",
+                    "Stderr": "",
+                    "Stdout": "Directory listing for C:\\ -\n\n"
+                    "Name                                     Type         Size (bytes)    Size (MB)       "
+                    "Last Modified (UTC+2)     Created (UTC+2)          \n"
+                    "----                                     ----         ------------    ---------       "
+                    "---------------------     ---------------          \n"
+                    "$Recycle.Bin                             <Directory>  --              --              "
+                    "6/19/2023 4:11:43 PM      9/15/2018 10:19:00 AM    \n"
+                    "Config.Msi                               <Directory>  --              --              "
+                    "11/14/2023 1:56:25 AM     8/17/2023 1:49:07 AM     \n",
+                }
+            ]
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_run_command_without_batch_id(requests_mock, mocker):
@@ -6885,52 +7131,43 @@ def test_run_command_without_batch_id(requests_mock, mocker):
      - Check that the batch_id is correct.
     """
     from CrowdStrikeFalcon import run_command
+
     args = {
-        'host_ids': 'host_id',
-        'command_type': 'ls',
-        'full_command': 'ls',
+        "host_ids": "host_id",
+        "command_type": "ls",
+        "full_command": "ls",
     }
-    mocker.patch.object(
-        demisto,
-        'args',
-        return_value=args
-    )
+    mocker.patch.object(demisto, "args", return_value=args)
     requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-init-session/v1',
-        json={
-            'batch_id': 'new_batch_id'
-        },
-        status_code=201
+        f"{SERVER_URL}/real-time-response/combined/batch-init-session/v1", json={"batch_id": "new_batch_id"}, status_code=201
     )
-    response = load_json('test_data/run_command/run_command_with_batch.json')
-    requests_mock.post(
-        f'{SERVER_URL}/real-time-response/combined/batch-command/v1',
-        json=response,
-        status_code=201
-    )
+    response = load_json("test_data/run_command/run_command_with_batch.json")
+    requests_mock.post(f"{SERVER_URL}/real-time-response/combined/batch-command/v1", json=response, status_code=201)
     results = run_command()
     expected_results = {
-        'CrowdStrike': {
-            'Command': [{
-                "BaseCommand": "ls",
-                "BatchID": "new_batch_id",
-                "Command": "ls",
-                "HostID": "aid",
-                "SessionID": "session_id",
-                "Stderr": "",
-                "Stdout": 'Directory listing for C:\\ -\n\n'
-                          'Name                                     Type         Size (bytes)    Size (MB)       '
-                          'Last Modified (UTC+2)     Created (UTC+2)          \n'
-                          '----                                     ----         ------------    ---------       '
-                          '---------------------     ---------------          \n'
-                          '$Recycle.Bin                             <Directory>  --              --              '
-                          '6/19/2023 4:11:43 PM      9/15/2018 10:19:00 AM    \n'
-                          'Config.Msi                               <Directory>  --              --              '
-                          '11/14/2023 1:56:25 AM     8/17/2023 1:49:07 AM     \n'
-            }]
+        "CrowdStrike": {
+            "Command": [
+                {
+                    "BaseCommand": "ls",
+                    "BatchID": "new_batch_id",
+                    "Command": "ls",
+                    "HostID": "aid",
+                    "SessionID": "session_id",
+                    "Stderr": "",
+                    "Stdout": "Directory listing for C:\\ -\n\n"
+                    "Name                                     Type         Size (bytes)    Size (MB)       "
+                    "Last Modified (UTC+2)     Created (UTC+2)          \n"
+                    "----                                     ----         ------------    ---------       "
+                    "---------------------     ---------------          \n"
+                    "$Recycle.Bin                             <Directory>  --              --              "
+                    "6/19/2023 4:11:43 PM      9/15/2018 10:19:00 AM    \n"
+                    "Config.Msi                               <Directory>  --              --              "
+                    "11/14/2023 1:56:25 AM     8/17/2023 1:49:07 AM     \n",
+                }
+            ]
         }
     }
-    assert results['EntryContext'] == expected_results
+    assert results["EntryContext"] == expected_results
 
 
 def test_list_users_command(mocker):
@@ -6945,25 +7182,15 @@ def test_list_users_command(mocker):
      - Check that the command returns the correct results.
     """
     import CrowdStrikeFalcon
-    entities_api_mock = load_json('test_data/list_users_command/entities_users_response.json')
-    queries_api_mock = load_json('test_data/list_users_command/queries_users_response.json')
-    mocker.patch.object(CrowdStrikeFalcon, 'http_request', side_effect=[entities_api_mock, queries_api_mock])
+
+    entities_api_mock = load_json("test_data/list_users_command/entities_users_response.json")
+    queries_api_mock = load_json("test_data/list_users_command/queries_users_response.json")
+    mocker.patch.object(CrowdStrikeFalcon, "http_request", side_effect=[entities_api_mock, queries_api_mock])
 
     result = CrowdStrikeFalcon.cs_falcon_list_users_command(args={})
-    assert result.outputs_prefix == 'CrowdStrike.Users'
-    assert result.outputs_key_field == 'uuid'
-    assert result.outputs == queries_api_mock['resources']
-
-
-def test_get_incident_behavior_command(mocker):
-    import CrowdStrikeFalcon
-    api_mock = load_json('test_data/entities_behaviors_response.json')
-    mocker.patch.object(CrowdStrikeFalcon, 'http_request', return_value=api_mock)
-
-    result = CrowdStrikeFalcon.get_incident_behavior_command(args={'behavior_ids': 'ind:XX:XX'})
-    assert result.outputs_prefix == 'CrowdStrike.IncidentBehavior'
-    assert result.outputs_key_field == 'behavior_id'
-    assert result.outputs == api_mock['resources']
+    assert result.outputs_prefix == "CrowdStrike.Users"
+    assert result.outputs_key_field == "uuid"
+    assert result.outputs == queries_api_mock["resources"]
 
 
 def test_get_cve_command(mocker):
@@ -6977,17 +7204,29 @@ def test_get_cve_command(mocker):
     """
     import CrowdStrikeFalcon
 
-    raw1 = {"id": "CVE-2023-12345", "description": "A1", "published_date": "2023-12-10T10:15:00Z", "base_score": 10,
-            "vector": "A1B2C3D4", "cisa_info": {"due_date": "2023-12-24T00:00:00Z", "is_cisa_kev": True},
-            "actors": ["ALPHA", "BETA", "GAMMA"]}
-    raw2 = {"id": "CVE-2023-12345", "description": "A1", "published_date": "2023-12-10T10:15:00Z", "base_score": 10,
-            "vector": "A1B2C3D4", "cisa_info": {"due_date": "2023-12-24T00:00:00Z", "is_cisa_kev": False},
-            "actors": ["ALPHA", "BETA", "GAMMA"]}
-    http_response = {'resources': [{'cve': raw1}, {'cve': raw1}, {'cve': raw1}, {'cve': raw2}, {'cve': raw1}, {'cve': raw2}]}
+    raw1 = {
+        "id": "CVE-2023-12345",
+        "description": "A1",
+        "published_date": "2023-12-10T10:15:00Z",
+        "base_score": 10,
+        "vector": "A1B2C3D4",
+        "cisa_info": {"due_date": "2023-12-24T00:00:00Z", "is_cisa_kev": True},
+        "actors": ["ALPHA", "BETA", "GAMMA"],
+    }
+    raw2 = {
+        "id": "CVE-2023-12345",
+        "description": "A1",
+        "published_date": "2023-12-10T10:15:00Z",
+        "base_score": 10,
+        "vector": "A1B2C3D4",
+        "cisa_info": {"due_date": "2023-12-24T00:00:00Z", "is_cisa_kev": False},
+        "actors": ["ALPHA", "BETA", "GAMMA"],
+    }
+    http_response = {"resources": [{"cve": raw1}, {"cve": raw1}, {"cve": raw1}, {"cve": raw2}, {"cve": raw1}, {"cve": raw2}]}
 
-    mocker.patch.object(CrowdStrikeFalcon, 'http_request', return_value=http_response)
+    mocker.patch.object(CrowdStrikeFalcon, "http_request", return_value=http_response)
 
-    results = CrowdStrikeFalcon.get_cve_command(args={'cve': 'CVE-2023-12345'})
+    results = CrowdStrikeFalcon.get_cve_command(args={"cve": "CVE-2023-12345"})
     assert len(results) == 2
 
 
@@ -7001,18 +7240,16 @@ def test_http_request(mocker):
         - Validate that the in case of 429 error code, get_token() will be called again in order to create a new token and
             generic_http_request will be called again as well.
     """
-    from requests import Response
     from CrowdStrikeFalcon import http_request
+    from requests import Response
+
     res_429 = Response()
     res_429.status_code = 429
     res_200 = Response()
     res_200.status_code = 200
-    mock_request_get_token = mocker.patch('CrowdStrikeFalcon.get_token', return_value='token')
-    mock_request_generic_http_request = mocker.patch('CrowdStrikeFalcon.generic_http_request', side_effect=[res_429, res_200])
-    http_request(url_suffix='url_suffix',
-                 method='method',
-                 headers={},
-                 no_json=True)
+    mock_request_get_token = mocker.patch("CrowdStrikeFalcon.get_token", return_value="token")
+    mock_request_generic_http_request = mocker.patch("CrowdStrikeFalcon.generic_http_request", side_effect=[res_429, res_200])
+    http_request(url_suffix="url_suffix", method="method", headers={}, no_json=True)
     # validate that in a case of 429, we will try again
     assert mock_request_generic_http_request.call_count == 2
     assert mock_request_get_token.call_count == 2
@@ -7027,37 +7264,23 @@ def test_http_request_get_token_request(mocker):
     Then:
         - validate that the correct arguments were sent
     """
-    from requests import Response
     from CrowdStrikeFalcon import http_request
+    from requests import Response
+
     res_200 = Response()
     res_200.status_code = 200
-    mock_request_generic_http_request = mocker.patch('CrowdStrikeFalcon.generic_http_request', side_effect=[res_200])
-    mocker.patch.object(
-        demisto,
-        'params',
-        return_value={
-            'url': SERVER_URL,
-            'proxy': True
-        }
-    )
-    body = {
-        'client_id': 'client_id',
-        'client_secret': 'client_secret'
-    }
+    mock_request_generic_http_request = mocker.patch("CrowdStrikeFalcon.generic_http_request", side_effect=[res_200])
+    mocker.patch.object(demisto, "params", return_value={"url": SERVER_URL, "proxy": True})
+    body = {"client_id": "client_id", "client_secret": "client_secret"}
     retries = 5
     status_list_to_retry = [429]
     valid_status_codes = [200, 201, 202, 204]
     int_timeout = 60
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    method = 'POST'
-    url_suffix = '/oauth2/token'
-    http_request(url_suffix=url_suffix,
-                 method=method,
-                 data=body,
-                 get_token_flag=False,
-                 headers=headers,
-                 no_json=True)
-    headers['User-Agent'] = 'PANW-XSOAR'
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    method = "POST"
+    url_suffix = "/oauth2/token"
+    http_request(url_suffix=url_suffix, method=method, data=body, get_token_flag=False, headers=headers, no_json=True)
+    headers["User-Agent"] = "PANW-XSOAR"
     assert mock_request_generic_http_request.call_count == 1
     mock_request_generic_http_request.assert_called_with(
         method=method,
@@ -7068,14 +7291,15 @@ def test_http_request_get_token_request(mocker):
         files=ANY,
         params=ANY,
         proxy=ANY,
-        resp_type='response',
+        resp_type="response",
         verify=True,
         error_handler=ANY,
         json_data=ANY,
         timeout=int_timeout,
         ok_codes=valid_status_codes,
         retries=retries,
-        status_list_to_retry=status_list_to_retry)
+        status_list_to_retry=status_list_to_retry,
+    )
 
 
 def test_http_request_get_token_request_429(mocker, requests_mock):
@@ -7091,57 +7315,36 @@ def test_http_request_get_token_request_429(mocker, requests_mock):
     from CrowdStrikeFalcon import http_request
 
     requests_mock.post(
-        f'{SERVER_URL}/oauth2/token',
+        f"{SERVER_URL}/oauth2/token",
         json={
-            "meta": {
-                "query_time": 0.000875986,
-                "powered_by": "crowdstrike-api-gateway",
-                "trace_id": "trace_id"
-            },
-            "errors": [
-                {
-                    "code": 429,
-                    "message": "API rate limit exceeded."
-                }
-            ]
+            "meta": {"query_time": 0.000875986, "powered_by": "crowdstrike-api-gateway", "trace_id": "trace_id"},
+            "errors": [{"code": 429, "message": "API rate limit exceeded."}],
         },
-        status_code=429
+        status_code=429,
     )
-    mocker.patch.object(
-        demisto,
-        'params',
-        return_value={
-            'url': SERVER_URL,
-            'proxy': True
-        }
-    )
-    mock_request_generic_http_request = mocker.patch('CrowdStrikeFalcon.generic_http_request')
-    mock_request_error_handler = mocker.patch('CrowdStrikeFalcon.error_handler')
-    body = {
-        'client_id': 'client_id',
-        'client_secret': 'client_secret'
-    }
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    method = 'POST'
-    url_suffix = '/oauth2/token'
-    http_request(url_suffix=url_suffix,
-                 method=method,
-                 data=body,
-                 get_token_flag=False,
-                 headers=headers,
-                 no_json=True)
+    mocker.patch.object(demisto, "params", return_value={"url": SERVER_URL, "proxy": True})
+    mock_request_generic_http_request = mocker.patch("CrowdStrikeFalcon.generic_http_request")
+    mock_request_error_handler = mocker.patch("CrowdStrikeFalcon.error_handler")
+    body = {"client_id": "client_id", "client_secret": "client_secret"}
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    method = "POST"
+    url_suffix = "/oauth2/token"
+    http_request(url_suffix=url_suffix, method=method, data=body, get_token_flag=False, headers=headers, no_json=True)
     assert mock_request_generic_http_request.call_count == 1
     assert mock_request_error_handler.call_count == 1
 
 
 class ResMocker:
-    def __init__(self, http_response, status_code, reason):
+    def __init__(self, http_response, status_code, reason, text=None):
         self.http_response = http_response
         self.status_code = status_code
         self.reason = reason
         self.ok = False
+        self.text = text
 
     def json(self):
+        if self.http_response is None:
+            raise ValueError("No JSON object could be decoded")
         return self.http_response
 
 
@@ -7155,18 +7358,15 @@ def test_error_handler():
         - Validate that the error message contains the correct info
     """
     from CrowdStrikeFalcon import error_handler
+
     status_code = 429
     reason = "Too Many Requests API rate limit exceeded."
     res_json = {
         "meta": {
             "query_time": 0.00571046,
-            "pagination": {
-                "offset": 0,
-                "limit": 100,
-                "total": 2
-            },
+            "pagination": {"offset": 0, "limit": 100, "total": 2},
             "powered_by": "legacy-detects",
-            "trace_id": "11111111-1111-1111-1111-111111111111"
+            "trace_id": "11111111-1111-1111-1111-111111111111",
         },
         "errors": [],
     }
@@ -7175,76 +7375,139 @@ def test_error_handler():
     try:
         error_handler(arg_res)
     except DemistoException as e:
-        assert e.message == f'Error in API call to CrowdStrike Falcon: code: {status_code} - reason: {reason}'
+        assert e.message == f"Error in API call to CrowdStrike Falcon: code: {status_code} - reason: {reason}"
 
 
-@pytest.mark.parametrize('Legacy_version, url_suffix, expected_len', [
-    (False,
-     "alerts/queries/alerts/v2?filter=product%3A%27epp%27%2Btype%3A%27ldt%27%2Bcreated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27",
-     2),
-    (True, '/detects/queries/detects/v1', 3)
-])
-def test_get_detection___url_and_params(mocker, Legacy_version, url_suffix, expected_len):
+def test_error_handler_non_json_response():
     """
     Given:
-    - The `Legacy_version` flag
-When:
-    - Invoking `get_fetch_detections` with various input parameters
-Then:
-    - Verify that the correct `url_suffix` is used
+        - A response from the API that returns a non-JSON body (e.g., text/plain from NGSIEM errors).
+    When:
+        - Running error_handler
+    Then:
+        - Validate that the error message contains the status code, reason, and the plain-text body content.
+        - Validate that the body is truncated to 4000 characters.
+    """
+    from CrowdStrikeFalcon import error_handler
 
-Test Scenarios:
-    1. When `Legacy_version` is False, the `url_suffix` should be:
-       "alerts/queries/alerts/v2?filter=product%3A%27epp%27%2Btype%3A%27ldt%27%2Bcreated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27"
-       since all parameters are part of the URL and are URL-encoded, and the expected len should be 2 since no parameters
-       are passed.
-    2. When `Legacy_version` is True, the `url_suffix` should be:
-       "/detects/queries/detects/v1" and the expected len is 3 since all the provided parameters are passed under 'parameters'.
+    status_code = 500
+    reason = "Internal Server Error"
+    plain_text_body = "SearchQueryParsingError: Error parsing query at line 1:0"
+
+    arg_res = ResMocker(None, status_code, reason, text=plain_text_body)
+    with pytest.raises(DemistoException) as e:
+        error_handler(arg_res)
+    assert e.value.message == (
+        f"Error in API call to CrowdStrike Falcon: code: {status_code} - reason: {reason}\n{plain_text_body}"
+    )
+
+
+@pytest.mark.parametrize(
+    "url_suffix, expected_len, filter_args",
+    [
+        (
+            "alerts/queries/alerts/v2?filter=product%3A%27ngsiem%27%2Bcreated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27",
+            3,
+            "product:'ngsiem'+created_timestamp:>'2024-06-19T15:25:00Z'",
+        ),
+        ("alerts/queries/alerts/v2?filter=", 3, None),
+    ],
+)
+def test_get_detection___url_and_params(mocker, url_suffix, expected_len, filter_args):
+    """
+    Given:
+        - Input arguments including `filter_args` and a mocked HTTP request.
+    When:
+        - Invoking `get_fetch_detections` with various input parameters
+    Then:
+        - Verify that the correct `url_suffix` is used
+
+    Test Scenarios:
+        1. When `Legacy_version` is False, the `url_suffix` should be:
+           "alerts/queries/alerts/v2?filter=product%3A%27ngsiem%27%2Bcreated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27"
+           since all parameters are part of the URL and are URL-encoded, aand the expected len is 3 since all the
+           provided parameters are passed under 'parameters'
+        2. When `Legacy_version` is False, the `url_suffix` should be:
+           "alerts/queries/alerts/v2?filter=product%3A%27epp%27%2Btype%3A%27ldt%27%"
+           filter
+           since all parameters are part of the URL and are URL-encoded, and the expected len is 3 since all the
+           provided parameters are passed under 'parameters'
+        3. When `Legacy_version` is True, the `url_suffix` should be:
+           "/detects/queries/detects/v1" and the expected len is 3 since all the
+           provided parameters are passed under 'parameters'.
     """
     from CrowdStrikeFalcon import get_detections
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
 
-    get_detections(last_behavior_time='2024-06-19T15:25:00Z', behavior_id=123,
-                   filter_arg="created_timestamp:>'2024-06-19T15:25:00Z'")
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+
+    get_detections(last_behavior_time="2024-06-19T15:25:00Z", behavior_id=123, filter_arg=filter_args)
     assert http_request_mocker.call_args_list[0][0][1] == url_suffix
     assert len(http_request_mocker.call_args_list[0][0]) == expected_len
 
 
-@pytest.mark.parametrize('Legacy_version, tag, url_suffix, data', [
-    (False, "test_tag", "/alerts/entities/alerts/v3",
-     '{"action_parameters": [{"name": "show_in_ui", "value": "True"}, {"name": "assign_to_uuid", "value": "123"}, {"name": "update_status", "value": "resolved"}, {"name": "append_comment", "value": "comment"}, {"name": "add_tag", "value": "test_tag"}], "composite_ids": ["123"]}'),  # noqa: E501
-    (True, None, '/detects/entities/detects/v2',
-     '{"ids": ["123"], "status": "resolved", "assigned_to_uuid": "123", "show_in_ui": "True", "comment": "comment"}')
-                                                             ])
-def test_resolve_detection(mocker, Legacy_version, tag, url_suffix, data):
+@pytest.mark.parametrize(
+    "tag, url_suffix, data",
+    [
+        (
+            "test_tag",
+            "/alerts/entities/alerts/v3",
+            '{"action_parameters": [{"name": "show_in_ui", "value": "True"}, {"name": "assign_to_uuid", "value": "123"}, {"name": "update_status", "value": "resolved"}, {"name": "append_comment", "value": "comment"}, {"name": "add_tag", "value": "test_tag"}], "composite_ids": ["123"]}',  # noqa: E501
+        ),
+    ],
+)
+def test_resolve_detection(mocker, tag, url_suffix, data):
     """
     Given:
-        - The Legacy_version flag
+        - tag, url_suffix and data.
     When:
         - Running resolve_detection
     Then:
-        - Validate that the correct url_suffix is used
-            case 1: Legacy_version is False, the url_suffix should be alerts/entities/alerts/v2
-            case 2: Legacy_version is True, the url_suffix should be /detects/entities/detects/v1
+        Validate that the correct url_suffix is used
+        the url_suffix should be alerts/entities/alerts/v3
     """
     from CrowdStrikeFalcon import resolve_detection
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
 
-    resolve_detection(ids=["123"], status="resolved", assigned_to_uuid="123", show_in_ui="True", comment="comment", tag=tag)
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+
+    resolve_detection(
+        ids=["123"], status="resolved", assigned_to_uuid="123", username=None, show_in_ui="True", comment="comment", tag=tag
+    )
     assert http_request_mocker.call_args_list[0][0][1] == url_suffix
     assert http_request_mocker.call_args_list[0][1]["data"] == data
 
 
-@pytest.mark.parametrize('Legacy_version, url_suffix, request_params', [
-    (False,
-     "/alerts/queries/alerts/v2?filter=product%3A%27epp%27%2Btype%3A%27ldt%27%2Bupdated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27",
-     {'sort': 'first_behavior.asc', 'offset': 5, 'limit': 3}),
-    (True, '/detects/queries/detects/v1', {'sort': 'first_behavior.asc',
-     'offset': 5, 'limit': 3, 'filter': "date_updated:>'2024-06-19T15:25:00Z'"})
-])
-def test_get_fetch_detections__url(mocker, Legacy_version, url_suffix, request_params):
+def test_resolve_detection_username_not_legacy(mocker):
+    """
+    Given:
+        - A username is provided to assign detection to
+    When:
+        - Running resolve_detection not in legacy mode
+    Then:
+        - The username to uuid function should not be called and data containing the username should be sent
+    """
+    from CrowdStrikeFalcon import resolve_detection_command
+
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+    mocker.patch("CrowdStrikeFalcon.demisto.args", return_value={"ids": ["123"], "username": "username"})
+
+    expected_data = json.dumps(
+        {"action_parameters": [{"name": "assign_to_user_id", "value": "username"}], "composite_ids": ["123"]}
+    )
+
+    resolve_detection_command()
+    assert http_request_mocker.call_args_list[0][1]["data"] == expected_data
+
+
+@pytest.mark.parametrize(
+    "url_suffix, request_params",
+    [
+        (
+            "/alerts/queries/alerts/v2?filter=product%3A%27epp%27%2Btype%3A%27ldt%27%2Bupdated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27",
+            {"sort": "created_timestamp.asc", "offset": 5, "limit": 3},
+        ),
+    ],
+)
+def test_get_fetch_detections__url(mocker, url_suffix, request_params):
     """
     Given:
         - The `Legacy_version` flag
@@ -7254,28 +7517,21 @@ def test_get_fetch_detections__url(mocker, Legacy_version, url_suffix, request_p
         - Verify that the correct `url_suffix` is used and the input parameters are correctly passed
 
     Test Scenarios:
-        1. When `Legacy_version` is False, the `url_suffix` should be:
+        the `url_suffix` should be:
         '/alerts/queries/alerts/v2?filter=product%3A%27epp%27%2Btype%3A%27ldt%27%2Bupdated_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27'
         All parameters (except 'limit') are part of the URL and are URL-encoded.
-        2. When `Legacy_version` is True, the `url_suffix` should be "/detects/queries/detects/v1"
-        All the provided parameters are passed under 'parameters'.
     """
     from CrowdStrikeFalcon import get_fetch_detections
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
 
-    get_fetch_detections(filter_arg=None, offset=5,
-                         last_updated_timestamp='2024-06-19T15:25:00Z',
-                         has_limit=True, limit=3)
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
+
+    get_fetch_detections(filter_arg=None, offset=5, last_updated_timestamp="2024-06-19T15:25:00Z", has_limit=True, limit=3)
 
     assert http_request_mocker.call_args_list[0][0][1] == url_suffix
     assert http_request_mocker.call_args_list[0][0][2] == request_params
 
 
-@pytest.mark.parametrize('Legacy_version, expected_output', [
-    (False, [{'status': 'open', 'max_severity': 'critical', 'detection_id': '123', 'created_time': '2022-01-01T00:00:00Z'}]),
-    (True, [{'status': 'open', 'max_severity': 'high', 'detection_id': '123', 'created_time': '2022-01-01T00:00:00Z'}])])
-def test_detections_to_human_readable(mocker, expected_output, Legacy_version):
+def test_detections_to_human_readable(mocker):
     """
     Given:
         - The Legacy_version flag
@@ -7285,10 +7541,20 @@ def test_detections_to_human_readable(mocker, expected_output, Legacy_version):
         - Validate that the correct output is returned based on the Legacy_version flag
     """
     from CrowdStrikeFalcon import detections_to_human_readable
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    mock_table_to_markdown = mocker.patch('CrowdStrikeFalcon.tableToMarkdown')
-    input = {'status': 'open', 'max_severity_displayname': 'high', 'detection_id': '123',
-             'created_timestamp': '2022-01-01T00:00:00Z', 'severity_name': 'critical'},
+
+    expected_output = [
+        {"status": "open", "max_severity": "critical", "detection_id": "123", "created_time": "2022-01-01T00:00:00Z"}
+    ]
+    mock_table_to_markdown = mocker.patch("CrowdStrikeFalcon.tableToMarkdown")
+    input = (
+        {
+            "status": "open",
+            "max_severity_displayname": "high",
+            "detection_id": "123",
+            "created_timestamp": "2022-01-01T00:00:00Z",
+            "severity_name": "critical",
+        },
+    )
     detections_to_human_readable(input)
 
     assert mock_table_to_markdown.call_args[0][1] == expected_output
@@ -7312,9 +7578,13 @@ def test_modify_detection_summaries_outputs():
         "filename": "file",
         "cmdline": "cmd",
         "pattern_disposition": "disposition",
-        "parent_details": {"sha256": "parent_sha256_test", "cmdline": "parent_cmd_test",
-                           "md5": "parent_md5_test", "process_graph_id": "parent_id_test"},
-        "composite_id": "composite"
+        "parent_details": {
+            "sha256": "parent_sha256_test",
+            "cmdline": "parent_cmd_test",
+            "md5": "parent_md5_test",
+            "process_graph_id": "parent_id_test",
+        },
+        "composite_id": "composite",
     }
 
     modified_detection = modify_detection_summaries_outputs(detection)
@@ -7340,74 +7610,67 @@ def test_truncate_long_time_str():
     """
     from CrowdStrikeFalcon import truncate_long_time_str
 
-    detections = [{"time": "2022-01-01T00:00:00.000000000000000000000000000Z"},
-                  {"time": "2022-01-01T00:00:00.000000Z"},
-                  {"time": "2022-01-01T00:00:00.000000000000000000000000000Z"},
-                  {"time": "2022-01-01T00:00:00Z"}
-                  ]
+    detections = [
+        {"time": "2022-01-01T00:00:00.000000000000000000000000000Z"},
+        {"time": "2022-01-01T00:00:00.000000Z"},
+        {"time": "2022-01-01T00:00:00.000000000000000000000000000Z"},
+        {"time": "2022-01-01T00:00:00Z"},
+    ]
     time_key = "time"
 
-    assert truncate_long_time_str(detections, time_key) == [{'time': '2022-01-01T00:00:00.000000Z'},
-                                                            {'time': '2022-01-01T00:00:00.000000Z'},
-                                                            {'time': '2022-01-01T00:00:00.000000Z'},
-                                                            {"time": "2022-01-01T00:00:00Z"}
-                                                            ]
+    assert truncate_long_time_str(detections, time_key) == [
+        {"time": "2022-01-01T00:00:00.000000Z"},
+        {"time": "2022-01-01T00:00:00.000000Z"},
+        {"time": "2022-01-01T00:00:00.000000Z"},
+        {"time": "2022-01-01T00:00:00Z"},
+    ]
 
 
-@pytest.mark.parametrize('Legacy_version, expected_url', [
-    (False, '/alerts/entities/alerts/v2'),
-    (True, '/detects/entities/summaries/GET/v1')
-])
-def test_get_detections_entities__url(mocker, Legacy_version, expected_url):
+def test_get_detections_entities__url(mocker):
     """
-    Given:
-        - The Legacy_version flag
     When:
         - Running get_detections_entities
     Then:
         - Validate that the correct url is used based on the Legacy_version flag
     """
     from CrowdStrikeFalcon import get_detections_entities
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
+
+    expected_url = "/alerts/entities/alerts/v2"
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
     get_detections_entities(["123"])
     assert http_request_mocker.call_args_list[0][0][1] == expected_url
 
 
-@pytest.mark.parametrize('Legacy_version, expected_url, exepted_parameters', [
-    (False, '/alerts/queries/alerts/v2?filter=created_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27',
-     {'sort': 'created_timestamp.asc', 'offset': 0, 'limit': 2}),
-    (True, '/alerts/queries/alerts/v1',
-     {'sort': 'created_timestamp.asc', 'offset': 0, 'filter': "created_timestamp:>'2024-06-19T15:25:00Z'", 'limit': 2}
-     )
-])
-def test_get_detections_ids__url_and_params(mocker, Legacy_version, expected_url, exepted_parameters):
+@pytest.mark.parametrize(
+    "expected_url, expected_parameters",
+    [
+        (
+            "/alerts/queries/alerts/v2?filter=created_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27",
+            {"sort": "created_timestamp.asc", "offset": 0, "limit": 2},
+        ),
+    ],
+)
+def test_get_detections_ids__url_and_params(mocker, expected_url, expected_parameters):
     """
     Given:
-        - The Legacy_version flag
+        - Input arguments including expected_url and expected_parameters.
     When:
         - Running get_detections_ids
     Then:
-        - Validate that the correct url and params are sent based on the Legacy_version flag
-        case 1:
-            Legacy_version is False, the url_suffix should be:
-            '/alerts/queries/alerts/v2?filter=created_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27'
-            and the parameters are passed under are:
-            {'sort': 'created_timestamp.asc', 'offset': 0, 'limit': 2}
-        case 2:
-            Legacy_version is True, the url_suffix should be:
-            '/alerts/queries/alerts/v1'
-            and the parameters are passed under are:
-            {'sort': 'created_timestamp.asc', 'offset': 0, 'filter': "created_timestamp:>'2024-06-19T15:25:00Z'", 'limit': 2}
+        Validate that the correct url and params are sent based on the Legacy_version flag
+        the url_suffix should be:
+        '/alerts/queries/alerts/v2?filter=created_timestamp%3A%3E%272024-06-19T15%3A25%3A00Z%27'
+        and the parameters are passed under are:
+        {'sort': 'created_timestamp.asc', 'offset': 0, 'limit': 2}
 
 
     """
     from CrowdStrikeFalcon import get_detections_ids
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
+
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
     get_detections_ids(filter_arg="created_timestamp:>'2024-06-19T15:25:00Z'")
     assert http_request_mocker.call_args_list[0][0][1] == expected_url
-    assert http_request_mocker.call_args_list[0][0][2] == exepted_parameters
+    assert http_request_mocker.call_args_list[0][0][2] == expected_parameters
 
 
 def test_modify_detection_outputs(mocker):
@@ -7420,54 +7683,58 @@ def test_modify_detection_outputs(mocker):
         - Validate that the output is correctly modified
     """
     from CrowdStrikeFalcon import modify_detection_outputs
-    mocker.patch('CrowdStrikeFalcon.DETECTIONS_BEHAVIORS_KEY_MAP', {"key1": "value1", "key2": "value2"})
 
-    detection = {"key1": "value1", "key2": "value2", "key3": "value3", "parent_details": "details",
-                 "triggering_process_graph_id": "id", "testing": "test"}
+    mocker.patch("CrowdStrikeFalcon.DETECTIONS_BEHAVIORS_KEY_MAP", {"key1": "value1", "key2": "value2"})
 
-    assert modify_detection_outputs(detection) == {'key3': 'value3', 'testing': 'test',
-                                                   'behaviors': [{'key1': 'value1',
-                                                                  'key2': 'value2',
-                                                                  'parent_details': 'details',
-                                                                  'triggering_process_graph_id': 'id'}]}
+    detection = {
+        "key1": "value1",
+        "key2": "value2",
+        "key3": "value3",
+        "parent_details": "details",
+        "triggering_process_graph_id": "id",
+        "testing": "test",
+    }
+
+    assert modify_detection_outputs(detection) == {
+        "key3": "value3",
+        "testing": "test",
+        "behaviors": [{"key1": "value1", "key2": "value2", "parent_details": "details", "triggering_process_graph_id": "id"}],
+    }
 
 
-@pytest.mark.parametrize('Legacy_version, expected_results', [
-    (False, {'action_parameters': [{'name': 'key1', 'value': 'value1'}], 'composite_ids': ['123']}),
-    (True, {'action_parameters': [{'name': 'key1', 'value': 'value1'}], 'ids': ['123']})
-])
-def test_resolve_detections_prepare_body_request(mocker, Legacy_version, expected_results):
+@pytest.mark.parametrize(
+    "expected_results",
+    [
+        ({"action_parameters": [{"name": "key1", "value": "value1"}], "composite_ids": ["123"]}),
+    ],
+)
+def test_resolve_detections_prepare_body_request(mocker, expected_results):
     """
     Given:
-        - The Legacy_version flag
+        - action_parameters
     When:
         - Running resolve_detections_prepare_body_request
     Then:
         - Validate that the correct body is returned based on the Legacy_version flag
     """
     from CrowdStrikeFalcon import resolve_detections_prepare_body_request
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
+
     assert resolve_detections_prepare_body_request(ids=["123"], action_params_values={"key1": "value1"}) == expected_results
 
 
-@pytest.mark.parametrize('Legacy_version, expected_url', [
-    (False, '/alerts/entities/alerts/v3'),
-    (True, '/alerts/entities/alerts/v2')
-])
-def test_resolve_detections_request__url(mocker, Legacy_version, expected_url):
+def test_resolve_detections_request__url(mocker):
     """
-    Given:
-        - The Legacy_version flag
     When:
         - Running resolve_detections_request
     Then:
         - Validate that the correct url is used based on the Legacy_version flag
     """
     from CrowdStrikeFalcon import resolve_detections_request
-    mocker.patch('CrowdStrikeFalcon.LEGACY_VERSION', Legacy_version)
-    http_request_mocker = mocker.patch('CrowdStrikeFalcon.http_request')
+
+    expected_url = "/alerts/entities/alerts/v3"
+    http_request_mocker = mocker.patch("CrowdStrikeFalcon.http_request")
     resolve_detections_request(ids=["123"])
-    assert http_request_mocker.call_args_list[0][1]['url_suffix'] == expected_url
+    assert http_request_mocker.call_args_list[0][1]["url_suffix"] == expected_url
 
 
 def test_get_status(mocker):
@@ -7480,20 +7747,28 @@ def test_get_status(mocker):
         - Validate that the contains the ids and state
     """
     import CrowdStrikeFalcon
-    device_ids = ["0bde2c4645294245aca522971ccc4567", "04a75a2d15b44a5995c9c17200ad1212", "046761c46ec84f40b27b6f79ce7c6543",
-                  "8ed44198a6f64f9fabd0479c30989876", "d4210a0957e640f18c237a2fa1141122"]
 
-    response = load_json('test_data/online_states_response.json')
+    device_ids = [
+        "0bde2c4645294245aca522971ccc4567",
+        "04a75a2d15b44a5995c9c17200ad1212",
+        "046761c46ec84f40b27b6f79ce7c6543",
+        "8ed44198a6f64f9fabd0479c30989876",
+        "d4210a0957e640f18c237a2fa1141122",
+    ]
 
-    mocker.patch.object(CrowdStrikeFalcon, 'http_request', return_value=response)
+    response = load_json("test_data/online_states_response.json")
+
+    mocker.patch.object(CrowdStrikeFalcon, "http_request", return_value=response)
 
     results = CrowdStrikeFalcon.get_status(device_ids)
     assert len(results) == 5
-    assert results == {'0bde2c4645294245aca522971ccc4567': 'Online',
-                       '04a75a2d15b44a5995c9c17200ad1212': 'Online',
-                       '046761c46ec84f40b27b6f79ce7c6543': 'Online',
-                       '8ed44198a6f64f9fabd0479c30989876': 'Online',
-                       'd4210a0957e640f18c237a2fa1141122': 'Online'}
+    assert results == {
+        "0bde2c4645294245aca522971ccc4567": "Online",
+        "04a75a2d15b44a5995c9c17200ad1212": "Online",
+        "046761c46ec84f40b27b6f79ce7c6543": "Online",
+        "8ed44198a6f64f9fabd0479c30989876": "Online",
+        "d4210a0957e640f18c237a2fa1141122": "Online",
+    }
 
 
 def test_fix_time_field():
@@ -7506,23 +7781,18 @@ def test_fix_time_field():
         - Validate that the value of the given key in the detection was updated correctly.
     """
     from CrowdStrikeFalcon import fix_time_field
-    detection_1 = {
-        'created_timestamp': '2023-04-20T11:13:10.424647194Z'
-    }
-    detection_2 = {
-        'created_timestamp': '2023-04-20T11:13:10.424647Z'
-    }
-    detection_3 = {
-        'created_timestamp': '2023-04-20T11:13:10.424Z'
-    }
 
-    fix_time_field(detection_1, 'created_timestamp')
-    fix_time_field(detection_2, 'created_timestamp')
-    fix_time_field(detection_3, 'created_timestamp')
+    detection_1 = {"created_timestamp": "2023-04-20T11:13:10.424647194Z"}
+    detection_2 = {"created_timestamp": "2023-04-20T11:13:10.424647Z"}
+    detection_3 = {"created_timestamp": "2023-04-20T11:13:10.424Z"}
 
-    assert detection_1['created_timestamp'] == '2023-04-20T11:13:10.424647Z'
-    assert detection_2['created_timestamp'] == '2023-04-20T11:13:10.424647Z'
-    assert detection_3['created_timestamp'] == '2023-04-20T11:13:10.424Z'
+    fix_time_field(detection_1, "created_timestamp")
+    fix_time_field(detection_2, "created_timestamp")
+    fix_time_field(detection_3, "created_timestamp")
+
+    assert detection_1["created_timestamp"] == "2023-04-20T11:13:10.424647Z"
+    assert detection_2["created_timestamp"] == "2023-04-20T11:13:10.424647Z"
+    assert detection_3["created_timestamp"] == "2023-04-20T11:13:10.424Z"
 
 
 def test_enrich_groups_no_resources(mocker):
@@ -7538,6 +7808,7352 @@ def test_enrich_groups_no_resources(mocker):
 
     group_ids = "test_group_id"
 
-    mocker.patch.object(CrowdStrikeFalcon, 'http_request', return_value={"resources": None})
+    mocker.patch.object(CrowdStrikeFalcon, "http_request", return_value={"resources": None})
 
     assert CrowdStrikeFalcon.enrich_groups(group_ids) == {}
+
+
+@pytest.mark.parametrize("command", ["fetch-events", "fetch-incidents"])
+def test_fetch_items_reads_last_run_indexes_correctly(mocker, command):
+    """
+    Ensure that fetch_events correctly accesses each index of last_run based on its data type.
+
+    Each index in last_run is mocked with the appropriate identifiers.
+    The test verifies that these identifiers appear in the same order in the last_run output,
+    indicating correct index usage within the function.
+    """
+    from CrowdStrikeFalcon import fetch_items, LastRunIndex, TOTAL_FETCH_TYPE_XSIAM, TOTAL_FETCH_TYPE_XSOAR, set_last_run_per_type
+
+    last_run_size = TOTAL_FETCH_TYPE_XSIAM if command == "fetch-events" else TOTAL_FETCH_TYPE_XSOAR
+    last_run_identifiers = create_empty_last_run(last_run_size)
+
+    set_last_run_per_type(last_run_identifiers, index=LastRunIndex.DETECTIONS, data={"Detection ID:": 1})
+    set_last_run_per_type(last_run_identifiers, index=LastRunIndex.IDP_DETECTIONS, data={"IDP ID:": 3})
+    set_last_run_per_type(last_run_identifiers, index=LastRunIndex.MOBILE_DETECTIONS, data={"Mobile ID:": 4})
+    set_last_run_per_type(last_run_identifiers, index=LastRunIndex.ON_DEMAND_DETECTIONS, data={"ODS ID:": 5})
+    set_last_run_per_type(last_run_identifiers, index=LastRunIndex.OFP_DETECTION, data={"OFP ID:": 6})
+
+    if command == "fetch-incidents":
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.IOM, data={"IOM ID:": 7})
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.IOA, data={"IOA ID:": 8})
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.THIRD_PARTY_DETECTIONS, data={"THIRD PARTY ID:": 9})
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.NGSIEM_DETECTIONS, data={"NGSIEM ID:": 10})
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.NGSIEM_INCIDENTS, data={"NGSIEM INCIDENT ID:": 11})
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.NGSIEM_AUTOMATED_LEADS, data={"AUTOMATED LEAD ID:": 12})
+        set_last_run_per_type(last_run_identifiers, index=LastRunIndex.NGSIEM_CASES, data={"NGSIEM CASE ID:": 13})
+
+    # Create a copy to avoid reference issues
+    last_run_identifiers_copy = list(last_run_identifiers)
+
+    mocker.patch("CrowdStrikeFalcon.demisto.getLastRun", return_value=last_run_identifiers_copy)
+    mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={})
+
+    last_run_identifiers_result, _ = fetch_items(command=command)
+
+    # Verify that fetch_events refers to the correctly indexes for each type by last_run object.
+    assert last_run_identifiers_result == last_run_identifiers
+
+
+def test_http_request_is_time_sensitive_timeout_and_retries(mocker):
+    """
+    Given:
+        - is_time_sensitive() returns True or False
+        - get_token_flag is True or False
+    When:
+        - Running http_request function
+    Then:
+        - Validate that when is_time_sensitive()=True: retries=0 and timeout=15
+        - Validate that when is_time_sensitive()=False: retries=0 and timeout=60 (default)
+        - Validate that when get_token_flag=False: retries=5 and timeout=60
+    """
+    from CrowdStrikeFalcon import http_request
+    from requests import Response
+
+    res_200 = Response()
+    res_200.status_code = 200
+    res_200._content = b'{"result": "success"}'
+
+    mocker.patch.object(demisto, "params", return_value={"url": SERVER_URL, "proxy": True})
+    mocker.patch("CrowdStrikeFalcon.get_token", return_value="test_token")
+
+    # Test case 1: is_time_sensitive()=True should set retries=0 and timeout=15
+    mock_generic_http_request = mocker.patch("CrowdStrikeFalcon.generic_http_request", side_effect=[res_200])
+    mocker.patch("CrowdStrikeFalcon.is_time_sensitive", return_value=True)
+
+    http_request(method="GET", url_suffix="/test", no_json=True)
+
+    assert mock_generic_http_request.call_count == 1
+    call_args = mock_generic_http_request.call_args[1]  # kwargs
+    assert call_args["retries"] == 0, f"Expected retries=0 when is_time_sensitive=True, got {call_args['retries']}"
+    assert call_args["timeout"] == 15, f"Expected timeout=15 when is_time_sensitive=True, got {call_args['timeout']}"
+
+    # Test case 2: is_time_sensitive()=False should set retries=0 and timeout=60
+    mock_generic_http_request = mocker.patch("CrowdStrikeFalcon.generic_http_request", side_effect=[res_200])
+    mocker.patch("CrowdStrikeFalcon.is_time_sensitive", return_value=False)
+
+    http_request(method="GET", url_suffix="/test", no_json=True)
+
+    assert mock_generic_http_request.call_count == 1
+    call_args = mock_generic_http_request.call_args[1]  # kwargs
+    assert call_args["retries"] == 0, f"Expected retries=0 when is_time_sensitive=False, got {call_args['retries']}"
+    assert call_args["timeout"] == 60, f"Expected timeout=60 when is_time_sensitive=False, got {call_args['timeout']}"
+
+    # Test case 3: get_token_flag=False should set retries=5 and timeout=60
+    mock_generic_http_request = mocker.patch("CrowdStrikeFalcon.generic_http_request", side_effect=[res_200])
+    mocker.patch("CrowdStrikeFalcon.is_time_sensitive", return_value=False)
+
+    http_request(method="GET", url_suffix="/test", get_token_flag=False, no_json=True)
+
+    assert mock_generic_http_request.call_count == 1
+    call_args = mock_generic_http_request.call_args[1]  # kwargs
+    assert call_args["retries"] == 5, f"Expected retries=5 when get_token_flag=False, got {call_args['retries']}"
+    assert call_args["timeout"] == 60, f"Expected timeout=60 when get_token_flag=False, got {call_args['timeout']}"
+
+
+class TestFetchAssetsFlow:
+    """Tests for the fetch-assets flow."""
+
+    def generate_mock_alerts(self, count, start_id=1):
+        """Generates a list of mock CNAPP alerts."""
+        alerts = []
+        for i in range(count):
+            alerts.append(
+                {
+                    "severity": "Critical",
+                    "first_seen_timestamp": "2025-11-24T11:04:03Z",
+                    "last_seen_timestamp": "2025-11-26T10:18:35Z",
+                    "detection_name": f"PotentialKernelTampering-{start_id + i}",
+                    "detection_event_simple_name": "BPFCommandIssued",
+                    "detection_description": "The eBPF feature has been invoked from within a container. This is a highly"
+                    "unusual activity from within the container and can be used to load a kernel root kit or manipulate kernel"
+                    "behavior or settings effecting the entire host system where the container is running.",
+                    "containers_impacted_count": "1",
+                    "containers_impacted_ids": ["test"],
+                }
+            )
+        return alerts
+
+    @pytest.mark.parametrize(
+        "total, expected_items_count, expected_snapshot_id, expected_last_run",
+        [
+            (
+                100,
+                100,
+                "123123",
+                {
+                    "offset": 0,
+                    "total_fetched_until_now": 0,
+                },
+            ),
+            (
+                200,
+                1,
+                "123123",
+                {"offset": 100, "total_fetched_until_now": 100, "snapshot_id": "123123", "nextTrigger": "0", "type": 1},
+            ),
+        ],
+    )
+    def test_get_cnapp_assets(self, mocker, requests_mock, total, expected_items_count, expected_snapshot_id, expected_last_run):
+        """
+        Given:
+            - a mock response for /container-security/combined/container-alerts/v1 endpoint.
+            - case 1: mock where the response is the last one (no further calls should be done)
+            - case 2: mock where the response is not the last one (further calls should be done)
+        When:
+            - Calling get_cnapp_assets.
+        Then:
+            - Verify that http_request is called with correct pagination parameters.
+            - Verify that all alerts are collected.
+            - Verify that the last_run object is updated correctly for pagination.
+            - case 1: items_count should be set to 1, no nextTrigger/type/snapshot_id in the last run
+            - case 2: items_count should be set to 100, nextTrigger/type/snapshot_id in the last run
+        """
+        from CrowdStrikeFalcon import get_cnapp_assets
+        import time
+
+        initial_last_run = {"offset": 0, "total_fetched_until_now": 0}
+
+        mocker.patch.object(
+            demisto,
+            "params",
+            return_value={
+                "url": SERVER_URL,
+            },
+        )
+        mocker.patch("CrowdStrikeFalcon.demisto.getAssetsLastRun", return_value=initial_last_run)
+        mocker.patch.object(time, "time", return_value=123.123)
+        mock_alerts_page1 = self.generate_mock_alerts(100, 1)
+        request_mock_obj = requests_mock.get(
+            f"{SERVER_URL}/container-security/combined/container-alerts/v1?offset=0&limit=100",
+            json={"resources": mock_alerts_page1, "meta": {"pagination": {"offset": 0, "limit": 100, "total": total}}},
+        )
+
+        new_last_run, cnapp_alerts, items_count, snapshot_id = get_cnapp_assets()
+
+        assert request_mock_obj.call_count == 1
+        assert len(cnapp_alerts) == 100
+        assert items_count == expected_items_count
+        assert snapshot_id == expected_snapshot_id
+        assert new_last_run == expected_last_run
+
+    def test_fetch_assets_command_two_calls_flow(self, mocker, requests_mock):
+        """
+        Given:
+            - A scenario where fetch-assets needs two API calls to retrieve all assets.
+            - First call returns 100 assets, indicating a total of 150.
+            - Second call returns the remaining 50 assets.
+        When:
+            - Calling fetch_assets_command twice to simulate the full flow.
+        Then:
+            - Verify that http_request is called with correct pagination parameters for both calls.
+            - Verify that send_data_to_xsiam is called twice with the correct assets and snapshot_id.
+            - Verify that setAssetsLastRun is called twice with the correct last_run objects.
+            - Verify that updateModuleHealth is called twice with the correct assetsPulled count.
+        """
+        from CrowdStrikeFalcon import fetch_assets_command, CNAPP_PRODUCT, VENDOR
+        import time
+
+        # Mocks
+        mock_get_assets_last_run = mocker.patch("CrowdStrikeFalcon.demisto.getAssetsLastRun")
+        mock_set_assets_last_run = mocker.patch("CrowdStrikeFalcon.demisto.setAssetsLastRun")
+        mock_send_data_to_xsiam = mocker.patch("CrowdStrikeFalcon.send_data_to_xsiam")
+        mock_update_module_health = mocker.patch("CrowdStrikeFalcon.demisto.updateModuleHealth")
+        mocker.patch.object(time, "time", return_value=123.123)
+        mocker.patch.object(demisto, "params", return_value={"fetch_assets_type": "CNAPP Alerts"})
+
+        # --- First Call ---
+        # Initial last_run for the first call
+        mock_get_assets_last_run.return_value = {"offset": 0, "total_fetched_until_now": 0}
+
+        # Mock API response for the first call (100 assets out of 150)
+        mock_alerts_page1 = self.generate_mock_alerts(100, 1)
+        requests_mock.get(
+            f"{SERVER_URL}/container-security/combined/container-alerts/v1?offset=0&limit=100",
+            json={"resources": mock_alerts_page1, "meta": {"pagination": {"offset": 0, "limit": 100, "total": 150}}},
+        )
+
+        fetch_assets_command()
+
+        # Assertions for the first call
+        assert mock_send_data_to_xsiam.call_count == 1
+        mock_send_data_to_xsiam.assert_called_with(
+            data=mock_alerts_page1,
+            vendor=VENDOR,
+            product=CNAPP_PRODUCT,
+            data_type="assets",
+            snapshot_id="123123",
+            items_count=1,
+            should_update_health_module=False,
+        )
+        assert mock_set_assets_last_run.call_count == 1
+        mock_set_assets_last_run.assert_called_with(
+            {"offset": 100, "total_fetched_until_now": 100, "snapshot_id": "123123", "nextTrigger": "0", "type": 1}
+        )
+        assert mock_update_module_health.call_count == 1
+        mock_update_module_health.assert_called_with({"assetsPulled": 100})
+
+        # --- Second Call ---
+        # last_run for the second call (as it would be after the first call)
+        mock_get_assets_last_run.return_value = {
+            "offset": 100,
+            "total_fetched_until_now": 100,
+            "snapshot_id": "123123",
+            "nextTrigger": "0",
+            "type": 1,
+        }
+
+        # Mock API response for the second call (remaining 50 assets)
+        mock_alerts_page2 = self.generate_mock_alerts(50, 101)
+        requests_mock.get(
+            f"{SERVER_URL}/container-security/combined/container-alerts/v1?offset=100&limit=100",
+            json={"resources": mock_alerts_page2, "meta": {"pagination": {"offset": 100, "limit": 100, "total": 150}}},
+        )
+
+        fetch_assets_command()
+
+        # Assertions for the second call
+        assert mock_send_data_to_xsiam.call_count == 2
+        mock_send_data_to_xsiam.assert_called_with(
+            data=mock_alerts_page2,
+            vendor=VENDOR,
+            product=CNAPP_PRODUCT,
+            data_type="assets",
+            snapshot_id="123123",
+            items_count=150,
+            should_update_health_module=False,
+        )
+        assert mock_set_assets_last_run.call_count == 2
+        mock_set_assets_last_run.assert_called_with({"offset": 0, "total_fetched_until_now": 0})
+        assert mock_update_module_health.call_count == 2
+        mock_update_module_health.assert_called_with({"assetsPulled": 50})
+
+    def test_list_cnapp_alerts_command(self, requests_mock):
+        """
+        Given:
+            - A mock for get cnapp alerts request.
+        When:
+            - Calling list_cnapp_alerts_command twice.
+        Then:
+            Ensures the data was parsed correctly into a CommandResults object
+        """
+        from CrowdStrikeFalcon import list_cnapp_alerts_command
+
+        mock_alerts_page1 = self.generate_mock_alerts(1, 1)
+        requests_mock.get(
+            f"{SERVER_URL}/container-security/combined/container-alerts/v1",
+            json={"resources": mock_alerts_page1, "meta": {"pagination": {"offset": 0, "limit": 100, "total": 1}}},
+        )
+        command_results_to_assert = list_cnapp_alerts_command(args={})
+        expected_outputs = mock_alerts_page1
+        expected_readable_outputs = (
+            "### CrowdStrike CNAPP alerts\n|severity|first_seen_timestamp|last_seen_timestamp|"
+            "detection_name|detection_event_simple_name|detection_description|containers_impacted_count|containers_impacted_ids|"
+            "\n|---|---|---|---|---|---|---|---|\n| Critical | 2025-11-24T11:04:03Z | 2025-11-26T10:18:35Z |"
+            " PotentialKernelTampering-1 | BPFCommandIssued | The eBPF feature has been invoked from within a container. This is"
+            " a highlyunusual activity from within the container and can be used to load a kernel root kit or manipulate"
+            " kernelbehavior or settings effecting the entire host system where the container is running. | 1 | test |\n"
+        )
+        assert command_results_to_assert.outputs == expected_outputs
+        assert command_results_to_assert.readable_output == expected_readable_outputs
+
+
+def test_fetch_endpoint_detections_builds_grouped_filter_arg(mocker: MockerFixture):
+    """
+    Given:
+        - A known start_fetch_time returned from get_fetch_run_time_range.
+        - A user fetch_query configured via demisto.params()["fetch_query"].
+    When:
+        - Calling fetch_endpoint_detections.
+    Then:
+        - Validate that we call get_fetch_detections with:
+          (created_timestamp:>'<start_fetch_time>')+(<fetch_query>)
+          so the timestamp constraint is applied to the full user query.
+    """
+    from CrowdStrikeFalcon import fetch_endpoint_detections
+
+    mocker.patch("CrowdStrikeFalcon.get_fetch_run_time_range", return_value=("2025-12-18T11:44:17Z", "end"))
+    mocker.patch.object(demisto, "params", return_value={"fetch_query": 'severity_name:"Critical", severity_name:"High"'})
+
+    get_fetch_detections_mocker = mocker.patch(
+        "CrowdStrikeFalcon.get_fetch_detections",
+        return_value={"resources": [], "meta": {"pagination": {"total": 0}}},
+    )
+
+    # stop later logic from doing real work
+    mocker.patch("CrowdStrikeFalcon.get_detections_entities", return_value={"resources": []})
+    mocker.patch(
+        "CrowdStrikeFalcon.filter_incidents_by_duplicates_and_limit", side_effect=lambda incidents_res, **_: incidents_res
+    )
+    mocker.patch("CrowdStrikeFalcon.update_last_run_object", side_effect=lambda **kwargs: kwargs["last_run"])
+
+    fetch_endpoint_detections(current_fetch_info_detections={"offset": 0}, look_back=2, is_fetch_events=False)
+
+    assert get_fetch_detections_mocker.call_args[1]["filter_arg"] == (
+        '(created_timestamp:>\'2025-12-18T11:44:17Z\')+(severity_name:"Critical", severity_name:"High")'
+    )
+
+
+@pytest.mark.parametrize(
+    "product_type, fetch_query, expected_filter",
+    [
+        (
+            "idp",
+            'severity_name:"Critical", severity_name:"High"',
+            "(product:'idp'+created_timestamp:>'2025-12-18T11:44:17Z')+(severity_name:\"Critical\", severity_name:\"High\")",
+        ),
+        (
+            "ods",
+            "status:'new'",
+            "(type:'ods'+created_timestamp:>'2025-12-18T11:44:17Z')+(status:'new')",
+        ),
+        (
+            "idp",
+            "",
+            "product:'idp'+created_timestamp:>'2025-12-18T11:44:17Z'",
+        ),
+    ],
+)
+def test_fetch_detections_by_product_type_builds_grouped_filter(
+    mocker: MockerFixture, product_type, fetch_query, expected_filter
+):
+    """
+    Given:
+        - A known start_fetch_time returned from get_fetch_run_time_range.
+        - A product_type and an optional user fetch_query.
+    When:
+        - Calling fetch_detections_by_product_type.
+    Then:
+        - Validate that we build a base filter and, when fetch_query exists, group it as:
+          (<base_filter>)+(<fetch_query>)
+        - Validate that for ODS/OFP we replace 'product:' with 'type:'.
+    """
+    from CrowdStrikeFalcon import fetch_detections_by_product_type
+
+    mocker.patch("CrowdStrikeFalcon.get_fetch_run_time_range", return_value=("2025-12-18T11:44:17Z", "end"))
+    get_detections_ids_mocker = mocker.patch(
+        "CrowdStrikeFalcon.get_detections_ids",
+        return_value={"resources": [], "meta": {"pagination": {"total": 0}}},
+    )
+
+    mocker.patch("CrowdStrikeFalcon.get_detection_entities", return_value={"resources": []})
+    mocker.patch(
+        "CrowdStrikeFalcon.filter_incidents_by_duplicates_and_limit", side_effect=lambda incidents_res, **_: incidents_res
+    )
+    mocker.patch("CrowdStrikeFalcon.update_last_run_object", side_effect=lambda **kwargs: kwargs["last_run"])
+    mocker.patch("CrowdStrikeFalcon.truncate_long_time_str", side_effect=lambda x, *_: x)
+
+    fetch_detections_by_product_type(
+        current_fetch_info={"offset": 0},
+        look_back=2,
+        product_type=product_type,
+        fetch_query=fetch_query,
+        detections_type="dummy",
+        detection_name_prefix="dummy",
+        start_time_key="created_timestamp",
+        is_fetch_events=False,
+    )
+
+    assert get_detections_ids_mocker.call_args[1]["filter_arg"] == expected_filter
+
+
+def test_get_remote_recon_data_success(mocker):
+    """
+    Given:
+        - A remote incident ID for a Recon notification.
+    When:
+        - Calling get_remote_recon_data.
+    Then:
+        - Ensure get_recon_notifications_detailed is called with the correct ID.
+        - Ensure the returned data matches the expected structure.
+    """
+    from CrowdStrikeFalcon import get_remote_recon_data, IncidentType, RECON_NOTIFICATION
+
+    remote_id = "12345"
+    remote_incident_id = f"{IncidentType.RECON.value}{remote_id}"
+    mock_notification = {"id": remote_id, "notification": {"status": "new"}}
+
+    mocker.patch("CrowdStrikeFalcon.get_recon_notifications_detailed", return_value=[mock_notification])
+
+    mirrored_data, updated_object, incident_type = get_remote_recon_data(remote_incident_id)
+
+    assert mirrored_data == mock_notification
+    assert updated_object == {"incident_type": RECON_NOTIFICATION, "notification.status": "new", "status": "new"}
+    assert incident_type == RECON_NOTIFICATION
+
+
+def test_get_remote_recon_data_not_found(mocker):
+    """
+    Given:
+        - A remote incident ID for a Recon notification that does not exist.
+    When:
+        - Calling get_remote_recon_data.
+    Then:
+        - Ensure a DemistoException is raised.
+    """
+    from CrowdStrikeFalcon import get_remote_recon_data, IncidentType, DemistoException
+
+    remote_id = "12345"
+    remote_incident_id = f"{IncidentType.RECON.value}{remote_id}"
+
+    mocker.patch("CrowdStrikeFalcon.get_recon_notifications_detailed", return_value=[])
+
+    with pytest.raises(DemistoException) as e:
+        get_remote_recon_data(remote_incident_id)
+    assert f"No Recon notification found for ID: {remote_incident_id}" in str(e.value)
+
+
+@pytest.mark.parametrize(
+    "delta, inc_status, close_in_cs, expected_status, expected_call",
+    [
+        ({"status": 2, "closeReason": "True Positive"}, IncidentStatus.DONE, True, "closed-true-positive", True),
+        ({"status": 2, "closeReason": "False Positive"}, IncidentStatus.DONE, True, "closed-false-positive", True),
+        ({"status": "in-progress"}, IncidentStatus.ACTIVE, False, "in-progress", True),
+        ({"other_field": 1}, IncidentStatus.DONE, False, None, False),
+    ],
+)
+def test_update_remote_recon_notification(mocker, delta, inc_status, close_in_cs, expected_status, expected_call):
+    """
+    Given:
+        - Delta, incident status, and close_in_cs_falcon setting.
+    When:
+        - Calling update_remote_recon_notification.
+    Then:
+        - Ensure http_request is called with the correct parameters if an update is expected,
+          or not called when no relevant change is found.
+    """
+    from CrowdStrikeFalcon import update_remote_recon_notification, IncidentType
+
+    remote_id = "12345"
+    remote_incident_id = f"{IncidentType.RECON.value}{remote_id}"
+
+    mocker.patch("CrowdStrikeFalcon.close_in_cs_falcon", return_value=close_in_cs)
+    mock_http_request = mocker.patch("CrowdStrikeFalcon.http_request")
+
+    update_remote_recon_notification(delta, inc_status, remote_incident_id)
+
+    if expected_call:
+        mock_http_request.assert_called_once_with(
+            "PATCH", "/recon/entities/notifications/v1", json=[{"id": remote_id, "status": expected_status}]
+        )
+    else:
+        mock_http_request.assert_not_called()
+
+
+def test_get_recon_notification_ids_for_fetch(mocker):
+    """
+    Given:
+        - Filter, offset, and limit.
+    When:
+        - Calling get_recon_notification_ids_for_fetch.
+    Then:
+        - Ensure http_request is called with correct params.
+        - Ensure return values match response.
+    """
+    from CrowdStrikeFalcon import get_recon_notification_ids_for_fetch
+
+    mock_response = {"resources": ["id1", "id2"], "meta": {"pagination": {"total": 10, "offset": 0}}}
+    mock_http_request = mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    ids, offset, total = get_recon_notification_ids_for_fetch(filter="filter", recon_offset=0, limit=2)
+
+    mock_http_request.assert_called_once()
+    assert ids == ["id1", "id2"]
+    assert offset == 0
+    assert total == 10
+
+
+def test_recon_notifications_pagination(mocker):
+    """
+    Given:
+        - Filter, offset, limits.
+    When:
+        - Calling recon_notifications_pagination.
+    Then:
+        - Ensure get_recon_notification_ids_for_fetch is called.
+        - Ensure get_recon_notifications_detailed is called (since is_fetch=True).
+        - Ensure next_offset is calculated correctly.
+    """
+    from CrowdStrikeFalcon import recon_notifications_pagination
+
+    mocker.patch("CrowdStrikeFalcon.get_recon_notification_ids_for_fetch", return_value=(["id1"], 0, 10))
+    mocker.patch("CrowdStrikeFalcon.get_recon_notifications_detailed", return_value=[{"id": "id1"}])
+
+    ids, details, next_offset = recon_notifications_pagination(filter="filter", recon_offset=0, fetch_limit=5)
+
+    assert ids == ["id1"]
+    assert details == [{"id": "id1"}]
+    assert next_offset == 1  # 0 + 1 &lt; 10
+
+
+def test_recon_notification_to_incident(mocker):
+    """
+    Given:
+        - A Recon notification dictionary.
+    When:
+        - Calling recon_notification_to_incident.
+    Then:
+        - Ensure the returned incident dictionary is structured correctly.
+    """
+    from CrowdStrikeFalcon import recon_notification_to_incident, IncidentSeverity
+    import json
+
+    notification = {"id": "12345", "notification": {"created_date": "2023-01-01T00:00:00Z", "rule_priority": "high"}}
+    incident_type = "Recon Notification"
+
+    # Mock globals used in function
+    mocker.patch("CrowdStrikeFalcon.MIRROR_DIRECTION", "Both")
+    mocker.patch("CrowdStrikeFalcon.INTEGRATION_INSTANCE", "instance")
+
+    incident = recon_notification_to_incident(notification, incident_type)
+
+    assert incident["name"] == "12345"
+    assert incident["occurred"] == "2023-01-01T00:00:00Z"
+    assert incident["severity"] == IncidentSeverity.HIGH
+
+    raw_json = json.loads(incident["rawJSON"])
+    assert raw_json["id"] == "12345"
+    assert raw_json["mirror_direction"] == "Both"
+    assert raw_json["mirror_instance"] == "instance"
+    assert raw_json["incident_type"] == incident_type
+
+
+def test_get_cases_data(mocker):
+    """
+    Given:
+        - Filter, limit and offset.
+    When:
+        - Running get_cases_data.
+    Then:
+        - Verify that the http_request is called with the correct arguments.
+        - Verify that the function returns the correct total cases and ids.
+        - Verify that the filter is passed in the params dict for proper URL encoding.
+    """
+    from CrowdStrikeFalcon import get_cases_data
+
+    http_request_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request", return_value={"meta": {"pagination": {"total": 10}}, "resources": ["case1", "case2"]}
+    )
+
+    total, ids = get_cases_data("some_filter", 10, 0)
+
+    assert total == 10
+    assert ids == ["case1", "case2"]
+    http_request_mock.assert_called_with(
+        "GET", "/cases/queries/cases/v1", {"sort": "created_timestamp.asc", "offset": 0, "limit": 10, "filter": "some_filter"}
+    )
+
+
+def test_get_cases_data_with_special_characters(mocker):
+    """
+    Given:
+        - Filter with special characters (e.g., '+' for AND operator in FQL).
+    When:
+        - Running get_cases_data with a filter containing special characters.
+    Then:
+        - Verify that the filter is passed in the params dict (not embedded in URL).
+        - Verify that http_request receives the filter as a parameter for proper encoding.
+    """
+    from CrowdStrikeFalcon import get_cases_data
+
+    http_request_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request", return_value={"meta": {"pagination": {"total": 5}}, "resources": ["case3", "case4"]}
+    )
+
+    # Test with a filter that includes the '+' operator (FQL AND)
+    filter_with_plus = "created_timestamp:>'2026-02-21T16:26:49.079836Z'+severity:>40"
+    total, ids = get_cases_data(filter_with_plus, 10, 0)
+
+    assert total == 5
+    assert ids == ["case3", "case4"]
+    # Verify the filter is in params dict, not in the URL path
+    http_request_mock.assert_called_with(
+        "GET",
+        "/cases/queries/cases/v1",
+        {"sort": "created_timestamp.asc", "offset": 0, "limit": 10, "filter": filter_with_plus},
+    )
+
+
+def test_get_cases_data_without_filter(mocker):
+    """
+    Given:
+        - No filter (empty string).
+    When:
+        - Running get_cases_data without a filter.
+    Then:
+        - Verify that the http_request is called without a filter parameter.
+    """
+    from CrowdStrikeFalcon import get_cases_data
+
+    http_request_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request", return_value={"meta": {"pagination": {"total": 3}}, "resources": ["case5"]}
+    )
+
+    total, ids = get_cases_data("", 10, 0)
+
+    assert total == 3
+    assert ids == ["case5"]
+    # Verify no filter parameter is passed when filter is empty
+    http_request_mock.assert_called_with(
+        "GET", "/cases/queries/cases/v1", {"sort": "created_timestamp.asc", "offset": 0, "limit": 10}
+    )
+
+
+def test_get_cases_details(mocker):
+    """
+    Given:
+        - List of case IDs.
+    When:
+        - Running get_cases_details.
+    Then:
+        - Verify that the http_request is called with the correct arguments.
+        - Verify that the function returns the correct case details.
+    """
+    from CrowdStrikeFalcon import get_cases_details
+
+    http_request_mock = mocker.patch(
+        "CrowdStrikeFalcon.http_request", return_value={"resources": [{"id": "case1", "status": "new"}]}
+    )
+
+    details = get_cases_details(["case1"])
+
+    assert details == [{"id": "case1", "status": "new"}]
+    http_request_mock.assert_called_with("POST", "/cases/entities/cases/v2", data=json.dumps({"ids": ["case1"]}))
+
+
+def test_get_remote_ngsiem_case_data(mocker):
+    """
+    Given:
+        - Remote case ID.
+    When:
+        - Running get_remote_ngsiem_case_data.
+    Then:
+        - Verify that get_cases_details is called with the correct ID.
+        - Verify that the function returns the correct mirrored case and updated object.
+    """
+    from CrowdStrikeFalcon import get_remote_ngsiem_case_data, IncidentType
+
+    mocker.patch("CrowdStrikeFalcon.get_cases_details", return_value=[{"id": "case1", "status": "new", "state": "open"}])
+
+    remote_id = f"{IncidentType.NGSIEM_CASE.value}:case1"
+    mirrored_case, updated_object = get_remote_ngsiem_case_data(remote_id)
+
+    assert mirrored_case == {"id": "case1", "status": "new", "state": "open"}
+    assert updated_object == {"incident_type": "ngsiem_case", "status": "new", "state": "open"}
+
+
+@pytest.mark.parametrize(
+    "delta, inc_status, close_in_cs_falcon_param, expected_status",
+    [({"status": "in_progress"}, IncidentStatus.ACTIVE, False, "in_progress"), ({}, IncidentStatus.ACTIVE, False, None)],
+)
+def test_update_remote_ngsiem_case(mocker, delta, inc_status, close_in_cs_falcon_param, expected_status):
+    """
+    Given:
+        - Delta, incident status, and close_in_cs_falcon parameter.
+    When:
+        - Running update_remote_ngsiem_case.
+    Then:
+        - Verify that update_remote_ngsiem_case is called with the correct status if applicable.
+    """
+    from CrowdStrikeFalcon import update_remote_ngsiem_case, IncidentType
+
+    mocker.patch.object(demisto, "params", return_value={"close_in_cs_falcon": close_in_cs_falcon_param})
+    update_mock = mocker.patch("CrowdStrikeFalcon.patch_remote_entity", return_value="success")
+
+    remote_id = f"{IncidentType.NGSIEM_CASE.value}:case1"
+    result = update_remote_ngsiem_case(delta, inc_status, remote_id)
+
+    if expected_status:
+        update_mock.assert_called_with("case1", status=expected_status)
+        assert result == "success"
+    else:
+        update_mock.assert_not_called()
+        assert result == ""
+
+
+def test_fetch_ngsiem_cases(mocker):
+    """
+    Given:
+        - Last run object, look back, and fetch query.
+    When:
+        - Running fetch_ngsiem_cases.
+    Then:
+        - Verify that the function calls dependencies correctly.
+        - Verify that it returns the correct cases and last run object.
+    """
+    from CrowdStrikeFalcon import fetch_ngsiem_cases
+
+    mocker.patch("CrowdStrikeFalcon.get_fetch_run_time_range", return_value=("start_time", "end_time"))
+    mocker.patch("CrowdStrikeFalcon.get_cases_data", return_value=(1, ["case1"]))
+    mocker.patch(
+        "CrowdStrikeFalcon.get_cases_details",
+        return_value=[{"id": "case1", "created_timestamp": "2023-01-01T00:00:00.000Z", "severity": "High"}],
+    )
+    mocker.patch(
+        "CrowdStrikeFalcon.filter_incidents_by_duplicates_and_limit", side_effect=lambda incidents_res, **kwargs: incidents_res
+    )
+    mocker.patch("CrowdStrikeFalcon.update_last_run_object", return_value={"offset": 1})
+
+    cases, last_run = fetch_ngsiem_cases({}, 3, "some_query")
+
+    assert len(cases) == 1
+    assert cases[0]["name"] == "ngsiem_case ID: case1"
+    assert cases[0]["severity"] == "High"
+    assert last_run == {"offset": 1}
+
+
+def test_list_case_summaries_command_no_given_ids(mocker):
+    """
+    Test list_case_summaries_command without ids arg
+    Given
+     - No arguments given, as is
+    When
+     - The user is running list_case_summaries_command with no ids
+    Then
+     - Function is executed properly and returns no cases found message
+    """
+    from CrowdStrikeFalcon import list_case_summaries_command
+
+    mocker.patch.object(demisto, "args", return_value={})
+
+    # Mock get_cases_data to return IDs
+    mocker.patch("CrowdStrikeFalcon.get_cases_data", return_value=(1, ["case_id_1"]))
+
+    entity_response = [
+        {
+            "assigned_to_name": "Test no ids",
+            "cid": "string",
+            "created_time": "2022-02-21T16:36:57.759Z",
+            "description": "string",
+            "id": "case_id_1",
+            "status": "new",
+            "severity": "High",
+            "tags": ["tag1"],
+            "version": "1",
+        }
+    ]
+    # Mock get_cases_entities to return case details
+    mocker.patch("CrowdStrikeFalcon.get_cases_entities", return_value=entity_response)
+
+    result = list_case_summaries_command()
+    assert result.outputs[0]["assigned_to_name"] == "Test no ids"
+    assert result.outputs[0]["id"] == "case_id_1"
+
+
+def test_list_case_summaries_command_with_given_ids(requests_mock, mocker):
+    """
+    Test list_case_summaries_command with ids arg
+    Given
+     - ids
+    When
+     - The user is running list_case_summaries_command with ids
+    Then
+     - Function is executed properly and get_cases_entities func was called
+    """
+    from CrowdStrikeFalcon import list_case_summaries_command
+
+    entity_response = {
+        "errors": [],
+        "meta": {"pagination": {"limit": 0, "offset": 0, "total": 0}, "powered_by": "string"},
+        "resources": [
+            {
+                "assigned_to_name": "Test with ids",
+                "cid": "string",
+                "created_time": "2022-02-21T16:36:57.759Z",
+                "description": "string",
+                "id": "case_id_1",
+                "status": "new",
+                "severity": "High",
+                "tags": ["tag1"],
+                "version": "1",
+            }
+        ],
+    }
+
+    requests_mock.post(
+        f"{SERVER_URL}/cases/entities/cases/v2",
+        json=entity_response,
+        status_code=200,
+    )
+    mocker.patch.object(demisto, "args", return_value={"ids": "case_id_1"})
+
+    outputs = list_case_summaries_command().outputs
+
+    assert outputs[0]["assigned_to_name"] == "Test with ids"
+    assert outputs[0]["id"] == "case_id_1"
+
+
+def test_add_case_tags_command(requests_mock):
+    """
+    Given:
+        - Case ID and tags.
+    When:
+        - Running add_case_tags_command.
+    Then:
+        - Verify that the http_request is called with the correct arguments.
+        - Verify that the function returns the correct readable output.
+    """
+    from CrowdStrikeFalcon import add_case_tags_command
+
+    requests_mock.post(f"{SERVER_URL}/cases/entities/case-tags/v1", json={})
+
+    result = add_case_tags_command({"id": "case1", "tags": "tag1,tag2"})
+
+    assert result.readable_output == "Tags were added successfully."
+    assert requests_mock.last_request.json() == {"id": "case1", "tags": ["tag1", "tag2"]}
+
+
+def test_delete_case_tags_command(requests_mock):
+    """
+    Given:
+        - Case ID and tag.
+    When:
+        - Running delete_case_tags_command.
+    Then:
+        - Verify that the http_request is called with the correct arguments.
+        - Verify that the function returns the correct readable output.
+    """
+    from CrowdStrikeFalcon import delete_case_tags_command
+
+    requests_mock.delete(f"{SERVER_URL}/cases/entities/case-tags/v1?id=case1&tag=tag1", json={})
+
+    result = delete_case_tags_command({"id": "case1", "tag": "tag1"})
+
+    assert result.readable_output == "Tags were deleted successfully."
+    assert requests_mock.last_request.qs["id"] == ["case1"]
+    assert requests_mock.last_request.qs["tag"] == ["tag1"]
+
+
+def test_get_evidence_for_case_command(requests_mock, mocker):
+    """
+    Given:
+        - Case ID.
+    When:
+        - Running get_evidence_for_case_command.
+    Then:
+        - Verify that the http_request is called with the correct arguments.
+        - Verify that the function returns the correct readable output.
+    """
+    from CrowdStrikeFalcon import get_evidence_for_case_command
+
+    response_data = load_json("test_data/get_evidence_for_case_response.json")
+    requests_mock.post(f"{SERVER_URL}/cases/entities/cases/v2", json=response_data)
+    mocker.patch.object(demisto, "args", return_value={"id": "case_id_1"})
+    result = get_evidence_for_case_command({"id": "case_id_1"})
+
+    assert result.outputs == response_data["resources"][0]["evidence"]
+
+
+def test_resolve_case_command(requests_mock):
+    """
+    Given:
+        - Case ID and fields to update.
+    When:
+        - Running resolve_case_command.
+    Then:
+        - Verify that the http_request is called with the correct arguments.
+        - Verify that the function returns the correct readable output.
+    """
+    from CrowdStrikeFalcon import resolve_case_command
+
+    requests_mock.patch(f"{SERVER_URL}/cases/entities/cases/v2", json={})
+
+    # Test case 1: Update status and description
+    args = {"id": "case1", "status": "in_progress", "description": "investigating"}
+    result = resolve_case_command(args)
+    assert "Case case1 was changed successfully" in result.readable_output
+    assert "Status" in result.readable_output
+    assert "Description" in result.readable_output
+    assert requests_mock.last_request.json() == {
+        "id": "case1",
+        "fields": {"status": "in_progress", "description": "investigating"},
+    }
+
+    # Test case 2: Remove user assignment
+    args = {"id": "case1", "remove_user_assignment": "true"}
+    result = resolve_case_command(args)
+    assert "Assigned To Uuid" in result.readable_output
+    assert "Unassigned" in result.readable_output
+    assert requests_mock.last_request.json() == {
+        "id": "case1",
+        "fields": {"remove_user_assignment": True},
+    }
+
+    # Test case 3: Invalid severity
+    with pytest.raises(ValueError, match="Severity must be an integer between 10 and 100"):
+        resolve_case_command({"id": "case1", "severity": "5"})
+
+    # Test case 4: Missing ID
+    with pytest.raises(ValueError, match="The 'id' argument is required"):
+        resolve_case_command({"status": "new"})
+
+
+def test_patch_remote_entity_recon_type(requests_mock):
+    """
+    Given:
+        - A case ID, status, and is_recon_type=True.
+    When:
+        - Calling patch_remote_entity with is_recon_type=True.
+    Then:
+        - Verify the request is sent to the recon endpoint with the correct payload format (list).
+    """
+    from CrowdStrikeFalcon import patch_remote_entity
+
+    requests_mock.patch(f"{SERVER_URL}/recon/entities/notifications/v1", json={"resources": []})
+
+    patch_remote_entity(case_id="recon-case-1", status="closed-true-positive", is_recon_type=True)
+
+    assert requests_mock.last_request.json() == [{"id": "recon-case-1", "status": "closed-true-positive"}]
+
+
+def test_patch_remote_entity_recon_type_with_multiple_fields(requests_mock):
+    """
+    Given:
+        - A case ID with status and severity, and is_recon_type=True.
+    When:
+        - Calling patch_remote_entity with is_recon_type=True and multiple fields.
+    Then:
+        - Verify the recon payload includes all fields flattened (not nested under 'fields').
+    """
+    from CrowdStrikeFalcon import patch_remote_entity
+
+    requests_mock.patch(f"{SERVER_URL}/recon/entities/notifications/v1", json={"resources": []})
+
+    patch_remote_entity(case_id="recon-case-2", status="in_progress", severity=50, is_recon_type=True)
+
+    sent_payload = requests_mock.last_request.json()
+    assert isinstance(sent_payload, list)
+    assert len(sent_payload) == 1
+    assert sent_payload[0] == {"id": "recon-case-2", "status": "in_progress", "severity": 50}
+
+
+def test_patch_remote_entity_with_template_id(requests_mock):
+    """
+    Given:
+        - A case ID and a template_id.
+    When:
+        - Calling patch_remote_entity with template_id.
+    Then:
+        - Verify the template field is formatted as {"id": template_id} in the payload.
+    """
+    from CrowdStrikeFalcon import patch_remote_entity
+
+    requests_mock.patch(f"{SERVER_URL}/cases/entities/cases/v2", json={"resources": []})
+
+    patch_remote_entity(case_id="case-tmpl-1", template_id="tmpl-abc-123")
+
+    assert requests_mock.last_request.json() == {
+        "id": "case-tmpl-1",
+        "fields": {"template": {"id": "tmpl-abc-123"}},
+    }
+
+
+def test_patch_remote_entity_with_name_and_assigned_to(requests_mock):
+    """
+    Given:
+        - A case ID with name and assigned_to_uuid.
+    When:
+        - Calling patch_remote_entity with name and assigned_to_uuid.
+    Then:
+        - Verify the payload includes the correct field mappings.
+    """
+    from CrowdStrikeFalcon import patch_remote_entity
+
+    requests_mock.patch(f"{SERVER_URL}/cases/entities/cases/v2", json={"resources": []})
+
+    patch_remote_entity(case_id="case-name-1", name="Updated Case", assigned_to_uuid="user-uuid-123")
+
+    assert requests_mock.last_request.json() == {
+        "id": "case-name-1",
+        "fields": {"name": "Updated Case", "assigned_to_user_uuid": "user-uuid-123"},
+    }
+
+
+def test_resolve_case_command_with_name_and_template(requests_mock):
+    """
+    Given:
+        - A case ID with name and template_id arguments.
+    When:
+        - Running resolve_case_command with name and template_id.
+    Then:
+        - Verify the command returns success and the payload is correct.
+    """
+    from CrowdStrikeFalcon import resolve_case_command
+
+    requests_mock.patch(f"{SERVER_URL}/cases/entities/cases/v2", json={})
+
+    args = {"id": "case1", "name": "New Name", "template_id": "tmpl-1"}
+    result = resolve_case_command(args)
+    assert "Case case1 was changed successfully" in result.readable_output
+    assert "Name" in result.readable_output
+    assert requests_mock.last_request.json() == {
+        "id": "case1",
+        "fields": {"name": "New Name", "template": {"id": "tmpl-1"}},
+    }
+
+
+def test_resolve_case_command_with_valid_severity(requests_mock):
+    """
+    Given:
+        - A case ID with a valid severity value (between 10 and 100).
+    When:
+        - Running resolve_case_command with severity=50.
+    Then:
+        - Verify the command returns success and severity is in the payload.
+    """
+    from CrowdStrikeFalcon import resolve_case_command
+
+    requests_mock.patch(f"{SERVER_URL}/cases/entities/cases/v2", json={})
+
+    args = {"id": "case1", "severity": "50"}
+    result = resolve_case_command(args)
+    assert "Case case1 was changed successfully" in result.readable_output
+    assert requests_mock.last_request.json() == {
+        "id": "case1",
+        "fields": {"severity": 50},
+    }
+
+
+# ============== NGSIEM Search Events Tests ==============
+@pytest.mark.parametrize(
+    "events, expected_rawstring",
+    [
+        # \& in string is replaced with &
+        ([{"@rawstring": "foo\\&bar"}], "foo&bar"),
+        # Multiple \& occurrences are all replaced
+        ([{"@rawstring": "a\\&b\\&c"}], "a&b&c"),
+        # String without \& is left unchanged
+        ([{"@rawstring": "plain text no escape"}], "plain text no escape"),
+        # Empty string stays empty
+        ([{"@rawstring": ""}], ""),
+        # Non-string @rawstring (dict) is left unchanged
+        ([{"@rawstring": {"already": "parsed"}}], {"already": "parsed"}),
+        # Event without @rawstring is left unchanged
+        ([{"some_field": "value"}], None),
+    ],
+)
+def test_clean_ngsiem_rawstring_field(events, expected_rawstring):
+    """
+    Given:
+        - A list of events with various @rawstring values.
+    When:
+        - Running clean_ngsiem_rawstring_field.
+    Then:
+        - Literal '\\&' sequences in string @rawstring values are replaced with '&'.
+        - Non-string or missing @rawstring values are left unchanged.
+    """
+    from CrowdStrikeFalcon import clean_ngsiem_rawstring_field
+
+    result = clean_ngsiem_rawstring_field(events)
+    if expected_rawstring is None:
+        assert "@rawstring" not in result[0]
+    else:
+        assert result[0]["@rawstring"] == expected_rawstring
+
+
+@pytest.mark.parametrize(
+    "query, limit, expected",
+    [
+        ("event_simpleName=ProcessRollup2", 100, "event_simpleName=ProcessRollup2 | tail(100)"),
+        ("event_simpleName=ProcessRollup2 | tail(50)", 100, "event_simpleName=ProcessRollup2 | tail(50)"),
+    ],
+)
+def test_build_ngsiem_query_with_limit(query, limit, expected):
+    """
+    Given:
+        - A query string and a limit.
+    When:
+        - Running build_ngsiem_query_with_limit.
+    Then:
+        - tail(limit) is appended only if not already present (case-insensitive).
+    """
+    from CrowdStrikeFalcon import build_ngsiem_query_with_limit
+
+    assert build_ngsiem_query_with_limit(query, limit) == expected
+
+
+@pytest.mark.parametrize(
+    "val, expected",
+    [
+        (None, None),
+        ("", None),
+        (1700000000, 1700000000000),
+        (1700000000000, 1700000000000),
+        ("1700000000", 1700000000000),
+        ("2023-11-14T00:00:00Z", 1699920000000),
+    ],
+)
+def test_arg_to_timestamp(val, expected):
+    """
+    Given:
+        - A raw time argument in one of the supported formats (None,
+          epoch seconds/milliseconds, or ISO-8601 string).
+    When:
+        - Converting it via arg_to_timestamp.
+    Then:
+        - Returns None for None.
+        - Returns the expected epoch-milliseconds int for all other valid inputs.
+    """
+    from CrowdStrikeFalcon import arg_to_timestamp
+
+    assert arg_to_timestamp(val) == expected
+
+
+@freeze_time("2023-11-15T00:00:00Z")
+def test_arg_to_timestamp_relative():
+    """
+    Given:
+        - A relative time expression ("24 hours").
+    When:
+        - Converting it via arg_to_timestamp with time frozen at 2023-11-15T00:00:00Z.
+    Then:
+        - Returns the epoch-milliseconds timestamp for 24 hours before the frozen time.
+    """
+    from CrowdStrikeFalcon import arg_to_timestamp
+
+    assert arg_to_timestamp("24 hours") == 1699920000000
+
+
+@pytest.mark.parametrize(
+    "events, expected_count, expected_hr_contains",
+    [
+        (
+            [{"timestamp": "2023-01-01T00:00:00Z", "id": "evt1"}, {"timestamp": "2023-01-01T00:01:00Z", "id": "evt2"}],
+            2,
+            "NGSIEM Events (Total: 2)",
+        ),
+        ([], 0, "No events found"),
+    ],
+)
+def test_process_ngsiem_search_completion(events, expected_count, expected_hr_contains):
+    """
+    Given:
+        - A response with events or no events.
+    When:
+        - Running process_ngsiem_search_completion.
+    Then:
+        - Returns a PollResult with continue_to_poll=False and correct outputs/HR.
+    """
+    from CrowdStrikeFalcon import process_ngsiem_search_completion
+
+    response = {"events": events, "done": True}
+    args = {"wait_for_result": True}
+    result = process_ngsiem_search_completion(response, args)
+
+    assert result.continue_to_poll is False
+    assert expected_hr_contains in result.response.readable_output
+    if expected_count > 0:
+        assert len(result.response.outputs) == expected_count
+        assert result.response.outputs_prefix == "CrowdStrike.NGSiemEvent"
+
+
+def test_initiate_ngsiem_search_request(requests_mock):
+    """
+    Given:
+        - A repository and search body.
+    When:
+        - Running initiate_ngsiem_search_request.
+    Then:
+        - The correct API endpoint is called and the response is returned.
+    """
+    from CrowdStrikeFalcon import initiate_ngsiem_search_request
+
+    requests_mock.post(
+        f"{SERVER_URL}/humio/api/v1/repositories/search-all/queryjobs",
+        json={"id": "job123"},
+        status_code=200,
+    )
+    result = initiate_ngsiem_search_request("search-all", {"queryString": "test"})
+    assert result["id"] == "job123"
+    assert requests_mock.last_request.json() == {"queryString": "test"}
+
+
+def test_get_ngsiem_search_results_request(requests_mock):
+    """
+    Given:
+        - A repository and job ID.
+    When:
+        - Running get_ngsiem_search_results_request.
+    Then:
+        - The correct API endpoint is called and the response is returned.
+    """
+    from CrowdStrikeFalcon import get_ngsiem_search_results_request
+
+    requests_mock.get(
+        f"{SERVER_URL}/humio/api/v1/repositories/search-all/queryjobs/job123",
+        json={"done": True, "events": [{"id": "evt1"}]},
+        status_code=200,
+    )
+    result = get_ngsiem_search_results_request("search-all", "job123")
+    assert result["done"] is True
+    assert len(result["events"]) == 1
+
+
+@pytest.mark.parametrize(
+    "args, initiate_ret, poll_ret, expect_raise, raise_match, expect_continue, expect_hr, expect_job_id",
+    [
+        # 1) First call: should initiate, set job_id, and continue polling
+        (
+            {"query": "test", "repository": "search-all", "wait_for_result": True},
+            {"id": "job123"},
+            {"done": False, "cancelled": False},
+            False,
+            None,
+            True,
+            None,
+            "job123",
+        ),
+        # 2) First call but initiate returns no id: should raise
+        (
+            {"query": "test", "repository": "search-all", "wait_for_result": True},
+            {},
+            None,
+            True,
+            "Failed to initiate",
+            None,
+            None,
+            None,
+        ),
+        # 3) Poll: in progress
+        (
+            {"query": "test", "job_id": "job123", "repository": "search-all", "wait_for_result": True},
+            None,
+            {"done": False, "cancelled": False},
+            False,
+            None,
+            True,
+            "Searching NGSIEM events:",
+            None,
+        ),
+        # 4) Poll: done with events
+        (
+            {"query": "test", "job_id": "job123", "repository": "search-all", "wait_for_result": True},
+            None,
+            {"done": True, "events": [{"id": "evt1", "timestamp": "2023-01-01T00:00:00Z"}]},
+            False,
+            None,
+            False,
+            "NGSIEM Events",
+            None,
+        ),
+        # 5) Poll: done no events
+        (
+            {"query": "test", "job_id": "job123", "repository": "search-all", "wait_for_result": True},
+            None,
+            {"done": True, "events": []},
+            False,
+            None,
+            False,
+            "No events found",
+            None,
+        ),
+        # 6) Poll: cancelled -> raise
+        (
+            {"query": "test", "job_id": "job123", "repository": "search-all", "wait_for_result": True},
+            None,
+            {"done": False, "cancelled": True},
+            True,
+            "cancelled",
+            None,
+            None,
+            None,
+        ),
+    ],
+)
+def test_cs_falcon_search_ngsiem_events_command_merged(
+    mocker,
+    args,
+    initiate_ret,
+    poll_ret,
+    expect_raise,
+    raise_match,
+    expect_continue,
+    expect_hr,
+    expect_job_id,
+):
+    """
+    Given:
+        - Args that represent either:
+          * First call (no job_id) -> build body + initiate search
+          * Polling call (job_id exists) -> only fetch results
+        - Mocked initiate/poll responses (including error cases)
+    When:
+        - Running cs_falcon_search_ngsiem_events_command(args)
+    Then:
+        - Raises DemistoException when expected (match raise_match)
+        - Otherwise returns a PollResult with expected continue_to_poll and HR content
+        - Sets args["job_id"] on first-call successful initiation when expected
+    """
+    from CrowdStrikeFalcon import cs_falcon_search_ngsiem_events_command
+
+    mocker.patch.object(ScheduledCommand, "raise_error_if_not_supported")
+
+    # If this is the "first call" flow, cs_falcon_search_ngsiem_events_command will build body + initiate.
+    if "job_id" not in args:
+        mocker.patch("CrowdStrikeFalcon.build_ngsiem_search_body", return_value={"queryString": "test | tail(50)"})
+        mocker.patch("CrowdStrikeFalcon.initiate_ngsiem_search_request", return_value=initiate_ret)
+
+        # After initiate, the command typically does a first "get results" call too (for polling).
+        if poll_ret is not None:
+            mocker.patch("CrowdStrikeFalcon.get_ngsiem_search_results_request", return_value=poll_ret)
+    else:
+        # Polling flow (job_id exists): only get results is used.
+        mocker.patch("CrowdStrikeFalcon.get_ngsiem_search_results_request", return_value=poll_ret)
+
+    if expect_raise:
+        with pytest.raises(DemistoException, match=raise_match):
+            cs_falcon_search_ngsiem_events_command(args)
+        return
+
+    result = cs_falcon_search_ngsiem_events_command(args)
+
+    if expect_continue:
+        # When polling should continue, the decorator wraps the result with a ScheduledCommand
+        assert result.scheduled_command is not None
+    else:
+        # When polling is done, the decorator returns the final CommandResults directly
+        assert result.scheduled_command is None
+    if expect_hr is not None:
+        assert expect_hr in result.readable_output
+    if expect_job_id is not None:
+        assert args["job_id"] == expect_job_id
+
+
+@pytest.mark.parametrize(
+    "events, hr_keys, expected_rows",
+    [
+        # Bare key preferred over @key and #key
+        ([{"id": "bare", "@id": "at", "#id": "hash"}], ["id"], [{"id": "bare"}]),
+        # Falls back to @key when bare key missing
+        ([{"@id": "at_val"}], ["id"], [{"id": "at_val"}]),
+        # Missing key entirely → None
+        ([{"other": "x"}], ["id"], [{"id": None}]),
+        # Timestamp int epoch-ms → date string
+        ([{"timestamp": 1700000000000}], ["timestamp"], "date_str"),
+        # Timestamp numeric string → date string
+        ([{"timestamp": "1700000000000"}], ["timestamp"], "date_str"),
+        # Timestamp float epoch-ms → date string
+        ([{"#timestamp": 1700000000000.0}], ["timestamp"], "date_str"),
+        # Timestamp non-numeric string → passthrough
+        ([{"@timestamp": "2023-01-01T00:00:00Z"}], ["timestamp"], [{"timestamp": "2023-01-01T00:00:00Z"}]),
+    ],
+)
+def test_build_ngsiem_hr_rows(events, hr_keys, expected_rows):
+    """
+    Given:
+        - Events with various key patterns (bare, @-prefixed, #-prefixed, missing)
+          and timestamp values (int, float, numeric string, non-numeric string).
+    When:
+        - Running build_ngsiem_hr_rows.
+    Then:
+        - Key resolution: bare key > @key > #key > None.
+        - Timestamp conversion: int/float/numeric-string epoch-ms → ISO date string;
+          non-numeric string passes through unchanged.
+    """
+    from CrowdStrikeFalcon import build_ngsiem_hr_rows
+
+    rows = build_ngsiem_hr_rows(events, hr_keys)
+    if expected_rows == "date_str":
+        # For epoch-ms inputs, just verify it was converted to a date string containing the year
+        assert isinstance(rows[0]["timestamp"], str)
+        assert "2023" in rows[0]["timestamp"]
+    else:
+        assert rows == expected_rows
+
+
+def test_build_ngsiem_hr_rows_multiple_events_and_keys():
+    """
+    Given:
+        - Multiple events with mixed key resolution and timestamp formats.
+    When:
+        - Running build_ngsiem_hr_rows with several hr_keys.
+    Then:
+        - Each event row resolves keys correctly and timestamps are handled per type.
+    """
+    from CrowdStrikeFalcon import build_ngsiem_hr_rows
+
+    events = [
+        {"id": "evt1", "@timestamp": 1700000000000, "#event_simpleName": "DNS"},
+        {"#id": "evt2", "timestamp": "not-a-number", "event_simpleName": "HTTP"},
+    ]
+    rows = build_ngsiem_hr_rows(events, ["id", "timestamp", "event_simpleName"])
+    assert len(rows) == 2
+    assert rows[0]["id"] == "evt1"
+    assert isinstance(rows[0]["timestamp"], str)
+    assert "2023" in rows[0]["timestamp"]
+    assert rows[0]["event_simpleName"] == "DNS"
+    assert rows[1]["id"] == "evt2"
+    assert rows[1]["timestamp"] == "not-a-number"
+    assert rows[1]["event_simpleName"] == "HTTP"
+
+
+""" Fetch Assets Spotlight """
+
+
+class TestSpotlightSeverityBasedFetch:
+    """
+    Tests for the new severity-based parallel fetching implementation.
+    Tests fetch_vulnerabilities_by_severity() and fetch_spotlight_by_severity_parallel().
+    """
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_single_page(self, mocker):
+        """
+        Tests fetching vulnerabilities for a single severity with one page of results.
+
+        Given:
+            - API returns vulnerabilities for CRITICAL severity in a single page.
+        When:
+            - fetch_vulnerabilities_by_severity is called for CRITICAL.
+        Then:
+            - Correct filter is applied (severity=CRITICAL, status=open/reopen).
+            - Vulnerabilities are returned.
+            - AIDs are extracted and sent to asset handler.
+            - Background task is created to send data to XSIAM.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity, SPOTLIGHT_VULN_PRODUCT
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_context_store = mocker.Mock()
+        mock_state = mocker.Mock()
+        mock_state.metadata = {}
+        snapshot_id = "snap123"
+
+        # Mock asset handler
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        # Mock API response
+        vulnerabilities = [
+            {"id": "vuln1", "aid": "aid1", "cve": {"severity": "CRITICAL"}},
+            {"id": "vuln2", "aid": "aid2", "cve": {"severity": "CRITICAL"}},
+        ]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},  # No more pages
+        }
+        mock_client._request.return_value = mock_response
+
+        # Mock task creation
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        # Execute
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="CRITICAL",
+            context_store=mock_context_store,
+            spotlight_state=mock_state,
+            snapshot_id=snapshot_id,
+            asset_handler=mock_handler,
+        )
+
+        # Verify
+        assert total == 2
+        assert aids == {"aid1", "aid2"}
+        # First record is withheld for the seal
+        assert withheld == [vulnerabilities[0]]
+
+        # Verify API was called with correct filter
+        mock_client._request.assert_awaited_once()
+        call_kwargs = mock_client._request.call_args.kwargs
+        assert "params" in call_kwargs
+        assert "filter" in call_kwargs["params"]
+        assert "CRITICAL" in call_kwargs["params"]["filter"]
+        assert "status:['open','reopen']" in call_kwargs["params"]["filter"]
+        # Lookback window filter is applied to bound the dataset size for large tenants
+        assert "updated_timestamp:>'now-100d'" in call_kwargs["params"]["filter"]
+
+        # Verify AIDs sent to handler
+        mock_handler.receive_new_aids.assert_awaited_once_with({"aid1", "aid2"})
+
+        # Verify XSIAM task created
+        mock_create_task.assert_called_once()
+        task_kwargs = mock_create_task.call_args.kwargs
+        assert task_kwargs["product"] == SPOTLIGHT_VULN_PRODUCT
+        # The first record is withheld for the seal, so the data batch holds the remaining records
+        assert task_kwargs["data"] == vulnerabilities[1:]
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_multiple_pages(self, mocker):
+        """
+        Tests fetching vulnerabilities with pagination across multiple pages.
+
+        Given:
+            - API returns 2 pages of HIGH severity vulnerabilities.
+        When:
+            - fetch_vulnerabilities_by_severity is called for HIGH.
+        Then:
+            - Both pages are fetched sequentially.
+            - Total count and AIDs are aggregated correctly.
+            - Two background tasks are created (one per page).
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        # Mock API responses - 2 pages
+        page1_vulns = [{"id": "v1", "aid": "aid1"}, {"id": "v2", "aid": "aid2"}]
+        page2_vulns = [{"id": "v3", "aid": "aid3"}]
+
+        mock_response1 = mocker.Mock()
+        mock_response1.json.return_value = {
+            "resources": page1_vulns,
+            "meta": {"pagination": {"after": "token_page2"}},
+        }
+
+        mock_response2 = mocker.Mock()
+        mock_response2.json.return_value = {
+            "resources": page2_vulns,
+            "meta": {"pagination": {"after": None}},  # Last page
+        }
+
+        mock_client._request.side_effect = [mock_response1, mock_response2]
+
+        # Mock task creation
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        # Execute
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="HIGH",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        # Verify
+        assert total == 3  # 2 from page1 + 1 from page2
+        assert aids == {"aid1", "aid2", "aid3"}
+        assert withheld == [page1_vulns[0]]
+        assert mock_client._request.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_by_severity_parallel_success(self, mocker):
+        """
+        Tests parallel fetching across all severity levels.
+
+        Given:
+            - Multiple severities with different vulnerability counts.
+            - No previously completed severities (clean start).
+        When:
+            - fetch_spotlight_by_severity_parallel is called.
+        Then:
+            - All 6 severity tasks are created and executed in parallel.
+            - Results are aggregated correctly.
+            - Asset handler flushes remaining AIDs.
+            - Final sealing batch is sent.
+            - completed_severities is cleared after all complete.
+        """
+        from CrowdStrikeFalcon import fetch_spotlight_by_severity_parallel
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_context_store = mocker.Mock()
+        mock_state = mocker.Mock()
+        mock_state.metadata = {}
+        snapshot_id = "snap123"
+
+        # Mock fetch_vulnerabilities_by_severity to return different results per severity
+        async def mock_fetch_by_severity(client, severity, **kwargs):
+            severity_data = {
+                "CRITICAL": (10, {"aid1", "aid2"}, [{"id": "c1", "aid": "aid1"}]),
+                "HIGH": (20, {"aid3", "aid4"}, [{"id": "h1", "aid": "aid3"}]),
+                "MEDIUM": (15, {"aid5"}, [{"id": "m1", "aid": "aid5"}]),
+                "LOW": (5, {"aid6"}, [{"id": "l1", "aid": "aid6"}]),
+                "NONE": (0, set(), []),
+                "UNKNOWN": (0, set(), []),
+            }
+            return severity_data.get(severity, (0, set(), []))
+
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_vulnerabilities_by_severity",
+            side_effect=mock_fetch_by_severity,
+        )
+
+        # Mock asset handler
+        mock_handler_cls = mocker.patch("CrowdStrikeFalcon.AssetsDeviceHandler")
+        mock_handler = mock_handler_cls.return_value
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = {"aid1", "aid2", "aid3", "aid4", "aid5", "aid6"}
+        # A real empty set, not the auto-created attribute: a MagicMock is truthy, which would
+        # send the teardown drain down a path this test has nothing in flight for.
+        mock_handler.running_tasks = set()
+
+        # Mock background task waiter
+
+        # Mock the per-severity data batch sender, which reports (batch_number, records_stored).
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        # Mock the final sealing task, which still uses the shared sender returning just the
+        # batch number. Without this the seal batch would attempt a real network call.
+        def create_seal_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result(1)
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_seal_task_side_effect,
+        )
+
+        # Mock save functions
+        mock_update_state = mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        # Execute - no previously completed severities
+        total_vulns, unique_aids = await fetch_spotlight_by_severity_parallel(
+            client=mock_client,
+            context_store=mock_context_store,
+            spotlight_state=mock_state,
+            snapshot_id=snapshot_id,
+            completed_severities=[],  # Clean start
+        )
+
+        # Verify
+        assert total_vulns == 50  # 10+20+15+5+0+0
+        assert unique_aids == {"aid1", "aid2", "aid3", "aid4", "aid5", "aid6"}
+
+        # Verify asset handler was created and flushed
+        mock_handler_cls.assert_called_once()
+        mock_handler.flush_remaining.assert_awaited_once()
+
+        # Verify state was saved (completed_severities will be cleared by fetch_spotlight_assets)
+        assert mock_update_state.called
+
+    @pytest.mark.asyncio
+    async def test_parallel_fetch_plumbs_lost_records_from_severities_to_the_seal_line(self, mocker):
+        """
+        Tests that per-severity lost-record counts actually reach the lost-record warning.
+
+        The severity fetcher and the warning are covered separately, but nothing pins the wiring
+        between them. Deleting the accumulator argument in this orchestrator would silently suppress
+        the warning entirely, which reads as a healthy snapshot.
+
+        Given:
+            - Two severities report lost records (2 and 5) into the accumulator they are handed.
+        When:
+            - fetch_spotlight_by_severity_parallel runs a full cycle.
+        Then:
+            - The warning reports the summed total, proving the accumulator created here is
+              the same object passed to the severities and on to finalize_severity_fetch.
+        """
+        from CrowdStrikeFalcon import fetch_spotlight_by_severity_parallel
+
+        mock_client = mocker.AsyncMock()
+        mock_state = mocker.Mock()
+        mock_state.metadata = {}
+
+        verify_lines: list = []
+        mocker.patch(
+            "CrowdStrikeFalcon.log_falcon_assets",
+            side_effect=lambda line, *args, **kwargs: verify_lines.append(line),
+        )
+
+        # Each severity writes its losses into the accumulator it is given. If the orchestrator
+        # stops passing one, lost_records_by_severity is None here and nothing is recorded.
+        losses = {"CRITICAL": 2, "HIGH": 5}
+
+        async def mock_fetch_by_severity(client, severity, lost_records_by_severity=None, **kwargs):
+            if lost_records_by_severity is not None:
+                lost_records_by_severity[severity] = losses.get(severity, 0)
+            return (10, {f"aid-{severity}"}, [{"id": f"w-{severity}"}])
+
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_vulnerabilities_by_severity",
+            side_effect=mock_fetch_by_severity,
+        )
+
+        mock_handler_cls = mocker.patch("CrowdStrikeFalcon.AssetsDeviceHandler")
+        mock_handler = mock_handler_cls.return_value
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+        mock_handler.running_tasks = set()
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result(1)
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        await fetch_spotlight_by_severity_parallel(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mock_state,
+            snapshot_id="snap123",
+            completed_severities=[],
+        )
+
+        lost_line = next(line for line in verify_lines if "not stored by XSIAM" in line)
+        assert "7 record(s)" in lost_line
+        assert "'CRITICAL': 2" in lost_line
+        assert "'HIGH': 5" in lost_line
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_by_severity_parallel_one_severity_fails(self, mocker, capfd):
+        """
+        Tests that if one severity fails, others continue processing.
+
+        Given:
+            - HIGH severity fetch raises an exception.
+            - Other severities succeed.
+        When:
+            - fetch_spotlight_by_severity_parallel is called.
+        Then:
+            - Exception is logged but not propagated.
+            - Other severities complete successfully.
+            - Results include only successful severities.
+            - HIGH is NOT marked as completed (will retry next cycle).
+            - Snapshot is NOT sealed (not all severities completed).
+        """
+        from CrowdStrikeFalcon import fetch_spotlight_by_severity_parallel
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_state = mocker.Mock()
+        mock_state.metadata = {}
+
+        # Mock fetch_vulnerabilities_by_severity - HIGH fails, others succeed
+        async def mock_fetch_by_severity(client, severity, **kwargs):
+            if severity == "HIGH":
+                raise Exception("HIGH severity API error")
+            severity_data = {
+                "CRITICAL": (10, {"aid1"}, [{"id": "c1", "aid": "aid1"}]),
+                "MEDIUM": (5, {"aid2"}, [{"id": "m1", "aid": "aid2"}]),
+                "LOW": (3, {"aid3"}, [{"id": "l1", "aid": "aid3"}]),
+                "NONE": (0, set(), []),
+                "UNKNOWN": (0, set(), []),
+            }
+            return severity_data.get(severity, (0, set(), []))
+
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_vulnerabilities_by_severity",
+            side_effect=mock_fetch_by_severity,
+        )
+
+        # Mock asset handler
+        mock_handler_cls = mocker.patch("CrowdStrikeFalcon.AssetsDeviceHandler")
+        mock_handler = mock_handler_cls.return_value
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+        mock_handler.running_tasks = set()
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        # Mock save functions
+        mock_update_state = mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        # Execute - should not raise exception
+        # Disable stdout capture since this test intentionally triggers error logging
+        with capfd.disabled():
+            total_vulns, unique_aids = await fetch_spotlight_by_severity_parallel(
+                client=mock_client,
+                context_store=mocker.Mock(),
+                spotlight_state=mock_state,
+                snapshot_id="snap123",
+                completed_severities=[],  # Clean start
+            )
+
+        # Verify - only successful severities counted
+        assert total_vulns == 18  # 10+5+3 (HIGH excluded)
+        assert unique_aids == {"aid1", "aid2", "aid3"}
+
+        # Verify sealing batch was NOT sent (not all severities completed)
+        # The create_task mock is called for each severity's batches, but NOT for final sealing
+        # We can't easily verify this without inspecting call args, so we check state instead
+
+        # Verify completed_severities does NOT include HIGH (it failed)
+        # Check the final state update call
+        final_call = mock_update_state.call_args_list[-1]
+        completed = final_call.kwargs["completed_severities"]
+        assert "HIGH" not in completed
+        assert "CRITICAL" in completed
+        assert "MEDIUM" in completed
+        assert "LOW" in completed
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_asset_enrichment(self, mocker):
+        """
+        Tests that AIDs are correctly sent to asset handler for enrichment.
+
+        Given:
+            - Vulnerabilities with various AIDs.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - Unique AIDs are extracted from vulnerabilities.
+            - AIDs are sent to asset handler for enrichment.
+            - Asset handler receives correct set of AIDs.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        # Mock API response with duplicate AIDs
+        vulnerabilities = [
+            {"id": "v1", "aid": "aid1"},
+            {"id": "v2", "aid": "aid1"},  # Duplicate
+            {"id": "v3", "aid": "aid2"},
+            {"id": "v4", "aid": "aid3"},
+        ]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        # Execute
+        total, aids, _withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="MEDIUM",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        # Verify
+        assert total == 4
+        assert aids == {"aid1", "aid2", "aid3"}  # Deduplicated
+
+        # Verify handler received AIDs
+        mock_handler.receive_new_aids.assert_awaited_once_with({"aid1", "aid2", "aid3"})
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_empty_response(self, mocker):
+        """
+        Tests handling of empty response for a severity.
+
+        Given:
+            - API returns no vulnerabilities for LOW severity.
+        When:
+            - fetch_vulnerabilities_by_severity is called for LOW.
+        Then:
+            - Function completes without error.
+            - Returns zero count and empty AID set.
+            - Still creates background task (with empty data).
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        # Mock empty API response
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": [],
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        # Execute
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="LOW",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        # Verify
+        assert total == 0
+        assert aids == set()
+        assert withheld == []  # Nothing to withhold from an empty severity
+
+        # Verify handler received empty set
+        mock_handler.receive_new_aids.assert_awaited_once_with(set())
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_401_error(self, mocker):
+        """
+        Tests that HTTP 401 authentication errors fail fast without retrying.
+
+        Given:
+            - API returns HTTP 401 Unauthorized error.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - ContentClientError is raised immediately with clear authentication error message.
+            - Error message indicates authentication failure.
+            - No retry attempts are made.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+        from ContentClientApiModule import ContentClientError
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        # Create a mock response with 401 status code
+        mock_response = mocker.Mock()
+        mock_response.status_code = 401
+        mock_response.text = "Unauthorized"
+
+        # Create ContentClientError with 401 response
+        error_401 = ContentClientError("Unauthorized", response=mock_response)
+
+        # Mock fetch_spotlight_vulnerabilities_page to raise 401 error
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page",
+            side_effect=error_401,
+        )
+
+        # Mock logging
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Execute and verify exception is raised
+        with pytest.raises(ContentClientError) as exc_info:
+            await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        # Verify error message contains authentication failure details
+        error_message = str(exc_info.value)
+        assert "Authentication failed" in error_message
+        assert "HTTP 401" in error_message
+        assert "CRITICAL" in error_message
+        assert "Invalid or expired credentials" in error_message
+
+        # Verify error was logged
+        assert any("Authentication failed" in str(call) and "error" in str(call) for call in mock_log.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_401_error_string_match(self, mocker):
+        """
+        Tests that 401 errors are detected via string matching when response object is not available.
+
+        Given:
+            - ContentClientError with "Unauthorized" or "401" in error message.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - ContentClientError is raised with clear authentication error message.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+        from ContentClientApiModule import ContentClientError
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        # Create ContentClientError with "Unauthorized" in message but no response object
+        error_unauthorized = ContentClientError("Request failed: Unauthorized access")
+
+        # Mock fetch_spotlight_vulnerabilities_page to raise error
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page",
+            side_effect=error_unauthorized,
+        )
+
+        # Mock logging
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Execute and verify exception is raised
+        with pytest.raises(ContentClientError) as exc_info:
+            await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="HIGH",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        # Verify error message contains authentication failure details
+        error_message = str(exc_info.value)
+        assert "Authentication failed" in error_message
+        assert "HIGH" in error_message
+        assert "Invalid or expired credentials" in error_message
+
+        # Verify error was logged
+        assert any("Authentication failed" in str(call) and "error" in str(call) for call in mock_log.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_withholds_first_record(self, mocker):
+        """
+        Tests that the first fetched record is withheld from the data batches (Option F seal fix).
+
+        Given:
+            - API returns 3 vulnerabilities for CRITICAL severity in a single page.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - The first record is withheld and returned as the 4th tuple element.
+            - The data batch sent to XSIAM contains only the remaining records (no duplicate of withheld).
+            - The withheld record is still counted in the total and its AID is still enriched.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [
+            {"id": "v1", "aid": "aid1"},
+            {"id": "v2", "aid": "aid2"},
+            {"id": "v3", "aid": "aid3"},
+        ]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="CRITICAL",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        # Total still counts every fetched record (withholding is at send-time, not count-time)
+        assert total == 3
+        # AID enrichment still covers the withheld record's host
+        assert aids == {"aid1", "aid2", "aid3"}
+        mock_handler.receive_new_aids.assert_awaited_once_with({"aid1", "aid2", "aid3"})
+
+        # Exactly one record withheld for the seal
+        assert withheld == [{"id": "v1", "aid": "aid1"}]
+
+        # The data batch sent during fetch must NOT include the withheld record
+        sent_data = mock_create_task.call_args.kwargs["data"]
+        assert sent_data == [{"id": "v2", "aid": "aid2"}, {"id": "v3", "aid": "aid3"}]
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_withholds_only_once_across_pages(self, mocker):
+        """
+        Tests that only the very first record (first page) is withheld, not one per page.
+
+        Given:
+            - API returns 2 pages of HIGH severity vulnerabilities.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - Only the first record of the first page is withheld.
+            - Page 2 is sent in full.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        page1_vulns = [{"id": "v1", "aid": "aid1"}, {"id": "v2", "aid": "aid2"}]
+        page2_vulns = [{"id": "v3", "aid": "aid3"}]
+
+        mock_response1 = mocker.Mock()
+        mock_response1.json.return_value = {
+            "resources": page1_vulns,
+            "meta": {"pagination": {"after": "token_page2"}},
+        }
+        mock_response2 = mocker.Mock()
+        mock_response2.json.return_value = {
+            "resources": page2_vulns,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.side_effect = [mock_response1, mock_response2]
+
+        sent_batches = []
+
+        def create_task_side_effect(*args, **kwargs):
+            sent_batches.append(kwargs["data"])
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="HIGH",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        assert total == 3
+        assert withheld == [{"id": "v1", "aid": "aid1"}]
+        # First page batch had its first record withheld; second page sent in full
+        assert sent_batches[0] == [{"id": "v2", "aid": "aid2"}]
+        assert sent_batches[1] == [{"id": "v3", "aid": "aid3"}]
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_empty_withholds_nothing(self, mocker):
+        """
+        Tests that a severity with no records withholds nothing.
+
+        Given:
+            - API returns no vulnerabilities for LOW severity.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - withheld_records is empty.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": [],
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="LOW",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        assert total == 0
+        assert withheld == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_recovers_after_truncation(self, mocker, capfd):
+        """
+        Tests Fix 2 (P1): a truncated oversized page is retried with a smaller limit and recovers.
+
+        Given:
+            - The first attempt (limit=5000) raises json.JSONDecodeError (Unterminated string).
+            - The retry at the next smaller limit (2500) succeeds.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - The same after_token is reused for the retry (not advanced).
+            - The successfully fetched page is returned.
+        """
+        import json as _json
+        from CrowdStrikeFalcon import fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+
+        good_vulns = [{"id": "v1", "aid": "aid1"}]
+        good_response = ({"resources": good_vulns}, good_vulns)
+
+        calls = []
+
+        async def page_side_effect(client, after_token, filter_query, limit):
+            calls.append({"after_token": after_token, "limit": limit})
+            if limit == 5000:
+                raise _json.JSONDecodeError("Unterminated string", doc="{", pos=0)
+            return good_vulns, {"resources": good_vulns, "meta": {"pagination": {"after": None}}}
+
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page",
+            side_effect=page_side_effect,
+        )
+        # Skip the real retry backoff so the test stays fast.
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        # Disable stdout capture since this test intentionally triggers a shrink warning log.
+        with capfd.disabled():
+            vulns, response_data, _received_at = await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok_same",
+                filter_query="filter",
+                severity="CRITICAL",
+            )
+
+        assert vulns == good_vulns
+        # First attempt used the default 5000 and failed; retry shrank to 2500 and succeeded.
+        assert calls[0]["limit"] == 5000
+        assert calls[1]["limit"] == 2500
+        # The SAME after_token was reused for the retry (page not advanced).
+        assert calls[0]["after_token"] == "tok_same"
+        assert calls[1]["after_token"] == "tok_same"
+        _ = good_response  # silence unused
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_fails_at_smallest_limit(self, mocker, capfd):
+        """
+        Tests Fix 2 (P1): if even the smallest page size is still truncated, the fetch fails.
+
+        Given:
+            - Every attempt across the whole shrink ladder raises json.JSONDecodeError.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - json.JSONDecodeError is raised after the smallest limit is exhausted.
+        """
+        import json as _json
+        from CrowdStrikeFalcon import fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+
+        async def always_truncated(client, after_token, filter_query, limit):
+            raise _json.JSONDecodeError("Unterminated string", doc="{", pos=0)
+
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page",
+            side_effect=always_truncated,
+        )
+        # Skip the real retry backoff so the test stays fast.
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled(), pytest.raises(_json.JSONDecodeError):
+            await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok",
+                filter_query="filter",
+                severity="HIGH",
+            )
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_backs_off_between_attempts(self, mocker, capfd):
+        """
+        Tests Fix 2 (P1): consecutive shrink attempts are separated by an escalating backoff.
+
+        Given:
+            - The attempts at limit 5000 and 2500 raise json.JSONDecodeError.
+            - The attempt at limit 1000 succeeds.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - A backoff sleep is awaited before each retry (never before the first attempt).
+            - The backoff delays escalate according to SPOTLIGHT_PAGE_RETRY_BACKOFF_SECONDS.
+        """
+        import json as _json
+        from CrowdStrikeFalcon import SPOTLIGHT_PAGE_RETRY_BACKOFF_SECONDS, fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+        good_vulns = [{"id": "v1", "aid": "aid1"}]
+
+        async def page_side_effect(client, after_token, filter_query, limit):
+            if limit in (5000, 2500):
+                raise _json.JSONDecodeError("Unterminated string", doc="{", pos=0)
+            return good_vulns, {"resources": good_vulns, "meta": {"pagination": {"after": None}}}
+
+        mocker.patch("CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page", side_effect=page_side_effect)
+        sleep_mock = mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled():
+            vulns, _, _received_at = await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok_same",
+                filter_query="filter",
+                severity="HIGH",
+            )
+
+        assert vulns == good_vulns
+        # Two failures => exactly two backoff sleeps, and none before the very first attempt.
+        actual_delays = [call.args[0] for call in sleep_mock.call_args_list]
+        assert actual_delays == SPOTLIGHT_PAGE_RETRY_BACKOFF_SECONDS[:2]
+        # The backoff must escalate rather than stay flat.
+        assert actual_delays[1] > actual_delays[0]
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_recovers_from_retry_error(self, mocker, capfd):
+        """
+        Tests the transient upstream 500 storm (XSUP-71944): a ContentClientRetryError is retried.
+
+        Given:
+            - The first attempt raises ContentClientRetryError ("Exceeded retry attempts"),
+              which is what an upstream HTTP 500 storm surfaces as.
+            - The next attempt succeeds.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - The page is fetched successfully instead of killing the severity.
+            - The same after_token is reused (no rows skipped).
+        """
+        from ContentClientApiModule import ContentClientRetryError
+        from CrowdStrikeFalcon import fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+        good_vulns = [{"id": "v1", "aid": "aid1"}]
+        calls = []
+
+        async def page_side_effect(client, after_token, filter_query, limit):
+            calls.append({"after_token": after_token, "limit": limit})
+            if len(calls) == 1:
+                raise ContentClientRetryError("Exceeded retry attempts: Service error")
+            return good_vulns, {"resources": good_vulns, "meta": {"pagination": {"after": None}}}
+
+        mocker.patch("CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page", side_effect=page_side_effect)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled():
+            vulns, _, _received_at = await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok_same",
+                filter_query="filter",
+                severity="HIGH",
+            )
+
+        assert vulns == good_vulns
+        assert len(calls) == 2
+        assert calls[0]["after_token"] == "tok_same"
+        assert calls[1]["after_token"] == "tok_same"
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_raises_on_persistent_retry_error(self, mocker, capfd):
+        """
+        Tests the transient upstream 500 storm (XSUP-71944): a persistent outage still fails loudly.
+
+        Given:
+            - Every attempt across the whole shrink ladder raises ContentClientRetryError.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - ContentClientRetryError is raised after the ladder is exhausted.
+            - Every step of the ladder was attempted.
+        """
+        from ContentClientApiModule import ContentClientRetryError
+        from CrowdStrikeFalcon import SPOTLIGHT_PAGE_SIZE_SHRINK_LADDER, fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+        calls = []
+
+        async def always_retry_error(client, after_token, filter_query, limit):
+            calls.append(limit)
+            raise ContentClientRetryError("Exceeded retry attempts: Service error")
+
+        mocker.patch("CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page", side_effect=always_retry_error)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled(), pytest.raises(ContentClientRetryError):
+            await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok",
+                filter_query="filter",
+                severity="HIGH",
+            )
+
+        assert calls == SPOTLIGHT_PAGE_SIZE_SHRINK_LADDER
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_does_not_retry_non_transient_errors(self, mocker, capfd):
+        """
+        Tests that non-transient failures are NOT burned through the shrink ladder.
+
+        Given:
+            - The first attempt raises a generic ContentClientError, which is how a dead
+              pagination cursor (HTTP 404 "Search context expired") surfaces.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - The error propagates immediately without consuming the ladder or sleeping,
+              because shrinking the page cannot revive an expired cursor.
+        """
+        from ContentClientApiModule import ContentClientError
+        from CrowdStrikeFalcon import fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+        calls = []
+
+        async def expired_cursor(client, after_token, filter_query, limit):
+            calls.append(limit)
+            raise ContentClientError("Request failed: Search context expired, 'after' key no longer valid")
+
+        mocker.patch("CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page", side_effect=expired_cursor)
+        sleep_mock = mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled(), pytest.raises(ContentClientError):
+            await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok",
+                filter_query="filter",
+                severity="MEDIUM",
+            )
+
+        assert calls == [5000]
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_recovers_from_bare_content_client_error_500(self, mocker, capfd):
+        """
+        Tests the real shape of an upstream 500 (XSUP-71944), verified against a mock CrowdStrike server.
+
+        ContentClientApiModule raises a *bare* ContentClientError, not ContentClientRetryError, once it
+        has burned its own retry budget on a retryable status: the `attempt < max_attempts` guard is
+        False on the final pass, so it falls through to `raise ContentClientError(...)`. Matching only
+        the ContentClientRetryError subclass meant the shrink ladder never ran for an HTTP 500.
+
+        Given:
+            - The first attempt raises a bare ContentClientError carrying an HTTP 500 response.
+            - The next attempt succeeds.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - The page is fetched successfully instead of killing the severity.
+            - The same after_token is reused (no rows skipped).
+        """
+        from ContentClientApiModule import ContentClientError
+        from CrowdStrikeFalcon import fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+        good_vulns = [{"id": "v1", "aid": "aid1"}]
+        calls = []
+
+        async def page_side_effect(client, after_token, filter_query, limit):
+            calls.append({"after_token": after_token, "limit": limit})
+            if len(calls) == 1:
+                raise ContentClientError(
+                    'Request failed: {"errors":[{"code":500,"message":"Server error"}]}',
+                    response=mocker.Mock(status_code=500),
+                )
+            return good_vulns, {"resources": good_vulns, "meta": {"pagination": {"after": None}}}
+
+        mocker.patch("CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page", side_effect=page_side_effect)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled():
+            vulns, _, _received_at = await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok_same",
+                filter_query="filter",
+                severity="HIGH",
+            )
+
+        assert vulns == good_vulns
+        assert len(calls) == 2
+        assert calls[0]["after_token"] == "tok_same"
+        assert calls[1]["after_token"] == "tok_same"
+
+    @pytest.mark.asyncio
+    async def test_fetch_spotlight_page_with_shrink_does_not_retry_non_transient_status(self, mocker, capfd):
+        """
+        Tests that widening the catch to ContentClientError did NOT make the ladder swallow everything.
+
+        Given:
+            - The first attempt raises a ContentClientError carrying an HTTP 404 response, which is how
+              a dead pagination cursor ("Search context expired") surfaces.
+        When:
+            - fetch_spotlight_page_with_shrink is called.
+        Then:
+            - The error propagates immediately without consuming the ladder or sleeping, because 404 is
+              not in SPOTLIGHT_TRANSIENT_HTTP_STATUS_CODES and shrinking cannot revive an expired cursor.
+        """
+        from ContentClientApiModule import ContentClientError
+        from CrowdStrikeFalcon import fetch_spotlight_page_with_shrink
+
+        mock_client = mocker.AsyncMock()
+        calls = []
+
+        async def expired_cursor(client, after_token, filter_query, limit):
+            calls.append(limit)
+            raise ContentClientError(
+                "Request failed: Search context expired, 'after' key no longer valid",
+                response=mocker.Mock(status_code=404),
+            )
+
+        mocker.patch("CrowdStrikeFalcon.fetch_spotlight_vulnerabilities_page", side_effect=expired_cursor)
+        sleep_mock = mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new=mocker.AsyncMock())
+
+        with capfd.disabled(), pytest.raises(ContentClientError):
+            await fetch_spotlight_page_with_shrink(
+                client=mock_client,
+                after_token="tok",
+                filter_query="filter",
+                severity="MEDIUM",
+            )
+
+        assert calls == [5000]
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_send_failure_is_skipped_not_counted(self, mocker, capfd):
+        """
+        Tests Fix 1 (P0): a failed XSIAM send must NOT be counted-but-dropped.
+
+        Given:
+            - API returns vulnerabilities for CRITICAL severity.
+            - The background send task fails (raises) after all retries.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - The fetch does NOT raise: a send failure is non-fatal and the severity completes.
+            - Records from the failed send are NOT added to the returned total, so
+              declared == stored (only the withheld record, which ships in the seal, is counted).
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [
+            {"id": "v1", "aid": "aid1"},
+            {"id": "v2", "aid": "aid2"},
+            {"id": "v3", "aid": "aid3"},
+        ]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        # Simulate a send that fails after all retries (e.g. Bad Gateway / connection timeout)
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_exception(Exception("Bad Gateway"))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        with capfd.disabled():
+            total, _aids, withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        # The 2 records in the failed batch are NOT counted; only the withheld record is,
+        # because the withheld record is guaranteed to ship in the seal batch.
+        assert total == 1
+        assert withheld == [{"id": "v1", "aid": "aid1"}]
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_counts_partially_stored_batch(self, mocker, capfd):
+        """
+        Tests Fix 1 (P0): a partially stored batch is counted by what XSIAM actually stored.
+
+        Given:
+            - API returns 5 vulnerabilities (1 withheld, 4 sent in one batch).
+            - The send task reports that only 3 of those 4 records were stored
+              (one chunk of the batch failed).
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - total == withheld(1) + actually-stored(3) == 4, NOT 5.
+            - This keeps declared == stored even on a partial failure.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [{"id": f"v{i}", "aid": f"aid{i}"} for i in range(1, 6)]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        # 4 records were sent, but XSIAM only stored 3 of them (one chunk failed).
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, 3))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        with capfd.disabled():
+            total, _aids, withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        # 1 withheld (always in the seal) + 3 actually stored = 4. The 1 lost record is not counted.
+        assert total == 4
+        assert withheld == [vulnerabilities[0]]
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_reports_lost_records_to_accumulator(self, mocker, capfd):
+        """
+        Tests that a severity reports how many records XSIAM refused, for the snapshot-level seal log.
+
+        The declared total already excludes lost records, so without this accumulator a lossy run and a
+        clean run produce an identical seal line and the loss is invisible at snapshot level.
+
+        Given:
+            - A severity whose only page returns 5 vulnerabilities (1 withheld, 4 sent in one batch).
+            - The send reports that XSIAM stored only 3 of those 4 records.
+            - The caller passes a lost_records_by_severity accumulator.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - The accumulator records exactly 1 lost record under this severity, matching the
+              gap between what was sent (4) and what was stored (3).
+            - The returned total still excludes the lost record, so declared == stored.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [{"id": f"v{i}", "aid": f"aid{i}"} for i in range(1, 6)]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        # 4 records were sent, XSIAM stored 3 -> exactly 1 lost.
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, 3))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        lost_records_by_severity: dict = {}
+
+        with capfd.disabled():
+            total, _aids, _withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+                lost_records_by_severity=lost_records_by_severity,
+            )
+
+        assert lost_records_by_severity == {"CRITICAL": 1}
+        # The lost record is still excluded from the declared count: 1 withheld + 3 stored.
+        assert total == 4
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_reports_zero_lost_on_a_clean_run(self, mocker, capfd):
+        """
+        Tests that a severity with no losses reports 0 rather than being absent from the accumulator.
+
+        An absent key and a zero are both falsy when summed, but only an explicit 0 proves the severity
+        ran and lost nothing; absence is indistinguishable from a severity that never reported.
+
+        Given:
+            - A severity whose only page returns 5 vulnerabilities (1 withheld, 4 sent).
+            - The send reports that XSIAM stored all 4.
+        When:
+            - fetch_vulnerabilities_by_severity is called with an accumulator.
+        Then:
+            - The accumulator holds an explicit 0 for this severity.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [{"id": f"v{i}", "aid": f"aid{i}"} for i in range(1, 6)]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        # 4 sent, 4 stored -> nothing lost.
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, 4))
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        lost_records_by_severity: dict = {}
+
+        with capfd.disabled():
+            total, _aids, _withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="HIGH",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+                lost_records_by_severity=lost_records_by_severity,
+            )
+
+        assert lost_records_by_severity == {"HIGH": 0}
+        assert total == 5
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_skips_empty_batches(self, mocker, capfd):
+        """
+        Tests that a page with nothing left to send does not create a send task.
+
+        send_data_to_xsiam_async intentionally turns an empty assets payload into a single "seal"
+        chunk and reports its size as 1. Sending an empty batch would therefore add a phantom record
+        to the declared total (declared > stored) and leave the snapshot open.
+
+        Given:
+            - A severity whose only page returns exactly one vulnerability, which is withheld
+              for the seal, leaving nothing to send.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - No send task is created at all.
+            - total == 1 (the withheld record only), never 2.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": [{"id": "v1", "aid": "aid1"}],
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        mock_create_task = mocker.patch("CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context")
+
+        with capfd.disabled():
+            total, _aids, withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        mock_create_task.assert_not_called()
+        assert total == 1
+        assert withheld == [{"id": "v1", "aid": "aid1"}]
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_no_results_counts_zero(self, mocker, capfd):
+        """
+        Tests that a severity with no vulnerabilities at all contributes exactly 0.
+
+        Given:
+            - A severity whose only page returns no resources (common for UNKNOWN / NONE).
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - No send task is created and total == 0, so the severity adds nothing to the
+              declared count.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"resources": [], "meta": {"pagination": {"after": None}}}
+        mock_client._request.return_value = mock_response
+
+        mock_create_task = mocker.patch("CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context")
+
+        with capfd.disabled():
+            total, _aids, withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="UNKNOWN",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        mock_create_task.assert_not_called()
+        assert total == 0
+        assert withheld == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_clamps_overreported_stored_count(self, mocker, capfd):
+        """
+        Tests the declared <= stored guard: a sender can never inflate the total.
+
+        Given:
+            - 3 vulnerabilities (1 withheld, 2 sent).
+            - The send task erroneously reports 99 records stored.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - The counted amount is clamped to the 2 records actually attempted,
+              so total == withheld(1) + 2 == 3.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": [{"id": f"v{i}", "aid": f"aid{i}"} for i in range(1, 4)],
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, 99))  # Nonsensical over-report
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        with capfd.disabled():
+            total, _aids, _withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        assert total == 3
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_cancelled_send_is_not_fatal(self, mocker, capfd):
+        """
+        Tests that a cancelled send task does not kill the severity.
+
+        asyncio.CancelledError derives from BaseException (not Exception) since Python 3.8, so
+        catching only Exception would let it escape and abort the whole severity.
+
+        Given:
+            - The background send task is cancelled.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - The fetch completes without raising and the cancelled records are not counted.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": [{"id": f"v{i}", "aid": f"aid{i}"} for i in range(1, 4)],
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.cancel()
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        with capfd.disabled():
+            total, _aids, _withheld = await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="CRITICAL",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        # Only the withheld record is counted; the cancelled batch contributes nothing.
+        assert total == 1
+
+    @pytest.mark.asyncio
+    async def test_fetch_vulnerabilities_by_severity_counts_only_successful_sends(self, mocker):
+        """
+        Tests Fix 1 (P0): total is counted on successful send, plus the withheld record.
+
+        Given:
+            - API returns 3 vulnerabilities in a single page (1 withheld, 2 sent).
+            - The background send succeeds.
+        When:
+            - fetch_vulnerabilities_by_severity is called.
+        Then:
+            - total == withheld(1) + successfully-sent(2) == 3.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [
+            {"id": "v1", "aid": "aid1"},
+            {"id": "v2", "aid": "aid2"},
+            {"id": "v3", "aid": "aid3"},
+        ]
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": None}},
+        }
+        mock_client._request.return_value = mock_response
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result((1, len(kwargs.get("data", []))))  # batch_number result of a successful send
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="CRITICAL",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        # 1 withheld (guaranteed sent in the seal) + 2 successfully sent = 3
+        assert total == 3
+        assert withheld == [{"id": "v1", "aid": "aid1"}]
+
+    @pytest.mark.asyncio
+    async def test_asset_seal_failure_does_not_fail_a_cycle_whose_vulnerabilities_sealed(self, mocker):
+        """
+        Tests that a failed asset seal does not discard an otherwise successful fetch cycle.
+
+        flush_remaining raises on a failed seal on purpose, so neither it nor its own callers can
+        mistake an unsealed snapshot for a sealed one. By the time finalize_severity_fetch calls
+        it, however, the vulnerability snapshot has ALREADY sealed a few lines earlier. Letting the
+        exception past this point would fail a cycle whose vulnerability data is safely stored,
+        and - because the caller skips its state reset on failure - the next cycle would re-enter
+        finalize and seal the same vulnerability snapshot_id a second time.
+
+        The cost of absorbing is one unsealed asset snapshot, which the next cycle re-enriches
+        under a fresh snapshot_id. That is recoverable; a duplicate vulnerability seal is not.
+
+        Given:
+            - All severities completed, so the vulnerability snapshot seals.
+            - The asset seal inside flush_remaining then fails.
+        When:
+            - finalize_severity_fetch runs.
+        Then:
+            - No exception escapes, so the cycle is not retried and the seal is not duplicated.
+            - The vulnerability seal still went out.
+            - The asset failure is logged as an error rather than passing silently.
+        """
+        from CrowdStrikeFalcon import finalize_severity_fetch, SPOTLIGHT_SEVERITIES
+
+        # No stub for a global background-task wait: vulnerability send tasks are now drained
+        # per-severity, so finalize_severity_fetch has nothing left to await before the seal.
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result(1)
+            return f
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        mock_handler = mocker.Mock()
+        mock_handler.processed_aids = set()
+        mock_handler.stored_assets_count = 0
+        # The asset seal is rejected by XSIAM, exactly as flush_remaining is designed to surface.
+        mock_handler.flush_remaining = mocker.AsyncMock(side_effect=DemistoException("XSIAM rejected the asset seal"))
+
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Must not raise: the vulnerability data is already safe.
+        # No all_pending_tasks argument: send tasks are drained per-severity before this point,
+        # so finalize_severity_fetch no longer takes a global set of tasks to await.
+        await finalize_severity_fetch(
+            current_completed_severities=list(SPOTLIGHT_SEVERITIES),
+            total_vulnerabilities=1000,
+            all_unique_aids={"aid1", "aid2"},
+            asset_handler=mock_handler,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            withheld_records=[{"id": "v1", "aid": "aid1"}],
+        )
+
+        mock_handler.flush_remaining.assert_awaited_once()
+        # The vulnerability seal still went out, which is what makes absorbing safe.
+        assert mock_create_task.called, "the vulnerability snapshot must still have sealed"
+        # The asset failure is reported loudly rather than vanishing.
+        assert any(
+            "failed to seal" in str(call.args[0]) and len(call.args) > 1 and call.args[1] == "error"
+            for call in mock_log.call_args_list
+        ), "the asset seal failure must be logged as an error"
+
+    @pytest.mark.asyncio
+    async def test_finalize_seals_with_real_withheld_records(self, mocker):
+        """
+        Tests that the final sealing batch carries real withheld records and the true total count.
+
+        Given:
+            - All severities completed.
+            - Withheld records collected from severities.
+        When:
+            - finalize_severity_fetch is called.
+        Then:
+            - The seal batch is sent with the withheld records as data (NOT empty).
+            - items_count equals the true total_vulnerabilities.
+            - batch_number is the high sealing number (999999).
+        """
+        from CrowdStrikeFalcon import finalize_severity_fetch, SPOTLIGHT_SEVERITIES
+
+        seal_call = {}
+
+        def create_task_side_effect(*args, **kwargs):
+            seal_call.update(kwargs)
+            f = asyncio.Future()
+            f.set_result(1)
+            return f
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        mock_handler = mocker.Mock()
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        withheld_records = [{"id": "v1", "aid": "aid1"}, {"id": "v2", "aid": "aid2"}]
+
+        await finalize_severity_fetch(
+            current_completed_severities=list(SPOTLIGHT_SEVERITIES),
+            total_vulnerabilities=1000,
+            all_unique_aids={"aid1", "aid2"},
+            asset_handler=mock_handler,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            withheld_records=withheld_records,
+        )
+
+        # The seal must carry real data, not an empty list
+        assert mock_create_task.called
+        assert seal_call["data"] == withheld_records
+        assert seal_call["data"] != []
+        assert seal_call["items_count"] == 1000
+        assert seal_call["batch_number"] == 999999
+
+    @pytest.mark.asyncio
+    async def test_finalize_warns_with_the_snapshot_level_lost_total(self, mocker):
+        """
+        Tests that a lossy snapshot emits a warning carrying the snapshot-level lost-record total.
+
+        The declared count already excludes lost records, so a lossy snapshot seals and looks healthy.
+        Per-severity lines carry the losses, but nothing sums them, which means finding a shortfall
+        requires manually adding six lines. This total makes a lossy seal self-evident.
+
+        Given:
+            - All severities completed.
+            - Two severities lost records (3 and 4) and the rest lost nothing.
+        When:
+            - finalize_severity_fetch is called with the per-severity lost counts.
+        Then:
+            - A single warning reports 7 lost records.
+            - The per-severity breakdown lists only the lossy severities, so a clean seal stays quiet.
+            - The snapshot still seals: lost records do not block the seal.
+        """
+        from CrowdStrikeFalcon import finalize_severity_fetch, SPOTLIGHT_SEVERITIES
+
+        verify_lines: list = []
+        mocker.patch(
+            "CrowdStrikeFalcon.log_falcon_assets",
+            side_effect=lambda line, *args, **kwargs: verify_lines.append(line),
+        )
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result(1)
+            return f
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        mock_handler = mocker.Mock()
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        lost_records_by_severity = {severity: 0 for severity in SPOTLIGHT_SEVERITIES}
+        lost_records_by_severity["CRITICAL"] = 3
+        lost_records_by_severity["LOW"] = 4
+
+        await finalize_severity_fetch(
+            current_completed_severities=list(SPOTLIGHT_SEVERITIES),
+            total_vulnerabilities=993,
+            all_unique_aids={"aid1"},
+            asset_handler=mock_handler,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            withheld_records=[{"id": "v1", "aid": "aid1"}],
+            lost_records_by_severity=lost_records_by_severity,
+        )
+
+        lost_lines = [line for line in verify_lines if "not stored by XSIAM" in line]
+        assert len(lost_lines) == 1
+        lost_line = lost_lines[0]
+
+        assert "7 record(s)" in lost_line
+        assert "'CRITICAL': 3" in lost_line
+        assert "'LOW': 4" in lost_line
+        # Only the lossy severities appear, so a clean run does not print six zeros.
+        assert "'HIGH'" not in lost_line
+        # Lost records are non-fatal: the snapshot still seals.
+        assert mock_create_task.called
+
+    @pytest.mark.asyncio
+    async def test_finalize_stays_quiet_about_lost_records_on_a_clean_run(self, mocker):
+        """
+        Tests that a clean run emits no lost-record warning at all.
+
+        The warning is the signal that a snapshot sealed smaller than what Falcon returned, so it
+        must not fire on a healthy run - otherwise it stops meaning anything.
+
+        Given:
+            - All severities completed with no lost records.
+        When:
+            - finalize_severity_fetch is called.
+        Then:
+            - No lost-record warning is emitted.
+        """
+        from CrowdStrikeFalcon import finalize_severity_fetch, SPOTLIGHT_SEVERITIES
+
+        verify_lines: list = []
+        mocker.patch(
+            "CrowdStrikeFalcon.log_falcon_assets",
+            side_effect=lambda line, *args, **kwargs: verify_lines.append(line),
+        )
+
+        def create_task_side_effect(*args, **kwargs):
+            f = asyncio.Future()
+            f.set_result(1)
+            return f
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        mock_handler = mocker.Mock()
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        await finalize_severity_fetch(
+            current_completed_severities=list(SPOTLIGHT_SEVERITIES),
+            total_vulnerabilities=1000,
+            all_unique_aids={"aid1"},
+            asset_handler=mock_handler,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            withheld_records=[{"id": "v1", "aid": "aid1"}],
+            lost_records_by_severity={severity: 0 for severity in SPOTLIGHT_SEVERITIES},
+        )
+
+        assert not [line for line in verify_lines if "not stored by XSIAM" in line]
+
+    @pytest.mark.asyncio
+    async def test_finalize_skips_seal_when_no_withheld_records(self, mocker):
+        """
+        Tests that no seal request is emitted when the grand total is zero (no withheld records).
+
+        Given:
+            - All severities completed but there are zero records overall.
+        When:
+            - finalize_severity_fetch is called with empty withheld_records.
+        Then:
+            - No sealing batch is sent (legitimately empty snapshot, no empty request emitted).
+        """
+        from CrowdStrikeFalcon import finalize_severity_fetch, SPOTLIGHT_SEVERITIES
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+        )
+
+        mock_handler = mocker.Mock()
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        await finalize_severity_fetch(
+            current_completed_severities=list(SPOTLIGHT_SEVERITIES),
+            total_vulnerabilities=0,
+            all_unique_aids=set(),
+            asset_handler=mock_handler,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            withheld_records=[],
+        )
+
+        # No empty seal request should be emitted
+        mock_create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_finalize_does_not_seal_when_severities_incomplete(self, mocker, capfd):
+        """
+        Tests that the seal is not sent if not all severities completed (resume next cycle).
+
+        Given:
+            - Only some severities completed.
+            - Withheld records present.
+        When:
+            - finalize_severity_fetch is called.
+        Then:
+            - No seal is emitted; the snapshot is not finalized this cycle.
+        """
+        from CrowdStrikeFalcon import finalize_severity_fetch
+
+        mock_create_task = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+        )
+        mock_handler = mocker.Mock()
+        mock_handler.flush_remaining = mocker.AsyncMock()
+        mock_handler.processed_aids = set()
+
+        # This path intentionally logs a "NOT sealed" warning to stderr; disable capture.
+        with capfd.disabled():
+            await finalize_severity_fetch(
+                current_completed_severities=["CRITICAL", "HIGH"],
+                total_vulnerabilities=30,
+                all_unique_aids={"aid1"},
+                asset_handler=mock_handler,
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                withheld_records=[{"id": "v1", "aid": "aid1"}],
+            )
+
+        mock_create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_await_and_aggregate_collects_withheld_records(self, mocker):
+        """
+        Tests that withheld records are aggregated across severities.
+
+        Given:
+            - Several severity tasks each returning a withheld record.
+        When:
+            - await_and_aggregate_severity_results is called.
+        Then:
+            - All withheld records are aggregated and returned.
+        """
+        from CrowdStrikeFalcon import await_and_aggregate_severity_results
+
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        def make_task(result):
+            f = asyncio.Future()
+            f.set_result(result)
+            return f
+
+        severity_tasks = [
+            ("CRITICAL", make_task((10, {"aid1"}, [{"id": "c1", "aid": "aid1"}]))),
+            ("HIGH", make_task((20, {"aid2"}, [{"id": "h1", "aid": "aid2"}]))),
+            ("LOW", make_task((0, set(), []))),
+        ]
+
+        (
+            total,
+            all_aids,
+            completed,
+            withheld,
+        ) = await await_and_aggregate_severity_results(
+            severity_tasks=severity_tasks,
+            current_completed_severities=[],
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+        )
+
+        assert total == 30
+        assert all_aids == {"aid1", "aid2"}
+        assert {"id": "c1", "aid": "aid1"} in withheld
+        assert {"id": "h1", "aid": "aid2"} in withheld
+        assert len(withheld) == 2
+
+    @pytest.mark.asyncio
+    async def test_await_and_aggregate_merges_prior_withheld_records(self, mocker):
+        """
+        Tests that withheld records from previous cycles are merged and re-persisted (XSUP-70815).
+
+        Given:
+            - prior_withheld_records loaded from context (from severities completed earlier).
+            - A new severity completing this cycle with its own withheld record.
+        When:
+            - await_and_aggregate_severity_results is called.
+        Then:
+            - The returned withheld records include both the prior and the new records.
+            - The merged list is persisted to context via update_spotlight_state_and_metadata
+              so it survives a later resume / container restart.
+        """
+        from CrowdStrikeFalcon import await_and_aggregate_severity_results
+
+        mock_update_state = mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        def make_task(result):
+            f = asyncio.Future()
+            f.set_result(result)
+            return f
+
+        prior = [{"id": "c1", "aid": "aid1"}, {"id": "h1", "aid": "aid2"}]
+        severity_tasks = [
+            ("MEDIUM", make_task((15, {"aid3"}, [{"id": "m1", "aid": "aid3"}]))),
+        ]
+
+        (
+            total,
+            all_aids,
+            completed,
+            withheld,
+        ) = await await_and_aggregate_severity_results(
+            severity_tasks=severity_tasks,
+            current_completed_severities=["CRITICAL", "HIGH"],
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            prior_withheld_records=prior,
+        )
+
+        # Returned list carries prior + new
+        assert {"id": "c1", "aid": "aid1"} in withheld
+        assert {"id": "h1", "aid": "aid2"} in withheld
+        assert {"id": "m1", "aid": "aid3"} in withheld
+        assert len(withheld) == 3
+
+        # The merged withheld records were persisted to context
+        assert mock_update_state.called
+        saved_withheld = mock_update_state.call_args.kwargs["withheld_records"]
+        assert {"id": "c1", "aid": "aid1"} in saved_withheld
+        assert {"id": "m1", "aid": "aid3"} in saved_withheld
+        assert len(saved_withheld) == 3
+
+    def test_update_spotlight_state_persists_withheld_records(self, mocker):
+        """
+        Tests that withheld_records are written into the spotlight metadata.
+
+        Given:
+            - A spotlight state object and a list of withheld records.
+        When:
+            - update_spotlight_state_and_metadata is called with withheld_records.
+        Then:
+            - The metadata contains the withheld_records so they are persisted to context.
+        """
+        from CrowdStrikeFalcon import update_spotlight_state_and_metadata, ContentClientState
+
+        state = ContentClientState.from_dict({})
+        withheld = [{"id": "c1", "aid": "aid1"}]
+
+        update_spotlight_state_and_metadata(
+            spotlight_state=state,
+            cursor=None,
+            snapshot_id="snap123",
+            total_fetched=0,
+            unique_aids=set(),
+            processed_aids=set(),
+            completed_severities=["CRITICAL"],
+            withheld_records=withheld,
+        )
+
+        assert state.metadata["withheld_records"] == withheld
+        assert state.metadata["completed_severities"] == ["CRITICAL"]
+
+
+class TestAssetsDeviceHandler:
+    @pytest.mark.asyncio
+    async def test_handler_trigger_enrichment(self, mocker):
+        """
+        Tests that the AssetsDeviceHandler triggers enrichment when the batch limit is exceeded.
+
+        Given:
+            - A handler with a batch limit of 5.
+            - 7 unique AIDs are received.
+        When:
+            - receive_aids is called.
+        Then:
+            - Enrichment is triggered once for the first 5 AIDs.
+            - 2 AIDs remain in the pending buffer.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=5,
+        )
+
+        handler.enrich_and_ingest_batch = mocker.AsyncMock()
+
+        # Execute
+        await handler.receive_new_aids({f"aid{i}" for i in range(7)})
+
+        # Verify
+        assert len(handler.pending_buffer) == 2
+        handler.enrich_and_ingest_batch.assert_called_once()
+        args, _ = handler.enrich_and_ingest_batch.call_args
+        assert len(args[0]) == 5
+
+    @pytest.mark.asyncio
+    async def test_handler_deduplication(self, mocker):
+        """
+        Tests that the AssetsDeviceHandler correctly deduplicates AIDs.
+
+        Given:
+            - A handler with "processed_1" in processed_aids and "buffer_1" in the buffer.
+        When:
+            - receive_aids is called with duplicate and new AIDs.
+        Then:
+            - Only the new AIDs are added to the buffer.
+            - Existing processed and buffered AIDs are ignored.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # Setup
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap1",
+            processed_aids={"processed_1"},
+            batch_limit=10,
+        )
+
+        # Pre-fill buffer
+        handler.pending_buffer = {"buffer_1"}
+
+        # Execute
+        await handler.receive_new_aids({"processed_1", "buffer_1", "new_1"})
+
+        # Verify
+        assert handler.pending_buffer == {"buffer_1", "new_1"}
+
+    @pytest.mark.asyncio
+    async def test_a_saturated_handler_does_not_stall_the_page_loop(self, mocker):
+        """
+        Tests that receive_new_aids dispatches without blocking on asset concurrency.
+
+        Given:
+            - Far more batches than MAX_PENDING_ASSET_TASKS, with uploads that outlive their
+              enrichment, so the limit is saturated.
+        When:
+            - receive_new_aids is called.
+        Then:
+            - It never suspends waiting for asset work. It runs on the vulnerability page loop,
+              and the pagination cursor's TTL is measured against the gap between that loop's
+              requests. The limit itself is unchanged; it is awaited inside each batch's own task.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=1,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        async def _slow_upload():
+            for _ in range(5):
+                await asyncio.sleep(0)
+            return 1, 1
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=lambda **_kwargs: asyncio.create_task(_slow_upload()),
+        )
+        mocker.patch.object(handler, "_filter_asset_fields", side_effect=lambda d: d)
+        handler.client._request.return_value = mocker.Mock(status_code=200, json=lambda: {"resources": [{"device_id": "d1"}]})
+
+        # How the previous implementation blocked once the task set was full.
+        blocking_waits = 0
+        real_wait = asyncio.wait
+
+        async def counting_wait(*args, **kwargs):
+            nonlocal blocking_waits
+            blocking_waits += 1
+            return await real_wait(*args, **kwargs)
+
+        mocker.patch("CrowdStrikeFalcon.asyncio.wait", side_effect=counting_wait)
+
+        # batch_limit=1 gives a threshold of 2, so each extra AID dispatches another batch.
+        await handler.receive_new_aids({f"aid{i}" for i in range(30)})
+
+        assert blocking_waits == 0, (
+            f"receive_new_aids blocked {blocking_waits} time(s) on asset enrichment, " f"spending the pagination cursor's TTL"
+        )
+
+        await handler.drain()
+
+    @pytest.mark.asyncio
+    async def test_handler_flush_remaining(self, mocker):
+        """
+        Tests that flush_remaining processes any items left in the buffer.
+
+        Given:
+            - A handler with AIDs in the pending buffer.
+        When:
+            - flush_remaining is called.
+        Then:
+            - Enrichment is triggered for the remaining items.
+            - The buffer is cleared.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # Setup
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        handler.pending_buffer = {"aid1", "aid2"}
+        # Returns None, matching a batch that resolved no devices and so has no send task to await.
+        handler.enrich_and_ingest_batch = mocker.AsyncMock(return_value=None)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Execute
+        await handler.flush_remaining(submitted_aids_count=100)
+
+        # Verify
+        handler.enrich_and_ingest_batch.assert_called_once()
+        args, _kwargs = handler.enrich_and_ingest_batch.call_args
+        assert set(args[0]) == {"aid1", "aid2"}
+        assert len(handler.pending_buffer) == 0
+
+    @staticmethod
+    def _device_response(mocker, device_ids, errors=None, status_code=200):
+        """Build a Devices API response resolving the given device IDs."""
+        response = mocker.Mock()
+        response.status_code = status_code
+        response.json.return_value = {
+            "resources": [{"device_id": device_id} for device_id in device_ids],
+            "errors": errors or [],
+        }
+        return response
+
+    @staticmethod
+    def _patch_send(mocker, stored_per_call=None):
+        """
+        Patch the XSIAM send so it records calls but still returns a real awaitable task.
+
+        flush_remaining gathers the tasks it collected, so a plain Mock return value would raise
+        before any behaviour under test is reached. The task resolves to
+        ``(batch_number, records_stored)``, mirroring send_batch_to_xsiam_and_save_context.
+
+        Args:
+            stored_per_call: Optional list giving records_stored for each successive call, so a
+                test can simulate a batch that stored nothing. Defaults to storing everything.
+        """
+        call_index = 0
+
+        async def _completed(batch_number, records_stored):
+            return batch_number, records_stored
+
+        def _fake_send(**kwargs):
+            nonlocal call_index
+            if stored_per_call is not None and call_index < len(stored_per_call):
+                records_stored = stored_per_call[call_index]
+            else:
+                records_stored = len(kwargs["data"])
+            call_index += 1
+            return asyncio.ensure_future(_completed(kwargs["batch_number"], records_stored))
+
+        return mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=_fake_send,
+        )
+
+    @pytest.mark.asyncio
+    async def test_enrichment_failure_does_not_fail_the_fetch(self, mocker):
+        """
+        Tests that a broken Devices API does not take the vulnerability fetch down with it.
+
+        Assets are flushed from finalize_severity_fetch *after* the vulnerability snapshot has
+        already been sealed, so raising here would fail a fetch whose vulnerability data is safely
+        stored. The asset path therefore absorbs and reports, exactly as reap_completed_send_tasks
+        does for vulnerability sends.
+
+        Given:
+            - Every batch gets a 404 with no resources and no errors (a broken endpoint).
+            - 10 AIDs with batch_limit=5, so pending_buffer is empty when flush_remaining runs.
+        When:
+            - flush_remaining drains the enrichment tasks.
+        Then:
+            - No exception escapes, so the vulnerability flow is unaffected.
+            - Nothing is sealed: no row was ever enriched, so there is no row to carry a count and
+              no bogus total is declared.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, [], status_code=404)
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=5,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.receive_new_aids({f"aid{index}" for index in range(10)})
+        # The batches consumed the buffer exactly, so nothing is awaited outside the drain.
+        assert not handler.pending_buffer
+
+        # Must not raise: the vulnerability snapshot has already sealed by this point.
+        await handler.flush_remaining(submitted_aids_count=10)
+
+        # Nothing enriched, so nothing to seal with - and no count is declared on empty.
+        send_mock.assert_not_called()
+        assert handler.stored_assets_count == 0
+
+    @pytest.mark.asyncio
+    async def test_leftover_buffer_enrichment_failure_does_not_fail_the_fetch(self, mocker):
+        """
+        Tests the same absorb guarantee on the path where AIDs are still buffered.
+
+        The sibling test above drains a buffer that emptied exactly, so the only failures it sees
+        come from the gather. Here the final enrichment is awaited directly by flush_remaining,
+        which is a separate call site and needs its own guard. This is the common case in
+        production: an AID count is rarely an exact multiple of batch_limit.
+
+        Given:
+            - 3 AIDs left in pending_buffer with batch_limit=10, so they are enriched by
+              flush_remaining itself rather than by a background task.
+            - The Devices API returns a 404 with no resources and no errors (a broken endpoint).
+        When:
+            - flush_remaining runs.
+        Then:
+            - No exception escapes, so the already-sealed vulnerability fetch is not failed.
+            - Nothing is sent and nothing is counted.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, [], status_code=404)
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Fewer AIDs than batch_limit, so receive_new_aids dispatches nothing and they stay buffered.
+        await handler.receive_new_aids({"a" * 32, "b" * 32, "c" * 32})
+        assert handler.pending_buffer, "the AIDs must still be buffered for this path to be exercised"
+
+        # Must not raise: the vulnerability snapshot has already sealed by this point.
+        await handler.flush_remaining(submitted_aids_count=3)
+
+        send_mock.assert_not_called()
+        assert handler.stored_assets_count == 0
+
+    @pytest.mark.asyncio
+    async def test_a_failed_batch_still_seals_on_the_rows_that_landed(self, mocker):
+        """
+        Tests that one broken batch costs only its own rows, not the whole snapshot.
+
+        This is the partial-tolerance contract the vulnerability path already has: a failed batch
+        contributes nothing to the count, and the snapshot seals smaller rather than not at all.
+
+        Given:
+            - 10 AIDs with batch_limit=5; the first batch resolves, the second 404s.
+        When:
+            - flush_remaining drains both.
+        Then:
+            - The seal is still sent, declaring only the rows that actually landed.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = [
+            self._device_response(mocker, [f"aid{index}" for index in range(5)]),
+            self._device_response(mocker, [], status_code=404),
+        ]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=5,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.receive_new_aids({f"aid{index}" for index in range(10)})
+
+        await handler.flush_remaining(submitted_aids_count=10)
+
+        # Two sends: the four rows of the surviving batch, then the seal carrying the withheld row.
+        assert send_mock.call_count == 2
+        # The seal declares only what landed - 4 stored + 1 withheld - not the 10 AIDs submitted.
+        assert send_mock.call_args.kwargs["items_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_seals_when_the_aid_count_is_an_exact_multiple_of_batch_limit(self, mocker):
+        """
+        Tests the boundary where receive_new_aids consumes the buffer completely.
+
+        No AID is reserved for the flush, so an exact multiple of batch_limit leaves pending_buffer
+        empty and flush_remaining performs no final enrichment. The seal must still be sent, which
+        is only possible because a row was withheld rather than an AID.
+
+        Given:
+            - 10 AIDs with batch_limit=5, every device resolving.
+        When:
+            - flush_remaining runs with an empty buffer.
+        Then:
+            - No final enrichment call is made, and the snapshot still seals declaring all 10 rows.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = [
+            self._device_response(mocker, [f"aid{index}" for index in range(5)]),
+            self._device_response(mocker, [f"aid{index}" for index in range(5, 10)]),
+        ]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=5,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.receive_new_aids({f"aid{index}" for index in range(10)})
+        assert not handler.pending_buffer
+
+        await handler.flush_remaining(submitted_aids_count=10)
+
+        # Only the two bulk batches were enriched; the flush added no third lookup.
+        assert mock_client._request.await_count == 2
+        # 9 rows sent in bulk + the 1 withheld row carrying the count.
+        assert send_mock.call_args.kwargs["items_count"] == 10
+
+    @pytest.mark.asyncio
+    async def test_bulk_batches_never_declare_a_sealing_count(self, mocker):
+        """
+        Tests that an enrichment batch never carries a count that could seal the snapshot.
+
+        Given:
+            - A batch of AIDs that resolve to devices.
+        When:
+            - The batch is enriched and sent.
+        Then:
+            - The declared count is 1, leaving the snapshot open. Only the dedicated sealing
+              send may declare the real total.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, ["a" * 32, "b" * 32, "c" * 32])
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = mocker.patch("CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context")
+        # The autouse check_std_out_err fixture fails any test that writes to stdout.
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.enrich_and_ingest_batch(["a" * 32, "b" * 32, "c" * 32])
+
+        assert send_mock.call_args.kwargs["items_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_404_is_treated_as_an_endpoint_failure(self, mocker):
+        """
+        Tests that a 404 carrying neither devices nor errors is not mistaken for partial success.
+
+        Given:
+            - A 404 whose body has no resources and no errors, as returned for a wrong path,
+              a retired API version, or a proxy that cannot route the request.
+        When:
+            - enrich_and_ingest_batch is called.
+        Then:
+            - The batch raises. Swallowing it would report a broken endpoint as a successful
+              cycle that simply found no assets, hiding an outage behind an empty snapshot.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, [], status_code=404)
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        with pytest.raises(DemistoException, match="no resources and no errors"):
+            await handler.enrich_and_ingest_batch(["a" * 32])
+
+        # The batch is not recorded as processed, so the cycle does not account for work
+        # that never happened.
+        assert "a" * 32 not in handler.processed_aids
+
+    @pytest.mark.asyncio
+    async def test_404_reporting_only_errors_is_still_a_partial_success(self, mocker):
+        """
+        Tests that a 404 which resolves nothing but explains why is accepted, not raised.
+
+        Given:
+            - A 404 with an empty resources list but a populated errors array, as returned when
+              every submitted AID is a non-sensor (EASM) or decommissioned host.
+        When:
+            - enrich_and_ingest_batch is called.
+        Then:
+            - No exception is raised and the batch is marked processed: the endpoint answered
+              the question, and "none of these hosts resolve" is a valid answer.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(
+            mocker,
+            [],
+            errors=[{"code": 404, "message": "device not found: [easm-asset]"}],
+            status_code=404,
+        )
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.enrich_and_ingest_batch(["easm-asset"])
+
+        assert "easm-asset" in handler.processed_aids
+
+    @pytest.mark.asyncio
+    async def test_seal_does_not_declare_assets_from_a_failed_bulk_batch(self, mocker):
+        """
+        Tests that assets which never reached XSIAM are excluded from the declared total.
+
+        Given:
+            - Two batches resolving 3 and 2 devices; the first batch stores nothing, as happens
+              when every XSIAM chunk for that batch fails.
+        When:
+            - flush_remaining sends the final batch.
+        Then:
+            - The declared count counts only the rows that actually landed, not everything the
+              Devices API resolved. Declaring the unstored rows would leave the snapshot claiming
+              more than exists, so it could never seal.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = [
+            self._device_response(mocker, ["a" * 32, "b" * 32, "c" * 32]),
+            self._device_response(mocker, ["d" * 32, "e" * 32]),
+        ]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        # First bulk send stores nothing; the rest store everything they were given.
+        send_mock = self._patch_send(mocker, stored_per_call=[0])
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.enrich_and_ingest_batch(["a" * 32, "b" * 32, "c" * 32])
+        handler.pending_buffer = {"d" * 32, "e" * 32}
+        await handler.flush_remaining(submitted_aids_count=5)
+
+        # The first batch stored nothing, so its rows are excluded. Declared total is the 2 rows
+        # the second batch stored plus the 1 row withheld for the seal itself.
+        assert send_mock.call_args.kwargs["items_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_seal_declares_cumulative_total_across_multiple_batches(self, mocker):
+        """
+        Tests that the declared total spans every batch, not just the last one.
+
+        Given:
+            - Two enrichment batches resolving 3 and 2 devices respectively.
+        When:
+            - flush_remaining sends the final batch.
+        Then:
+            - The declared count is 5, the cumulative number of asset rows stored across the whole
+              cycle. Declaring only the final batch's 2 would seal the snapshot short and strand
+              the rows from earlier batches.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = [
+            self._device_response(mocker, ["a" * 32, "b" * 32, "c" * 32]),
+            self._device_response(mocker, ["d" * 32, "e" * 32]),
+        ]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.enrich_and_ingest_batch(["a" * 32, "b" * 32, "c" * 32])
+        handler.pending_buffer = {"d" * 32, "e" * 32}
+        await handler.flush_remaining(submitted_aids_count=5)
+
+        # 3 stored by the first batch + the final batch's own 2.
+        assert send_mock.call_args.kwargs["items_count"] == 5
+
+    @pytest.mark.asyncio
+    async def test_snapshot_still_seals_when_the_final_batch_resolves_nothing(self, mocker):
+        """
+        Tests that an unresolvable trailing AID does not block the seal.
+
+        The count is carried by a row withheld from the enriched output, not by whatever the last
+        batch happens to resolve. A trailing AID that the Devices API rejects - an EASM or
+        decommissioned host - therefore cannot leave the snapshot open, which is the regression
+        this withholding strategy exists to prevent.
+
+        Given:
+            - A first batch that resolves 3 devices, and a final AID that resolves no devices.
+        When:
+            - flush_remaining runs.
+        Then:
+            - The seal is still sent, carrying the withheld row and declaring the rows that were
+              actually stored. Previously no row was available to carry the count, so the snapshot
+              stayed open and every row stored under it was stranded.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = [
+            self._device_response(mocker, ["a" * 32, "b" * 32, "c" * 32]),
+            self._device_response(mocker, []),
+        ]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.enrich_and_ingest_batch(["a" * 32, "b" * 32, "c" * 32])
+        handler.pending_buffer = {"d" * 32}
+        await handler.flush_remaining(submitted_aids_count=4)
+
+        # Two sends: the bulk batch, then the seal. The final AID resolved nothing, but the
+        # withheld row is still there to carry the count.
+        assert send_mock.call_count == 2
+        # 2 rows stored by the bulk batch (3 resolved, 1 withheld) + the withheld row itself.
+        assert send_mock.call_args.kwargs["items_count"] == 3
+        assert [device["device_id"] for device in send_mock.call_args.kwargs["data"]] == ["c" * 32]
+
+    @pytest.mark.asyncio
+    async def test_seal_counts_every_batch_even_when_sends_resolve_without_awaiting_io(self, mocker):
+        """
+        Tests that the seal counts rows from sends that completed before the drain loop looked.
+
+        stored_assets_count is accumulated by the send task's done-callback, which asyncio
+        schedules with call_soon: it runs on a LATER event-loop pass than the gather that saw the
+        task finish. Reading the counter straight after the drain loop can therefore miss the last
+        batch and seal the snapshot short - the exact symptom this PR exists to fix.
+
+        The window only opens when a send resolves without ever suspending on I/O, so it is
+        invisible against a live tenant but reachable whenever a send is served from cache or
+        mocked. The seal must not depend on scheduling order either way.
+
+        Multiple batches are used because a single batch hides the bug: its row is withheld for the
+        seal and never counted through a callback at all.
+
+        Given:
+            - Several enrichment batches whose sends resolve immediately, with no awaited I/O.
+        When:
+            - flush_remaining runs.
+        Then:
+            - The declared total equals every stored row plus the withheld one, not a short count.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        aids = [chr(ord("a") + i) * 32 for i in range(3)]
+
+        mock_client = mocker.AsyncMock()
+        # One resolved device per batch, so each batch produces a send with a countable row.
+        mock_client._request.side_effect = [self._device_response(mocker, [aid, aid[::-1]]) for aid in aids]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch.object(handler, "_filter_asset_fields", side_effect=lambda d: d)
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Drive the batches directly so each one creates its own send task, exactly as the
+        # buffer-full path does.
+        for aid in aids:
+            await handler.enrich_and_ingest_batch([aid])
+
+        # Advance the loop by exactly one pass. That leaves a send task finished but with its
+        # done-callback still queued and the task not yet discarded from running_tasks.
+        # asyncio.gather on an already-finished task returns without giving that callback a turn,
+        # so the drain loop exits and stored_assets_count is read while it is still stale.
+        #
+        # The alignment is pinned deliberately because the window is one event-loop pass wide:
+        # with zero yields the sends are still pending and gather awaits them properly, and with
+        # two or more the callbacks have already run and emptied the set. Neither state can expose
+        # the bug, so a version of this test that did not pin the timing passed against the
+        # unfixed code and proved nothing.
+        await asyncio.sleep(0)
+
+        await handler.flush_remaining(submitted_aids_count=len(aids))
+
+        # 3 batches x 2 devices = 6 rows; one is withheld for the seal, so 5 are sent in bulk.
+        assert handler.stored_assets_count == 5, (
+            "every completed send must be counted before the seal is computed; a short count here "
+            "means a done-callback had not run yet"
+        )
+        # Identify the seal by its sentinel batch number rather than by position: the bulk sends
+        # all carry items_count=1 to keep the snapshot open, so picking the last call by index
+        # silently asserts against a bulk batch instead of the seal.
+        seal_calls = [call for call in send_mock.call_args_list if call.kwargs.get("batch_number") == 999999]
+        assert len(seal_calls) == 1, "exactly one sealing send is expected"
+        assert seal_calls[0].kwargs["items_count"] == 6, "the seal must declare stored rows plus the withheld row"
+
+    @pytest.mark.asyncio
+    async def test_final_batch_send_failure_propagates_out_of_flush_remaining(self, mocker):
+        """
+        Tests that a failed sealing send is not swallowed.
+
+        The send runs in a task, so the failure surfaces when that task is awaited - not when it is
+        created. flush_remaining must therefore await the seal task on its own, outside the
+        gather(..., return_exceptions=True) that drains the other batches, because that gather
+        converts an exception into a returned value and would make a rejected seal look like a
+        success. The caller resets snapshot_id and completed_severities on the success path, so
+        swallowing here would destroy the state needed to retry while leaving the snapshot
+        declaring more rows than were stored.
+
+        The failure is raised inside the task rather than by the mock itself: a mock raising
+        synchronously would be caught by the try/except in enrich_and_ingest_batch and would pass
+        even if flush_remaining swallowed async failures.
+
+        Given:
+            - A cycle whose final, sealing batch is rejected asynchronously by XSIAM.
+        When:
+            - flush_remaining runs.
+        Then:
+            - The exception propagates instead of being swallowed, so the caller skips the reset
+              and the next cycle retries the seal.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, ["a" * 32])
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+
+        async def failing_send(**_kwargs):
+            raise DemistoException("XSIAM rejected the sealing batch")
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=lambda **kwargs: asyncio.create_task(failing_send(**kwargs)),
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        handler.pending_buffer = {"a" * 32}
+
+        with pytest.raises(DemistoException, match="XSIAM rejected the sealing batch"):
+            await handler.flush_remaining(submitted_aids_count=1)
+
+    @pytest.mark.asyncio
+    async def test_single_resolved_asset_is_sent_only_with_the_seal(self, mocker):
+        """
+        Tests the boundary where the whole cycle resolves exactly one device.
+
+        Given:
+            - A cycle in which a single device resolves.
+        When:
+            - flush_remaining seals the snapshot.
+        Then:
+            - That device is sent once, with the seal, declaring a total of 1. Sending it in the
+              bulk batch as well would double-count the row.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, ["a" * 32])
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        handler.pending_buffer = {"a" * 32}
+        await handler.flush_remaining(submitted_aids_count=1)
+
+        assert send_mock.call_count == 1
+        assert send_mock.call_args.kwargs["items_count"] == 1
+        sealed = send_mock.call_args.kwargs["data"]
+        assert [device["device_id"] for device in sealed] == ["a" * 32]
+
+    @pytest.mark.asyncio
+    async def test_no_seal_is_sent_when_no_assets_resolved(self, mocker):
+        """
+        Tests that a cycle resolving nothing does not seal the snapshot.
+
+        Given:
+            - A cycle in which the Devices API resolves no devices at all.
+        When:
+            - flush_remaining completes.
+        Then:
+            - No sealing send is made. There is no row to carry the count, and declaring a total
+              of 0 would seal an empty snapshot over the previous cycle's data.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.return_value = self._device_response(mocker, [])
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        handler.pending_buffer = {"easm-asset"}
+        await handler.flush_remaining(submitted_aids_count=1)
+
+        send_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_seal_is_sent_after_every_bulk_batch_has_landed(self, mocker):
+        """
+        Tests that the seal is the last thing to reach XSIAM.
+
+        Given:
+            - A cycle with a bulk batch and a sealing send.
+        When:
+            - flush_remaining completes.
+        Then:
+            - The sealing send is issued last. A seal that overtakes an in-flight bulk batch would
+              declare a total the stored rows have not yet reached.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = [
+            self._device_response(mocker, ["a" * 32, "b" * 32]),
+            self._device_response(mocker, ["c" * 32]),
+        ]
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        send_mock = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        await handler.enrich_and_ingest_batch(["a" * 32, "b" * 32])
+        handler.pending_buffer = {"c" * 32}
+        await handler.flush_remaining(submitted_aids_count=3)
+
+        declared_counts = [call.kwargs["items_count"] for call in send_mock.call_args_list]
+        assert declared_counts[-1] == 3
+        assert all(count == 1 for count in declared_counts[:-1])
+
+    @pytest.mark.asyncio
+    async def test_handler_enrichment_empty_response(self, mocker):
+        """
+        Tests behavior when the Device enrichment API returns no results.
+
+        Given:
+            - The Device API returns an empty list for the requested AIDs.
+        When:
+            - enrich_and_ingest_batch is called.
+        Then:
+            - No XSIAM task is created (preventing ingestion of empty data).
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # Setup
+        mock_client = mocker.AsyncMock()
+        mock_response = mocker.Mock()
+        mock_response.json.return_value = {"resources": []}
+        mock_client._request.return_value = mock_response
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+
+        mock_create_task = mocker.patch("CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context")
+
+        # Execute
+        await handler.enrich_and_ingest_batch(["d1"])
+
+        # Verify
+        mock_client._request.assert_awaited_once()
+        mock_create_task.assert_not_called()
+        # The batch is marked processed even when nothing resolves, so invalid IDs are not retried.
+        assert "d1" in handler.processed_aids
+
+    @pytest.mark.asyncio
+    async def test_drain_reports_no_losses_when_every_task_succeeds(self, mocker):
+        """
+        Tests that drain() awaits every in-flight task and reports a clean result.
+
+        Given:
+            - A handler with two in-flight tasks that both succeed.
+        When:
+            - drain() is awaited directly, as the teardown path does.
+        Then:
+            - Every task is awaited, running_tasks is emptied, and (0, None) is returned.
+              The caller needs the count to decide whether it may claim success.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        completed = []
+
+        async def _work(tag):
+            completed.append(tag)
+
+        handler.running_tasks = {asyncio.create_task(_work("a")), asyncio.create_task(_work("b"))}
+
+        lost_batches, first_error = await handler.drain()
+
+        assert sorted(completed) == ["a", "b"], "drain must await every in-flight task"
+        assert handler.running_tasks == set(), "drain must empty running_tasks"
+        assert (lost_batches, first_error) == (0, None)
+
+    @pytest.mark.asyncio
+    async def test_drain_reports_a_failed_task_instead_of_raising(self, mocker):
+        """
+        Tests that drain() absorbs a task failure and reports it to the caller.
+
+        Given:
+            - One in-flight task that raises and one that succeeds.
+        When:
+            - drain() is awaited.
+        Then:
+            - It returns (1, the exception) rather than propagating. Assets are flushed after the
+              vulnerability snapshot has already sealed, so raising here would fail a fetch whose
+              vulnerability data is safely stored. Returning it is what lets the caller log the
+              loss instead of silently claiming success.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        boom = RuntimeError("send failed")
+
+        async def _ok():
+            return None
+
+        async def _fails():
+            raise boom
+
+        handler.running_tasks = {asyncio.create_task(_ok()), asyncio.create_task(_fails())}
+
+        lost_batches, first_error = await handler.drain()
+
+        assert lost_batches == 1
+        assert first_error is boom
+        assert handler.running_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_drain_reports_a_send_failure_the_wrapper_swallowed(self, mocker):
+        """
+        Tests that a failed upload is reported even though nothing re-raises it.
+
+        Given:
+            - A send task that failed and whose done-callback has already removed it from
+              running_tasks, which is what happens when the callback fires before drain() takes
+              its snapshot.
+        When:
+            - drain() is awaited with nothing left in flight.
+        Then:
+            - The loss is still reported. The batch wrapper suppresses the send exception so one
+              bad upload cannot fail the batch, and the task is already gone from the set, so
+              inferring purely from gathered results would report a clean cycle and the caller
+              would log "All enrichment/send tasks completed successfully" over lost assets.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        boom = RuntimeError("upload rejected")
+        handler.send_failures = 1
+        handler.first_send_error = boom
+
+        lost_batches, first_error = await handler.drain()
+
+        assert lost_batches == 1, "a swallowed send failure must still be reported"
+        assert first_error is boom
+
+    @pytest.mark.asyncio
+    async def test_drain_counts_a_failed_send_once(self, mocker):
+        """
+        Tests that a send failure visible in both places is counted a single time.
+
+        Given:
+            - A failed send task still in running_tasks AND recorded in the failure counter,
+              which is the normal case before its callback removes it.
+        When:
+            - drain() is awaited.
+        Then:
+            - It reports 1, not 2. Send tasks are tracked in running_tasks so drain() waits for
+              them, so counting the gathered exception as well as the counter would
+              double-report every failed upload.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        boom = RuntimeError("upload rejected")
+
+        async def _fails():
+            raise boom
+
+        send_task = asyncio.create_task(_fails())
+        handler.running_tasks = {send_task}
+        handler.send_tasks = {send_task}
+        handler.send_failures = 1
+        handler.first_send_error = boom
+
+        lost_batches, _first_error = await handler.drain()
+
+        assert lost_batches == 1, "a single failed upload must not be reported twice"
+
+    @pytest.mark.asyncio
+    async def test_draining_twice_does_not_re_report_the_same_send_failure(self, mocker):
+        """
+        Tests that a second drain() reports nothing when nothing new has failed.
+
+        Given:
+            - A cycle whose single upload failed and which has already been drained once.
+        When:
+            - drain() is awaited a second time, as happens when flush_remaining drains and the
+              surrounding finally block then drains again before teardown.
+        Then:
+            - The second call reports 0. The tally is consumed by the first call, so leaving it
+              set would re-add the same failure on every subsequent drain and the teardown log
+              would claim fresh asset loss that never happened.
+            - send_tasks is emptied too, so the references do not outlive the cycle.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        boom = RuntimeError("upload rejected")
+
+        async def _fails():
+            raise boom
+
+        send_task = asyncio.create_task(_fails())
+        handler.running_tasks = {send_task}
+        handler.send_tasks = {send_task}
+        handler.send_failures = 1
+        handler.first_send_error = boom
+
+        first_lost, first_error = await handler.drain()
+        second_lost, second_error = await handler.drain()
+
+        assert first_lost == 1, "the real failure must be reported by the first drain"
+        assert first_error is boom
+        assert second_lost == 0, "a second drain must not re-report an already-reported failure"
+        assert second_error is None
+        assert handler.send_tasks == set(), "drained send tasks must not be retained"
+
+    @pytest.mark.asyncio
+    async def test_cancelling_a_batch_does_not_escape_past_the_shielded_send(self, mocker):
+        """
+        Tests that cancellation is absorbed at the await on the shielded upload.
+
+        Given:
+            - A batch whose upload is in flight when the surrounding task is cancelled.
+        When:
+            - The batch task is cancelled and awaited.
+        Then:
+            - The batch finishes without CancelledError propagating out of the await. shield()
+              re-raises CancelledError at the await point even though the send itself is
+              protected, and since 3.8 CancelledError does not derive from Exception - so a bare
+              suppress(Exception) would let it escape, freeing the semaphore slot while the
+              upload is still running and allowing more than MAX_PENDING_ASSET_TASKS concurrent
+              uploads during teardown.
+        """
+        import CrowdStrikeFalcon
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+
+        response = mocker.Mock()
+        response.status_code = 200
+        # Two devices, because the first resolved row is withheld to carry the seal count. With a
+        # single device the batch withholds it and returns before creating a send task, so there
+        # would be no in-flight upload for the cancellation under test to race.
+        response.json.return_value = {"resources": [{"device_id": "aid1"}, {"device_id": "aid2"}], "errors": []}
+        handler.client._request = mocker.AsyncMock(return_value=response)
+        mocker.patch.object(handler, "_filter_asset_fields", side_effect=lambda devices: devices)
+
+        send_started = asyncio.Event()
+        # Tracked so the shielded upload can be cleaned up below. shield() deliberately leaves it
+        # running when the batch is cancelled, which is the behaviour under test, but a task still
+        # pending when the loop closes is reported as "Task was destroyed but it is pending".
+        created_send_tasks: list[asyncio.Task] = []
+
+        async def _slow_send():
+            send_started.set()
+            await asyncio.sleep(0.2)
+            return (1, 1)
+
+        def _spawn_send(**kwargs):
+            send_task = asyncio.create_task(_slow_send())
+            created_send_tasks.append(send_task)
+            return send_task
+
+        mocker.patch.object(
+            CrowdStrikeFalcon,
+            "create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=_spawn_send,
+        )
+
+        batch_task = asyncio.create_task(handler.enrich_and_ingest_batch(["aid1", "aid2"]))
+        # Bounded: if the batch stops creating a send task, this fails in seconds instead of
+        # hanging the whole suite on a wait that can never be satisfied.
+        await asyncio.wait_for(send_started.wait(), timeout=5)
+        batch_task.cancel()
+
+        results = await asyncio.gather(batch_task, return_exceptions=True)
+
+        assert not isinstance(
+            results[0], asyncio.CancelledError
+        ), "CancelledError escaped the shielded send, so the slot was freed mid-upload"
+
+        # The upload outliving the cancelled batch is the point of the test; settle it here rather
+        # than leaving it for the garbage collector to report against an unrelated test.
+        for send_task in created_send_tasks:
+            send_task.cancel()
+        await asyncio.gather(*created_send_tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_flush_remaining_does_not_claim_success_when_a_batch_failed(self, mocker, caplog):
+        """
+        Tests that a failed enrichment/send batch is reported, not papered over.
+
+        On the live tenant roughly half the enrichment batches failed on authentication for
+        eight hours while the fetch logged unqualified success every cycle, so the loss was
+        invisible in the logs.
+
+        Given:
+            - An in-flight task that fails during the final flush.
+        When:
+            - flush_remaining is awaited.
+        Then:
+            - The "All enrichment/send tasks completed successfully" line is NOT logged, and an
+              error naming the failure is logged instead.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        handler = AssetsDeviceHandler(
+            client=mocker.AsyncMock(),
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        async def _fails():
+            raise RuntimeError("send failed")
+
+        handler.running_tasks = {asyncio.create_task(_fails())}
+
+        # submitted_aids_count, not the old total_items_count: the declared total now comes from
+        # the rows XSIAM confirmed storing, and this argument is only logged.
+        await handler.flush_remaining(submitted_aids_count=0)
+
+        logged = " ".join(str(call.args[0]) for call in mock_log.call_args_list)
+        assert "completed successfully" not in logged, "a failed batch must not be reported as success"
+        assert "send failed" in logged, "the failure must be surfaced in the logs"
+        assert any(call.args[1:] == ("error",) for call in mock_log.call_args_list), "the loss must be logged at error level"
+
+        # The failure above is the point of the test, so the records it leaves behind are expected
+        # and must be cleared for the autouse check_logging fixture.
+        caplog.clear()
+
+    @pytest.mark.asyncio
+    async def test_handler_enrichment_partial_success(self, mocker):
+        """
+        Tests that a CrowdStrike partial-success response (HTTP 400 with valid resources and
+        invalid device IDs in 'errors') ingests the valid devices instead of failing the batch.
+
+        Given:
+            - The Device API returns valid resources AND an 'errors' array of invalid device IDs.
+        When:
+            - enrich_and_ingest_batch is called.
+        Then:
+            - The request is made with ok_codes=(200, 400) so the 400 is not raised.
+            - The valid devices reach XSIAM over the cycle.
+            - The invalid device IDs are logged (warning) and skipped; no exception is raised.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # Setup: response with both resolved resources and an errors array (partial success).
+        mock_client = mocker.AsyncMock()
+        mock_response = mocker.Mock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {
+            "resources": [{"device_id": "valid1"}],
+            "errors": [{"code": 400, "message": "invalid device id [bad_id_1]"}],
+        }
+        mock_client._request.return_value = mock_response
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch.object(handler, "_filter_asset_fields", side_effect=lambda d: d)
+        mock_create_task = self._patch_send(mocker)
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Execute: the cycle is completed so the withheld asset is released with the seal.
+        await handler.enrich_and_ingest_batch(["valid1", "bad_id_1"])
+        await handler.flush_remaining(submitted_aids_count=2)
+
+        # Verify: 400 accepted, valid devices ingested, invalid IDs logged as a warning.
+        mock_client._request.assert_awaited_once()
+        _, request_kwargs = mock_client._request.call_args
+        assert request_kwargs.get("ok_codes") == (200, 400, 404)
+        sent = [device for call in mock_create_task.call_args_list for device in call.kwargs["data"]]
+        assert sent == [{"device_id": "valid1"}]
+        assert any(
+            "invalid device id" in str(call.args[0]) and (len(call.args) > 1 and call.args[1] == "warning")
+            for call in mock_log.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_enrichment_404_partial_success(self, mocker):
+        """
+        Tests that a CrowdStrike partial-success response returned with HTTP 404 still ingests the
+        resolved devices.
+
+        The Devices API answers this call with 404 while the body still contains fully populated
+        device records (meta.powered_by == "device-api"). Before the fix, 404 was absent from
+        ok_codes, so ContentClient raised and a complete, valid payload was discarded on every
+        fetch cycle - the tenant collected vulnerabilities but never a single asset.
+
+        Given:
+            - The Device API returns a partial-success body (valid resources + an 'errors' array)
+              that the client is configured to accept under HTTP 404.
+        When:
+            - enrich_and_ingest_batch is called.
+        Then:
+            - 404 is included in ok_codes so the response is not raised on.
+            - Both resolved devices reach XSIAM over the cycle.
+            - The unresolved device IDs are logged as a warning and skipped.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # Mirror the real 404 payload: resolved devices alongside the unresolved IDs.
+        mock_client = mocker.AsyncMock()
+        mock_response = mocker.Mock()
+        mock_response.status_code = 404
+        mock_response.json.return_value = {
+            "meta": {"powered_by": "device-api", "trace_id": "00000000-0000-0000-0000-000000000002"},
+            "resources": [
+                {"device_id": "fake_aid_1", "hostname": "TEST"},
+                {"device_id": "fake_aid_2", "hostname": "TEST1"},
+            ],
+            "errors": [{"code": 404, "message": "device not found: [stale_aid_1]"}],
+        }
+        mock_client._request.return_value = mock_response
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mocker.patch.object(handler, "_filter_asset_fields", side_effect=lambda d: d)
+        mock_create_task = self._patch_send(mocker)
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Execute: the cycle is completed so the withheld asset is released with the seal.
+        await handler.enrich_and_ingest_batch(["fake_aid_1", "fake_aid_2", "stale_aid_1"])
+        await handler.flush_remaining(submitted_aids_count=3)
+
+        # Verify: 404 whitelisted, resolved devices ingested rather than discarded.
+        mock_client._request.assert_awaited_once()
+        _, request_kwargs = mock_client._request.call_args
+        assert 404 in request_kwargs.get("ok_codes")
+        sent = {device["device_id"] for call in mock_create_task.call_args_list for device in call.kwargs["data"]}
+        assert sent == {"fake_aid_1", "fake_aid_2"}
+        assert any(
+            "device not found" in str(call.args[0]) and (len(call.args) > 1 and call.args[1] == "warning")
+            for call in mock_log.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_handler_enrichment_404_through_real_content_client(self, mocker):
+        """
+        End-to-end regression test for the partial-success 404 path, exercising the real ContentClient.
+
+        The other tests in this class mock client._request directly, so they verify the handler's
+        behaviour given a response but never exercise the ok_codes gate in ContentClient._request -
+        which is exactly where the payload was being discarded. This test drives a real
+        ContentClient over an httpx.MockTransport so the actual status-code check runs.
+
+        The response body mirrors the shape of a real captured production response: HTTP 404
+        carrying meta.powered_by == "device-api" and a populated "resources" array of device
+        records. Identifying values are synthetic.
+
+        Given:
+            - The Devices API returns HTTP 404 with resolved devices in the body.
+        When:
+            - enrich_and_ingest_batch is called against a real ContentClient.
+        Then:
+            - ContentClient returns the response instead of raising (404 is in ok_codes).
+            - The resolved devices are extracted and sent to XSIAM.
+        """
+        import httpx
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+        from ContentClientApiModule import ContentClient
+
+        captured_request_body = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_request_body.update(json.loads(request.content))
+            # Real captured shape: non-2xx status, devices present in the body anyway.
+            return httpx.Response(
+                404,
+                json={
+                    "meta": {
+                        "query_time": 0.777399776,
+                        "powered_by": "device-api",
+                        "trace_id": "00000000-0000-0000-0000-000000000001",
+                    },
+                    "resources": [
+                        {
+                            "device_id": "fake_aid_1",
+                            "cid": "fake_cid",
+                            "hostname": "TEST",
+                            "mac_address": "00-00-5e-00-53-af",
+                            "os_version": "Windows 11",
+                        }
+                    ],
+                },
+            )
+
+        client = ContentClient(base_url="https://api.crowdstrike.com", client_name="test-client")
+        # Inject the mock transport into the cached per-loop client so _request goes through the
+        # real ok_codes/retry logic rather than a stubbed method.
+        client._local_storage.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        client._local_storage.client_event_loop = asyncio.get_running_loop()
+
+        device_handler = AssetsDeviceHandler(
+            client=client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mock_create_task = self._patch_send(mocker)
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        # Execute: this raised ContentClientError before the fix, discarding the devices.
+        # The cycle is completed so the withheld asset is released with the seal.
+        await device_handler.enrich_and_ingest_batch(["fake_aid_1"])
+        await device_handler.flush_remaining(submitted_aids_count=1)
+
+        # Verify the device survived the real client and reached the XSIAM send path.
+        assert captured_request_body == {"ids": ["fake_aid_1"]}
+        sent_devices = [device for call in mock_create_task.call_args_list for device in call.kwargs["data"]]
+        assert len(sent_devices) == 1
+        assert sent_devices[0]["hostname"] == "TEST"
+
+        await client._local_storage.client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_handler_enrichment_real_failure_raises(self, mocker):
+        """
+        Tests that a genuine failure (no 'resources' in the response) still propagates.
+
+        Given:
+            - The Device enrichment call raises an exception (e.g. a real error, not partial success).
+        When:
+            - enrich_and_ingest_batch is called.
+        Then:
+            - The exception is re-raised and no XSIAM send task is created.
+        """
+        from CrowdStrikeFalcon import AssetsDeviceHandler
+
+        # The error path logs via demisto.error(), which writes to stdout under demistomock and
+        # would trip the conftest no-stdout/stderr guard at teardown. Patch the demisto reference
+        # used inside the integration module so the expected error log from this deliberate
+        # failure path is captured rather than leaked to stdout.
+        mocker.patch("CrowdStrikeFalcon.demisto.error")
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = Exception("Request failed: real server error")
+
+        handler = AssetsDeviceHandler(
+            client=mock_client,
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(metadata={}),
+            snapshot_id="snap1",
+            processed_aids=set(),
+            batch_limit=10,
+        )
+        mock_create_task = mocker.patch("CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context")
+
+        # Execute / Verify
+        with pytest.raises(Exception, match="real server error"):
+            await handler.enrich_and_ingest_batch(["d1"])
+        mock_create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_batch_out_of_order_completion(self, mocker):
+        """
+        Tests that state is only saved if the completing batch is newer than the last saved batch.
+
+        Given:
+            - Two concurrent batches where Batch 2 finishes before Batch 1.
+        When:
+            - The callback runs for Batch 2, then for Batch 1.
+        Then:
+            - State is saved for Batch 2.
+            - State is NOT saved for Batch 1 (avoiding regression).
+        """
+        from CrowdStrikeFalcon import send_batch_to_xsiam_and_save_context
+
+        # Setup
+        mock_save_callback = mocker.Mock()
+        mocker.patch("CrowdStrikeFalcon.send_data_to_xsiam_async", return_value=[])
+        mocker.patch("asyncio.gather", new_callable=mocker.AsyncMock)
+
+        # Scenario: Batch 2 finishes first.
+        res2 = await send_batch_to_xsiam_and_save_context(
+            data=[],
+            vendor="v",
+            product="p",
+            snapshot_id="s",
+            items_count=1,
+            batch_number=2,
+            last_saved_batch_number=0,
+            context_store=mocker.Mock(),
+            state=mocker.Mock(),
+            save_state_callback=mock_save_callback,
+            data_type="assets",
+        )
+
+        assert res2 == (2, 0)
+        mock_save_callback.assert_called()
+        mock_save_callback.reset_mock()
+
+        # Scenario: Batch 1 finishes later.
+        res1 = await send_batch_to_xsiam_and_save_context(
+            data=[],
+            vendor="v",
+            product="p",
+            snapshot_id="s",
+            items_count=1,
+            batch_number=1,
+            last_saved_batch_number=2,
+            context_store=mocker.Mock(),
+            state=mocker.Mock(),
+            save_state_callback=mock_save_callback,
+            data_type="assets",
+        )
+
+        assert res1 == (2, 0)
+        mock_save_callback.assert_not_called()
+
+    def test_state_persistence_structure(self, mocker):
+        """
+        Tests that the state is serialized into the correct JSON structure for the Context Store.
+
+        Given:
+            - A populated ContentClientState object.
+        When:
+            - save_spotlight_state is called.
+        Then:
+            - The integration context is updated with a 'spotlight_assets' key.
+            - Existing context data is preserved.
+        """
+        from CrowdStrikeFalcon import save_spotlight_state, ContentClientState
+
+        # Setup
+        mock_context_store = mocker.Mock()
+        integration_context = {"existing_key": "val"}
+        mock_context_store.read.return_value = integration_context
+        state = ContentClientState()
+        state.cursor = "token123"
+        state.metadata = {"snapshot_id": "snap1", "processed_aids": ["a1", "a2"]}
+
+        # Execute
+        save_spotlight_state(mock_context_store, state)
+
+        # Verify
+        mock_context_store.write.assert_called_once()
+        saved_context = mock_context_store.write.call_args[0][0]
+
+        assert "spotlight_assets" in saved_context
+        assert saved_context["spotlight_assets"]["cursor"] == "token123"
+        assert saved_context["spotlight_assets"]["metadata"]["snapshot_id"] == "snap1"
+        assert "existing_key" in saved_context
+
+
+def test_list_workflow_definitions_command(mocker):
+    """
+    Test cs-falcon-list-workflow-definitions command.
+
+    Given:
+        - Arguments with name filter.
+    When:
+        - Running list_workflow_definitions_command.
+    Then:
+        - Verify the command returns expected workflow definitions.
+    """
+    from CrowdStrikeFalcon import list_workflow_definitions_command
+
+    mock_response = {
+        "resources": [
+            {
+                "id": "def-123",
+                "name": "Test Workflow",
+                "description": "A test workflow",
+                "trigger": {
+                    "event": "on_demand",
+                    "name": "Manual Trigger",
+                    "schedule": "",
+                    "type": "on_demand",
+                },
+            }
+        ]
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"name": "Test", "limit": "10"}
+    result = list_workflow_definitions_command(args)
+
+    assert result.outputs_prefix == "CrowdStrike.WorkflowDefinition"
+    assert result.outputs_key_field == "id"
+    assert len(result.outputs) == 1
+    assert result.outputs[0]["id"] == "def-123"
+    assert result.outputs[0]["name"] == "Test Workflow"
+    assert "Test Workflow" in result.readable_output
+
+
+def test_workflow_execute_command(mocker):
+    """
+    Test cs-falcon-workflow-execute command.
+
+    Given:
+        - A definition_id and body.
+    When:
+        - Running workflow_execute_command.
+    Then:
+        - Verify the command returns expected execution result.
+    """
+    from CrowdStrikeFalcon import workflow_execute_command
+
+    mock_response = {
+        "meta": {"trace_id": "trace-789"},
+        "resources": ["exec-456"],
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"definition_id": "def-123", "body": "{}"}
+    result = workflow_execute_command(args)
+
+    assert result.outputs_prefix == "CrowdStrike.Workflow"
+    assert result.outputs == ["exec-456"]
+    assert "exec-456" in result.readable_output
+
+
+def test_workflow_execute_command_missing_args(mocker):
+    """
+    Test cs-falcon-workflow-execute command with missing required args.
+
+    Given:
+        - No definition_id or name provided.
+    When:
+        - Running workflow_execute_command.
+    Then:
+        - Verify DemistoException is raised.
+    """
+    from CrowdStrikeFalcon import workflow_execute_command
+
+    args = {"body": "{}"}
+    with pytest.raises(DemistoException, match="Either 'definition_id' or 'name' must be provided."):
+        workflow_execute_command(args)
+
+
+def test_list_workflow_executions_command(mocker):
+    """
+    Test cs-falcon-list-workflow-executions command.
+
+    Given:
+        - Arguments with definition_id filter.
+    When:
+        - Running list_workflow_executions_command.
+    Then:
+        - Verify the command returns expected workflow executions.
+    """
+    from CrowdStrikeFalcon import list_workflow_executions_command
+
+    mock_response = {
+        "resources": [
+            {
+                "id": "exec-001",
+                "execution_id": "exec-001",
+                "status": "completed",
+                "activities": [
+                    {
+                        "node_id": "node-1",
+                        "start_timestamp": "2024-01-01T00:00:00Z",
+                        "end_timestamp": "2024-01-01T00:01:00Z",
+                        "status": "completed",
+                        "name": "Step 1",
+                        "type": "action",
+                    }
+                ],
+            }
+        ]
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"definition_id": "def-123", "limit": "10"}
+    result = list_workflow_executions_command(args)
+
+    assert result.outputs_prefix == "CrowdStrike.Workflows.Execution"
+    assert len(result.outputs) == 1
+    assert result.outputs[0]["execution_id"] == "exec-001"
+    assert "Step 1" in result.readable_output
+
+
+def test_list_workflow_execution_results_command(mocker):
+    """
+    Test cs-falcon-list-workflow-execution-results command.
+    Given: A list of execution IDs.
+    When: Running list_workflow_execution_results_command.
+    Then: Verify the command returns expected execution results with nested activities.
+    """
+    from CrowdStrikeFalcon import list_workflow_execution_results_command
+
+    mock_response = {
+        "resources": [
+            {
+                "execution_id": "ae6b9021abff1dc526093dbcb5e66bd2",
+                "activities": [
+                    {
+                        "node_id": "GetCaseDetails",
+                        "start_timestamp": "2026-03-10T15:10:24.024Z",
+                        "end_timestamp": "2026-03-10T15:10:24.374Z",
+                        "status": "Completed",
+                        "id": "3dc4a68cf25bf32ceec6588c6d5c8989",
+                        "name": "Get case details",
+                        "type": "cases",
+                    }
+                ],
+            }
+        ]
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"ids": "exec-001,exec-002"}
+    result = list_workflow_execution_results_command(args)
+
+    assert result.outputs_prefix == "CrowdStrike.Workflows.ExecutionResult"
+    assert result.outputs_key_field == "execution_id"
+    assert len(result.outputs) == 1
+    assert result.outputs[0]["execution_id"] == "ae6b9021abff1dc526093dbcb5e66bd2"
+    assert result.outputs[0]["activities"][0]["status"] == "Completed"
+    assert "GetCaseDetails" in result.readable_output
+    assert "Get case details" in result.readable_output
+
+
+def test_list_workflow_execution_results_command_partial_errors(mocker):
+    """
+    Test cs-falcon-list-workflow-execution-results command with partial errors.
+    Given: Two execution IDs, one valid and one not found.
+    When: Running list_workflow_execution_results_command.
+    Then: Verify the command returns results for the valid ID and shows errors for the invalid one.
+    """
+    from CrowdStrikeFalcon import list_workflow_execution_results_command
+
+    mock_response = {
+        "meta": {"query_time": 8.1e-8, "powered_by": "workflow-api", "trace_id": "01193598-4a4b-41e2-970a-cb7135629d3f"},
+        "errors": [{"code": 404, "message": "execution ID 'ae6b9021abff1dc526093dbcb5e66bda' not found"}],
+        "resources": [
+            {
+                "execution_id": "ae6b9021abff1dc526093dbcb5e66bd2",
+                "activities": [
+                    {
+                        "node_id": "GetCaseDetails",
+                        "start_timestamp": "2026-03-10T15:10:24.024Z",
+                        "end_timestamp": "2026-03-10T15:10:24.374Z",
+                        "status": "Completed",
+                        "id": "3dc4a68cf25bf32ceec6588c6d5c8989",
+                        "name": "Get case details",
+                        "type": "cases",
+                    }
+                ],
+            }
+        ],
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"ids": "ae6b9021abff1dc526093dbcb5e66bd2,ae6b9021abff1dc526093dbcb5e66bda"}
+    result = list_workflow_execution_results_command(args)
+
+    assert result.outputs_prefix == "CrowdStrike.Workflows.ExecutionResult"
+    assert len(result.outputs) == 1
+    assert result.outputs[0]["execution_id"] == "ae6b9021abff1dc526093dbcb5e66bd2"
+    assert "GetCaseDetails" in result.readable_output
+    assert "Errors" in result.readable_output
+    assert "404" in result.readable_output
+    assert "ae6b9021abff1dc526093dbcb5e66bda" in result.readable_output
+
+
+def test_workflow_execution_action_command(mocker):
+    """
+    Test cs-falcon-workflow-execution-action command.
+    Given: Execution IDs and action_name=cancel, all IDs valid.
+    When: Running workflow_execution_action_command.
+    Then: Verify the command returns expected readable output with resources_affected count.
+    """
+    from CrowdStrikeFalcon import workflow_execution_action_command
+
+    mock_response = {"meta": {"writes": {"resources_affected": 1}}, "errors": [], "resources": []}
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"ids": "exec-001", "action_name": "cancel"}
+    result = workflow_execution_action_command(args)
+
+    assert "1 workflow execution(s) cancelled" in result.readable_output
+    assert "exec-001" in result.readable_output
+    assert "Errors" not in result.readable_output
+    assert result.outputs is None
+
+
+def test_workflow_execution_action_command_invalid_action(mocker):
+    """
+    Test cs-falcon-workflow-execution-action command with invalid action.
+
+    Given:
+        - An invalid action_name.
+    When:
+        - Running workflow_execution_action_command.
+    Then:
+        - Verify DemistoException is raised.
+    """
+    from CrowdStrikeFalcon import workflow_execution_action_command
+
+    args = {"ids": "exec-001", "action_name": "invalid"}
+    with pytest.raises(DemistoException, match="Invalid action_name"):
+        workflow_execution_action_command(args)
+
+
+def test_workflow_execution_action_command_partial_success(mocker):
+    """
+    Test cs-falcon-workflow-execution-action command with partial success.
+    Given: Two execution IDs, one valid and one invalid (fake_id).
+    When: Running workflow_execution_action_command.
+    Then: Verify the command shows resources_affected count and error details for the failed ID.
+    """
+    from CrowdStrikeFalcon import workflow_execution_action_command
+
+    mock_response = {
+        "meta": {
+            "query_time": 6.3e-8,
+            "pagination": {"offset": 0, "limit": 0, "total": 0},
+            "writes": {"resources_affected": 1},
+            "powered_by": "workflow-api",
+            "trace_id": "b7b085fc-5203-4d7e-a53d-6e6820a47123",
+        },
+        "errors": [{"code": 404, "message": "Not Found", "id": "fake_id"}],
+    }
+    mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"ids": "proper_id,fake_id", "action_name": "cancel"}
+    result = workflow_execution_action_command(args)
+
+    assert "1 workflow execution(s) cancelled" in result.readable_output
+    assert "proper_id" in result.readable_output
+    assert "Errors" in result.readable_output
+    assert "fake_id" in result.readable_output
+    assert "404" in result.readable_output
+    assert "Not Found" in result.readable_output
+    assert result.outputs is None
+
+
+def test_list_workflow_definitions_command_filter_priority(mocker):
+    """
+    Test that when filter arg is provided, convenience args are ignored.
+    Given: Both filter and name args provided.
+    When: Running list_workflow_definitions_command.
+    Then: Verify only the filter arg is used, name is ignored.
+    """
+    from CrowdStrikeFalcon import list_workflow_definitions_command
+
+    mock_response = {"resources": []}
+    http_mock = mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"filter": "enabled:True", "name": "ShouldBeIgnored", "limit": "10"}
+    list_workflow_definitions_command(args)
+
+    call_args = http_mock.call_args
+    params = call_args.kwargs.get("params") or call_args[1].get("params") or call_args[0][2] if len(call_args[0]) > 2 else None
+    # The filter should be exactly "enabled:True", not containing "name:~'ShouldBeIgnored'"
+    assert "ShouldBeIgnored" not in str(params)
+
+
+def test_list_workflow_executions_command_filter_priority(mocker):
+    """
+    Test that when filter arg is provided, convenience args are ignored.
+    Given: Both filter and definition_id args provided.
+    When: Running list_workflow_executions_command.
+    Then: Verify only the filter arg is used, definition_id is ignored.
+    """
+    from CrowdStrikeFalcon import list_workflow_executions_command
+
+    mock_response = {"resources": []}
+    http_mock = mocker.patch("CrowdStrikeFalcon.http_request", return_value=mock_response)
+
+    args = {"filter": "status:'completed'", "definition_id": "ShouldBeIgnored", "limit": "10"}
+    list_workflow_executions_command(args)
+
+    call_args = http_mock.call_args
+    params = call_args.kwargs.get("params") or call_args[1].get("params") or call_args[0][2] if len(call_args[0]) > 2 else None
+    assert "ShouldBeIgnored" not in str(params)
+
+
+class TestSynchronousCompression:
+    """Tests for synchronous compression in send_data_to_xsiam_async (CIAC-16811 memory optimization)."""
+
+    @pytest.mark.asyncio
+    async def test_send_data_to_xsiam_async_compresses_synchronously(self, mocker):
+        """
+        Tests that send_data_to_xsiam_async compresses data synchronously before creating async tasks.
+
+        Given:
+            - A list of vulnerability dicts to send to XSIAM.
+        When:
+            - send_data_to_xsiam_async is called.
+        Then:
+            - Data is compressed synchronously (gzip.compress called during function execution, not in async task).
+            - Async tasks receive pre-compressed bytes, not raw data.
+            - The returned tasks are valid asyncio tasks.
+        """
+        import gzip
+        import json
+
+        from CrowdStrikeFalcon import send_data_to_xsiam_async
+
+        # Setup - mock XSIAM credentials and params
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"url": "mock_url"})
+        mocker.patch(
+            "CrowdStrikeFalcon.demisto.callingContext", {"context": {"IntegrationInstance": "test", "IntegrationBrand": "CSF"}}
+        )
+        mocker.patch("CrowdStrikeFalcon.demisto.getLicenseCustomField", return_value="mock-token")
+
+        # Track gzip.compress calls to verify synchronous compression
+        original_compress = gzip.compress
+        compress_calls: list[bytes] = []
+
+        def tracking_compress(data, *args, **kwargs):
+            result = original_compress(data, *args, **kwargs)
+            compress_calls.append(result)
+            return result
+
+        mocker.patch("CrowdStrikeFalcon.gzip.compress", side_effect=tracking_compress)
+
+        # Mock xsiam_api_call_async to avoid actual HTTP calls
+        mock_api_call = mocker.AsyncMock()
+        mocker.patch("CrowdStrikeFalcon.xsiam_api_call_async", mock_api_call)
+
+        # Test data - 3 vulnerability dicts
+        test_data = [
+            {"id": "vuln1", "aid": "aid1", "status": "open", "cve": {"id": "CVE-2024-0001", "severity": "HIGH"}},
+            {"id": "vuln2", "aid": "aid2", "status": "open", "cve": {"id": "CVE-2024-0002", "severity": "MEDIUM"}},
+            {"id": "vuln3", "aid": "aid3", "status": "open", "cve": {"id": "CVE-2024-0003", "severity": "LOW"}},
+        ]
+
+        # Execute
+        tasks = send_data_to_xsiam_async(
+            data=test_data,
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight",
+            data_type="assets",
+            snapshot_id="snap123",
+        )
+
+        # Verify compression happened synchronously (before tasks are awaited)
+        assert len(compress_calls) > 0, "gzip.compress should have been called synchronously"
+
+        # Verify compressed data is valid gzip that decompresses to the original data
+        for compressed in compress_calls:
+            decompressed = gzip.decompress(compressed).decode("utf-8")
+            # Each line should be a valid JSON object from our test data
+            for line in decompressed.strip().split("\n"):
+                parsed = json.loads(line)
+                assert "id" in parsed
+                assert "aid" in parsed
+
+        # Verify tasks were created
+        assert len(tasks) > 0, "Should have created at least one async task"
+
+    @pytest.mark.asyncio
+    async def test_send_data_to_xsiam_async_empty_data_assets(self, mocker):
+        """
+        Tests that send_data_to_xsiam_async handles empty data for asset seal correctly.
+
+        Given:
+            - Empty data list with data_type="assets" (seal batch).
+        When:
+            - send_data_to_xsiam_async is called.
+        Then:
+            - A task is still created (for the seal).
+            - No crash occurs.
+        """
+        from CrowdStrikeFalcon import send_data_to_xsiam_async
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"url": "mock_url"})
+        mocker.patch(
+            "CrowdStrikeFalcon.demisto.callingContext", {"context": {"IntegrationInstance": "test", "IntegrationBrand": "CSF"}}
+        )
+        mocker.patch("CrowdStrikeFalcon.demisto.getLicenseCustomField", return_value="mock-token")
+        mocker.patch("CrowdStrikeFalcon.xsiam_api_call_async", mocker.AsyncMock())
+
+        tasks = send_data_to_xsiam_async(
+            data=[],
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight",
+            data_type="assets",
+            snapshot_id="snap123",
+        )
+
+        # Seal batch should still create a task
+        assert len(tasks) == 1, "Empty assets data should create one seal task"
+
+    def test_send_data_to_xsiam_async_empty_data_non_assets(self, mocker):
+        """
+        Tests that send_data_to_xsiam_async returns empty list for non-asset empty data.
+
+        Given:
+            - Empty data list with data_type="events".
+        When:
+            - send_data_to_xsiam_async is called.
+        Then:
+            - Returns empty list (no tasks created).
+        """
+        from CrowdStrikeFalcon import send_data_to_xsiam_async
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"url": "mock_url"})
+        mocker.patch(
+            "CrowdStrikeFalcon.demisto.callingContext", {"context": {"IntegrationInstance": "test", "IntegrationBrand": "CSF"}}
+        )
+        mocker.patch("CrowdStrikeFalcon.demisto.getLicenseCustomField", return_value="mock-token")
+
+        tasks = send_data_to_xsiam_async(
+            data=[],
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight",
+            data_type="events",
+        )
+
+        assert tasks == [], "Empty non-asset data should return no tasks"
+
+
+class StopLoop(Exception):
+    """Sentinel used to break out of the long-running while-True loop in tests."""
+
+
+class TestSpotlightFetchReportsHealth:
+    """XSUP-76105: a completed Spotlight fetch has to report health, or a stale error never clears.
+
+    ``updateModuleHealth(data, is_error=True)`` latches - the red status stays on the instance until
+    something overwrites it with a non-error write. ``fetch_cnapp_assets`` does that on its success
+    path, so an instance collecting CNAPP Alerts recovers on the next cycle. Spotlight had no
+    equivalent, and it is reachable without CNAPP in two ways: "Spotlight" selected as the only
+    assets type, and the long-running mode, which calls ``fetch_spotlight_assets`` directly. Those
+    instances kept displaying an error from a fetch that had long since recovered.
+    """
+
+    @staticmethod
+    def _run_fetch(mocker, parallel_side_effect=None, parallel_return=(0, set())):
+        """Run fetch_spotlight_assets with everything below the severity fan-out stubbed out.
+
+        Returns the updateModuleHealth mock.
+        """
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={})
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        mocker.patch("CrowdStrikeFalcon.ContentClientContextStore")
+        mocker.patch(
+            "CrowdStrikeFalcon.load_spotlight_state",
+            return_value=(mocker.MagicMock(), "snap-1", 0, 0, set(), [], []),
+        )
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+
+        client = mocker.MagicMock()
+        client.aclose = mocker.AsyncMock()
+        mocker.patch("CrowdStrikeFalcon.create_spotlight_client", return_value=client)
+
+        mocker.patch.object(
+            CrowdStrikeFalcon,
+            "fetch_spotlight_by_severity_parallel",
+            new_callable=mocker.AsyncMock,
+            side_effect=parallel_side_effect,
+            return_value=parallel_return,
+        )
+
+        return mocker.patch("CrowdStrikeFalcon.demisto.updateModuleHealth")
+
+    @pytest.mark.asyncio
+    async def test_successful_fetch_clears_a_previous_error(self, mocker):
+        """The health write must be a non-error one, which is what actually clears the red status."""
+        import CrowdStrikeFalcon
+
+        mock_health = self._run_fetch(mocker, parallel_return=(1234, {"aid-1", "aid-2"}))
+
+        await CrowdStrikeFalcon.fetch_spotlight_assets()
+
+        assert mock_health.call_count == 1, "a completed Spotlight fetch reported no health at all"
+        _args, kwargs = mock_health.call_args
+        assert kwargs.get("is_error", False) is False, "the success write must not be flagged as an error"
+
+    @pytest.mark.asyncio
+    async def test_health_reports_the_number_of_records_pulled(self, mocker):
+        """Mirrors the CNAPP path's ``{"assetsPulled": n}`` so the UI shows a count, not just green."""
+        import CrowdStrikeFalcon
+
+        mock_health = self._run_fetch(mocker, parallel_return=(1234, {"aid-1", "aid-2"}))
+
+        await CrowdStrikeFalcon.fetch_spotlight_assets()
+
+        assert mock_health.call_args.args[0] == {"assetsPulled": 1234}
+
+    @pytest.mark.asyncio
+    async def test_failed_fetch_does_not_report_success(self, mocker):
+        """A fetch that raises must leave the error standing rather than paint over it."""
+        import CrowdStrikeFalcon
+
+        mock_health = self._run_fetch(mocker, parallel_side_effect=DemistoException("boom"))
+
+        with pytest.raises(DemistoException):
+            await CrowdStrikeFalcon.fetch_spotlight_assets()
+
+        assert mock_health.call_count == 0, "a failed fetch cleared the error status"
+
+
+class TestLongRunningSpotlightExecution:
+    """Tests for the opt-in long-running Spotlight fetch loop."""
+
+    @staticmethod
+    def _run_loop(mocker, cycle_durations, fetch_side_effect=None, return_chunks=False):
+        """Run the long-running loop for len(cycle_durations) cycles, then stop.
+
+        The cycle period is a fixed 24 hours (LONG_RUNNING_ASSETS_INTERVAL_MINUTES) and is not
+        configurable, so no interval parameter is set up here.
+
+        The loop serves each wait as several short ``time.sleep`` chunks, so the individual calls
+        are summed back into one total per cycle - the schedule is what these tests are about, not
+        how the wait is delivered. Pass ``return_chunks=True`` to inspect the raw chunks instead.
+
+        Returns (sleeps, mock_fetch, mock_cnapp, mock_log), where ``sleeps`` holds one total per
+        cycle, or every individual chunk when ``return_chunks`` is set.
+        """
+        from CrowdStrikeFalcon import long_running_spotlight_execution
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={})
+        mocker.patch("CrowdStrikeFalcon.demisto.error")
+
+        cycle_totals: list[float] = []
+        chunks: list[float] = []
+        pending = [0.0]
+        cycles_started = [0]
+
+        def on_log(message, *_args, **_kwargs):
+            # The loop announces each cycle before fetching, which is the one unambiguous cycle
+            # boundary available: the previous cycle's wait has been fully served in chunks by
+            # now, so bank it. Counting monotonic calls would not work - a successful cycle reads
+            # the clock three times and a failed one twice. A cycle whose wait is zero banks 0.0,
+            # so the count of started cycles is tracked explicitly rather than inferred from
+            # whether any sleeping happened.
+            if not message.endswith("starting."):
+                return
+            if cycles_started[0]:
+                cycle_totals.append(pending[0])
+                pending[0] = 0.0
+            cycles_started[0] += 1
+            if len(cycle_totals) >= len(cycle_durations):
+                raise StopLoop
+
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets", side_effect=on_log)
+
+        # fetch_spotlight_assets is a coroutine function, so patching would normally build an
+        # AsyncMock - that returns a coroutine and only raises side_effect when awaited, which never
+        # happens because asyncio.run is stubbed below. Force a synchronous MagicMock so a
+        # configured exception is raised at call time, inside the loop's try block.
+        mock_fetch = mocker.patch(
+            "CrowdStrikeFalcon.fetch_spotlight_assets",
+            new_callable=mocker.MagicMock,
+            side_effect=fetch_side_effect,
+            return_value=None,
+        )
+        mock_cnapp = mocker.patch("CrowdStrikeFalcon.fetch_cnapp_assets")
+
+        # The loop calls asyncio.run(fetch_spotlight_assets()); the inner call already did the work,
+        # so just pass its result through.
+        mocker.patch("CrowdStrikeFalcon.asyncio.run", side_effect=lambda result: result)
+
+        # Drive elapsed time deterministically: each cycle consumes one duration.
+        clock = [0.0]
+        durations = list(cycle_durations)
+
+        def fake_monotonic():
+            value = clock[0]
+            if durations:
+                clock[0] += durations.pop(0)
+            return value
+
+        mocker.patch("CrowdStrikeFalcon.time.monotonic", side_effect=fake_monotonic)
+
+        def fake_sleep(seconds):
+            chunks.append(seconds)
+            pending[0] += seconds
+
+        mocker.patch("CrowdStrikeFalcon.time.sleep", side_effect=fake_sleep)
+
+        with pytest.raises(StopLoop):
+            long_running_spotlight_execution()
+
+        return (chunks if return_chunks else cycle_totals), mock_fetch, mock_cnapp, mock_log
+
+    def test_runs_fetch_each_cycle(self, mocker):
+        """
+        Given: A long-running instance.
+        When: The loop runs for three cycles.
+        Then: The Spotlight fetch is invoked once per cycle.
+        """
+        _sleeps, mock_fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[60, 60, 60])
+
+        assert mock_fetch.call_count == 3
+
+    def test_survives_cycle_exception(self, mocker):
+        """
+        Given: The first fetch cycle raises an unexpected error.
+        When: The loop continues.
+        Then: The container does not die - later cycles still run and the failure is logged.
+        """
+        errors = [Exception("boom"), None, None]
+        _sleeps, mock_fetch, _cnapp, mock_log = self._run_loop(mocker, cycle_durations=[60, 60, 60], fetch_side_effect=errors)
+
+        assert mock_fetch.call_count == 3, "A failing cycle must not stop the loop"
+        logged = [call.args[0] for call in mock_log.call_args_list]
+        # Assert on the diagnostic content rather than the exact phrasing: the log must say a cycle
+        # failed and must carry the underlying error, which is what makes the line actionable.
+        assert any("failed" in message and "boom" in message for message in logged), "The failing cycle must be reported"
+
+    def test_subtracts_elapsed_from_interval(self, mocker):
+        """
+        Given: The fixed 24 hour period and a cycle that takes 3 hours.
+        When: The cycle finishes.
+        Then: The loop sleeps only the remaining 21 hours, so cycles start every 24 hours.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_ASSETS_INTERVAL_MINUTES
+
+        three_hours = 3 * 3600
+        sleeps, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[three_hours])
+
+        assert sleeps == [LONG_RUNNING_ASSETS_INTERVAL_MINUTES * 60 - three_hours]
+
+    def test_cycle_longer_than_interval_sleeps_zero(self, mocker):
+        """
+        Given: A cycle running 30 hours against the fixed 24 hour period.
+        When: The cycle finishes.
+        Then: Sleep is clamped to 0 so the next cycle starts immediately, never negative,
+              and cycles can never overlap because the loop is sequential.
+        """
+        thirty_hours = 30 * 3600
+        sleeps, mock_fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[thirty_hours])
+
+        assert sleeps == [0.0]
+        assert mock_fetch.call_count == 1
+
+    def test_period_is_a_fixed_twenty_four_hours(self, mocker):
+        """
+        Given: The interval is hardcoded and cannot be configured.
+        When: A near-instant cycle completes.
+        Then: The loop sleeps the full 24 hours (1440 minutes).
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_ASSETS_INTERVAL_MINUTES
+
+        assert LONG_RUNNING_ASSETS_INTERVAL_MINUTES == 1440
+
+        sleeps, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[0])
+
+        assert sleeps == [1440 * 60]
+
+    def test_does_not_fetch_cnapp(self, mocker):
+        """
+        Given: A long-running instance (Spotlight-only scope).
+        When: The loop runs.
+        Then: CNAPP alerts are never fetched - they stay on the regular assets fetch.
+        """
+        _sleeps, _fetch, mock_cnapp, _log = self._run_loop(mocker, cycle_durations=[60])
+
+        mock_cnapp.assert_not_called()
+
+    def test_failed_cycle_retries_quickly_instead_of_waiting_the_interval(self, mocker):
+        """
+        Given: A cycle that fails almost immediately (bad credentials, tripped circuit breaker).
+        When: The loop decides how long to wait.
+        Then: It retries after the short failure delay rather than idling out the remaining ~24
+              hours, which would strand the instance for a day over a fault clearing in minutes.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_FAILURE_RETRY_MINUTES
+
+        sleeps, _fetch, _cnapp, _log = self._run_loop(
+            mocker, cycle_durations=[5], fetch_side_effect=[Exception("bad credentials")]
+        )
+
+        assert sleeps == [LONG_RUNNING_FAILURE_RETRY_MINUTES * 60]
+
+    def test_consecutive_failures_back_off_exponentially_up_to_the_cap(self, mocker):
+        """
+        Given: Five consecutive failing cycles.
+        When: Each failure schedules the next retry.
+        Then: The delay doubles per failure and then holds at the cap, so a persistent fault is
+              retried without hammering the API.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_FAILURE_RETRY_MAX_MINUTES, LONG_RUNNING_FAILURE_RETRY_MINUTES
+
+        failures = [Exception("still down")] * 5
+        sleeps, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[5] * 5, fetch_side_effect=failures)
+
+        expected = [
+            min(LONG_RUNNING_FAILURE_RETRY_MINUTES * (2**attempt), LONG_RUNNING_FAILURE_RETRY_MAX_MINUTES) * 60
+            for attempt in range(5)
+        ]
+        assert sleeps == expected
+        assert sleeps[-1] == LONG_RUNNING_FAILURE_RETRY_MAX_MINUTES * 60, "The backoff must stop growing at the cap"
+
+    def test_backoff_resets_after_a_successful_cycle(self, mocker):
+        """
+        Given: A failure, then a success, then another failure.
+        When: The second failure schedules its retry.
+        Then: It waits the base delay again, not the doubled one - a success clears the streak, so
+              an unrelated failure a week later is not punished for an old one.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_FAILURE_RETRY_MINUTES
+
+        side_effects = [Exception("transient"), None, Exception("unrelated")]
+        sleeps, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[5, 5, 5], fetch_side_effect=side_effects)
+
+        base_delay = LONG_RUNNING_FAILURE_RETRY_MINUTES * 60
+        assert sleeps[0] == base_delay
+        assert sleeps[2] == base_delay, "A success must reset the consecutive-failure count"
+
+    def test_failure_never_waits_longer_than_the_normal_schedule(self, mocker):
+        """
+        Given: A cycle that fails only after running longer than the whole interval.
+        When: The retry delay is computed.
+        Then: Sleep is 0 - the failure path may only ever shorten the wait, never extend it, and
+              never goes negative.
+        """
+        thirty_hours = 30 * 3600
+        sleeps, _fetch, _cnapp, _log = self._run_loop(
+            mocker, cycle_durations=[thirty_hours], fetch_side_effect=[Exception("late failure")]
+        )
+
+        assert sleeps == [0.0]
+
+    def test_successful_cycle_keeps_the_full_interval(self, mocker):
+        """
+        Given: A successful cycle.
+        When: The loop sleeps.
+        Then: The failure backoff does not apply - the 24 hour cadence is unchanged.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_ASSETS_INTERVAL_MINUTES
+
+        one_hour = 3600
+        sleeps, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[one_hour])
+
+        assert sleeps == [LONG_RUNNING_ASSETS_INTERVAL_MINUTES * 60 - one_hour]
+
+    def test_wait_is_broken_into_short_blocking_chunks(self, mocker):
+        """
+        Given: A finished cycle with a long wait ahead of it (the 24 hour cadence).
+        When: The loop waits for the next cycle.
+        Then: No single blocking sleep is long. A one-shot ``time.sleep`` of up to 24 hours leaves
+              the container unable to answer a shutdown request or health check for that whole
+              period, so the wait is served in short chunks instead.
+
+        The total wait is asserted separately below - splitting it must not change the cadence.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_SLEEP_CHUNK_SECONDS
+
+        chunks, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[0], return_chunks=True)
+
+        assert chunks, "The loop must actually wait between cycles"
+        assert (
+            max(chunks) <= LONG_RUNNING_SLEEP_CHUNK_SECONDS
+        ), f"No single blocking sleep may exceed {LONG_RUNNING_SLEEP_CHUNK_SECONDS}s, got {max(chunks)}s"
+
+    def test_chunked_wait_still_totals_the_full_interval(self, mocker):
+        """
+        Given: An instant cycle on the fixed 24 hour cadence.
+        When: The wait is served in chunks.
+        Then: The chunks add up to the full interval, so breaking the sleep up does not drift the
+              schedule or busy-loop.
+        """
+        from CrowdStrikeFalcon import LONG_RUNNING_ASSETS_INTERVAL_MINUTES
+
+        chunks, _fetch, _cnapp, _log = self._run_loop(mocker, cycle_durations=[0], return_chunks=True)
+
+        assert sum(chunks) == LONG_RUNNING_ASSETS_INTERVAL_MINUTES * 60
+
+
+class TestLongRunningAndAssetsFetchAreMutuallyExclusive:
+    """Enabling both the assets fetch and the long-running Spotlight loop on one instance makes
+    two collectors race for the same snapshot. The docs asked users not to do it; the code now
+    refuses it instead of relying on the user reading the parameter help.
+    """
+
+    @staticmethod
+    def _test_module_with(mocker, params: dict) -> str:
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value=params)
+        mocker.patch("CrowdStrikeFalcon.get_token")
+        from CrowdStrikeFalcon import module_test
+
+        return module_test()
+
+    def test_rejects_enabling_both_collectors(self, mocker):
+        """
+        Given: An instance with both the assets fetch and the long-running loop enabled.
+        When: The configuration is tested.
+        Then: The test fails with a message naming both settings, so the conflict is caught at
+              configuration time rather than as a silently doubled snapshot.
+        """
+        message = self._test_module_with(mocker, {"isFetchAssets": True, "longRunning": True})
+
+        assert message != "ok"
+        assert "long" in message.lower(), f"The error must name the long-running setting, got: {message!r}"
+        assert "asset" in message.lower(), f"The error must name the assets fetch setting, got: {message!r}"
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            pytest.param({"isFetchAssets": True, "longRunning": False}, id="assets_fetch_only"),
+            pytest.param({"isFetchAssets": False, "longRunning": True}, id="long_running_only"),
+            pytest.param({"isFetchAssets": False, "longRunning": False}, id="neither"),
+        ],
+    )
+    def test_accepts_each_collector_on_its_own(self, mocker, params):
+        """
+        Given: Only one of the two collectors enabled, or neither.
+        When: The configuration is tested.
+        Then: It passes - the guard must reject only the genuine conflict.
+        """
+        assert self._test_module_with(mocker, params) == "ok"
+
+
+class TestXsiamSendFailureIsNotCounted:
+    """XSUP-71944: a failed XSIAM send must never be counted as stored.
+
+    Observed on a live tenant (2026-08-03T08:36:50Z): XSIAM answered 502 Bad Gateway, yet the
+    batch was logged as "Successfully sent" and its records were counted. The declared
+    total-items-count then exceeded the rows actually stored and the snapshot never sealed -
+    exactly the symptom the customer reported.
+
+    The root cause was that ``xsiam_api_call_async`` logged the HTTP error but neither raised
+    nor set ``status_code``, so the awaiting caller saw a clean return.
+    """
+
+    @staticmethod
+    def _client_response_error(status: int, message: str):
+        import aiohttp
+        from unittest.mock import MagicMock
+
+        return aiohttp.ClientResponseError(request_info=MagicMock(), history=(), status=status, message=message)
+
+    @staticmethod
+    def _patch_xsiam_env(mocker):
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"url": "mock_url"})
+        mocker.patch(
+            "CrowdStrikeFalcon.demisto.callingContext", {"context": {"IntegrationInstance": "test", "IntegrationBrand": "CSF"}}
+        )
+        mocker.patch("CrowdStrikeFalcon.demisto.getLicenseCustomField", return_value="mock-token")
+        mocker.patch("CrowdStrikeFalcon.demisto.updateModuleHealth")
+        # These tests deliberately exercise the error path, which logs at error level.
+        # The autouse check_std_out_err fixture fails any test that writes to stdout.
+        return mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+    def _patch_session_post(self, mocker, status: int, message: str):
+        """Make every POST to XSIAM raise ClientResponseError(status) from raise_for_status()."""
+        response = mocker.MagicMock()
+        response.status = status
+        response.raise_for_status.side_effect = self._client_response_error(status, message)
+
+        post_ctx = mocker.MagicMock()
+        post_ctx.__aenter__ = mocker.AsyncMock(return_value=response)
+        post_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+
+        session = mocker.MagicMock()
+        session.post = mocker.MagicMock(return_value=post_ctx)
+
+        session_ctx = mocker.MagicMock()
+        session_ctx.__aenter__ = mocker.AsyncMock(return_value=session)
+        session_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+
+        mocker.patch("CrowdStrikeFalcon.get_xsiam_session", new_callable=mocker.AsyncMock, return_value=session)
+        return session
+
+    @pytest.mark.asyncio
+    async def test_bad_gateway_raises_instead_of_returning_quietly(self, mocker):
+        """
+        Given: XSIAM returns 502 Bad Gateway on every attempt.
+        When: xsiam_api_call_async is awaited.
+        Then: It raises, rather than logging and returning as it did before the fix.
+              Returning quietly is what let the caller count unstored records.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        self._patch_session_post(mocker, 502, "Bad Gateway")
+
+        with pytest.raises(DemistoException, match="NOT stored and must not be counted"):
+            await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=1, data_type="assets")
+
+    @pytest.mark.asyncio
+    async def test_bad_gateway_batch_reports_zero_records_stored(self, mocker):
+        """
+        Given: A 50-record batch and XSIAM failing with 502 on every attempt (count_stored=True).
+        When: send_batch_to_xsiam_and_save_context is awaited.
+        Then: records_stored is 0, and the saved batch number does not advance.
+
+        This is the regression test for the live failure: before the fix this returned
+        records_stored == 50 for data XSIAM never accepted.
+        """
+        from CrowdStrikeFalcon import send_batch_to_xsiam_and_save_context
+
+        self._patch_xsiam_env(mocker)
+        self._patch_session_post(mocker, 502, "Bad Gateway")
+
+        save_state_callback = mocker.MagicMock()
+        data = [{"id": f"vuln{i}", "aid": "aid1"} for i in range(50)]
+
+        saved_batch_number, records_stored = await send_batch_to_xsiam_and_save_context(
+            data=data,
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight_Vulnerabilities",
+            snapshot_id="snap123",
+            items_count=50,
+            batch_number=79,
+            last_saved_batch_number=78,
+            context_store=mocker.MagicMock(),
+            state=mocker.MagicMock(),
+            save_state_callback=save_state_callback,
+            data_type="assets",
+            count_stored=True,
+        )
+
+        assert records_stored == 0, "A batch XSIAM rejected must not be counted as stored"
+        assert saved_batch_number == 78, "A failed batch must not advance the saved batch number"
+        save_state_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_send_still_counts_normally(self, mocker):
+        """
+        Given: XSIAM accepts the batch with HTTP 200.
+        When: send_batch_to_xsiam_and_save_context is awaited.
+        Then: All records are counted and the batch number advances.
+
+        Guards against the fix over-reaching and breaking the success path.
+        """
+        from CrowdStrikeFalcon import send_batch_to_xsiam_and_save_context
+
+        self._patch_xsiam_env(mocker)
+
+        response = mocker.MagicMock()
+        response.status = 200
+        response.raise_for_status.return_value = None
+
+        post_ctx = mocker.MagicMock()
+        post_ctx.__aenter__ = mocker.AsyncMock(return_value=response)
+        post_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+        session = mocker.MagicMock()
+        session.post = mocker.MagicMock(return_value=post_ctx)
+        session_ctx = mocker.MagicMock()
+        session_ctx.__aenter__ = mocker.AsyncMock(return_value=session)
+        session_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+        mocker.patch("CrowdStrikeFalcon.get_xsiam_session", new_callable=mocker.AsyncMock, return_value=session)
+
+        save_state_callback = mocker.MagicMock()
+        data = [{"id": f"vuln{i}", "aid": "aid1"} for i in range(50)]
+
+        saved_batch_number, records_stored = await send_batch_to_xsiam_and_save_context(
+            data=data,
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight_Vulnerabilities",
+            snapshot_id="snap123",
+            items_count=50,
+            batch_number=79,
+            last_saved_batch_number=78,
+            context_store=mocker.MagicMock(),
+            state=mocker.MagicMock(),
+            save_state_callback=save_state_callback,
+            data_type="assets",
+            count_stored=True,
+        )
+
+        assert records_stored == 50
+        assert saved_batch_number == 79
+        save_state_callback.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_retryable_429_still_retries_then_succeeds(self, mocker):
+        """
+        Given: XSIAM answers 429 on the first attempt and 200 on the second.
+        When: xsiam_api_call_async is awaited with num_of_attempts=3.
+        Then: It returns normally without raising - the fix must not turn throttling into a
+              hard failure.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+
+        throttled = mocker.MagicMock()
+        throttled.status = 429
+        throttled.raise_for_status.side_effect = self._client_response_error(429, "Too Many Requests")
+
+        accepted = mocker.MagicMock()
+        accepted.status = 200
+        accepted.raise_for_status.return_value = None
+
+        responses = [throttled, accepted]
+
+        def next_post_ctx(*_args, **_kwargs):
+            ctx = mocker.MagicMock()
+            ctx.__aenter__ = mocker.AsyncMock(return_value=responses.pop(0))
+            ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+            return ctx
+
+        session = mocker.MagicMock()
+        session.post = mocker.MagicMock(side_effect=next_post_ctx)
+        session_ctx = mocker.MagicMock()
+        session_ctx.__aenter__ = mocker.AsyncMock(return_value=session)
+        session_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+        mocker.patch("CrowdStrikeFalcon.get_xsiam_session", new_callable=mocker.AsyncMock, return_value=session)
+
+        await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+        assert responses == [], "Both the throttled and the accepted response should have been consumed"
+
+    @pytest.mark.asyncio
+    async def test_429_then_502_does_not_carry_the_stale_429_forward(self, mocker):
+        """
+        Given: XSIAM answers 429 on the first attempt and 502 on every attempt after it.
+        When: xsiam_api_call_async runs out of attempts.
+        Then: The 502 attempts must not report the earlier 429.
+
+        ``status_code`` was only ever assigned on the accepted-status branch, so after a 429 it
+        stayed 429 for the rest of the loop. The bottom-of-loop ``if status_code == 429`` then
+        fired an extra throttling sleep on an attempt that had actually failed with 502, and
+        "received status code: 429" was logged for a 502 response.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        log = self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+
+        throttled = mocker.MagicMock()
+        throttled.status = 429
+        throttled.raise_for_status.side_effect = self._client_response_error(429, "Too Many Requests")
+
+        rejected = mocker.MagicMock()
+        rejected.status = 502
+        rejected.raise_for_status.side_effect = self._client_response_error(502, "Bad Gateway")
+
+        responses = [throttled, rejected, rejected]
+
+        def next_post_ctx(*_args, **_kwargs):
+            ctx = mocker.MagicMock()
+            ctx.__aenter__ = mocker.AsyncMock(return_value=responses.pop(0))
+            ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+            return ctx
+
+        session = mocker.MagicMock()
+        session.post = mocker.MagicMock(side_effect=next_post_ctx)
+        session_ctx = mocker.MagicMock()
+        session_ctx.__aenter__ = mocker.AsyncMock(return_value=session)
+        session_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+        mocker.patch("CrowdStrikeFalcon.get_xsiam_session", new_callable=mocker.AsyncMock, return_value=session)
+
+        with pytest.raises(DemistoException, match="502"):
+            await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+        logged = [call.args[0] for call in log.call_args_list]
+        assert not any(
+            "received status code: 429" in message for message in logged
+        ), f"A 502 attempt must not report the earlier 429, got: {logged}"
+
+    @pytest.mark.asyncio
+    async def test_health_error_states_the_reason_once(self, mocker):
+        """
+        XSUP-76105: the customer saw "Error sending assets to XSIAM: Bad GatewayBad Gateway".
+
+        Given: XSIAM rejects every attempt with 502 Bad Gateway.
+        When:  xsiam_api_call_async exhausts its retries.
+        Then:  The health message names the reason exactly once.
+
+        The message is the only part of this failure the customer ever sees, so its text is
+        behaviour, not cosmetics - a doubled reason reads like two separate faults.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+        update_module_health = mocker.patch("CrowdStrikeFalcon.demisto.updateModuleHealth")
+        self._patch_session_post(mocker, 502, "Bad Gateway")
+
+        with pytest.raises(DemistoException):
+            await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+        health_message = update_module_health.call_args.args[0]
+        assert health_message.count("Bad Gateway") == 1, f"The reason must appear once, got: {health_message!r}"
+
+    @pytest.mark.asyncio
+    async def test_recovered_send_leaves_the_instance_healthy(self, mocker):
+        """
+        XSUP-76105: the customer reported a red instance while assets kept flowing, which is what
+        a per-attempt health write produces - a transient 502 that the very next attempt recovers
+        from still marks the instance as errored.
+
+        Given: XSIAM answers 502 once and then 200.
+        When:  xsiam_api_call_async is awaited.
+        Then:  No error is reported to the health module, because nothing was actually lost.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+        update_module_health = mocker.patch("CrowdStrikeFalcon.demisto.updateModuleHealth")
+
+        rejected = mocker.MagicMock()
+        rejected.status = 502
+        rejected.raise_for_status.side_effect = self._client_response_error(502, "Bad Gateway")
+
+        accepted = mocker.MagicMock()
+        accepted.status = 200
+        accepted.raise_for_status.return_value = None
+
+        responses = [rejected, accepted]
+
+        def next_post_ctx(*_args, **_kwargs):
+            ctx = mocker.MagicMock()
+            ctx.__aenter__ = mocker.AsyncMock(return_value=responses.pop(0))
+            ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+            return ctx
+
+        session = mocker.MagicMock()
+        session.post = mocker.MagicMock(side_effect=next_post_ctx)
+        session_ctx = mocker.MagicMock()
+        session_ctx.__aenter__ = mocker.AsyncMock(return_value=session)
+        session_ctx.__aexit__ = mocker.AsyncMock(return_value=False)
+        mocker.patch("CrowdStrikeFalcon.get_xsiam_session", new_callable=mocker.AsyncMock, return_value=session)
+
+        await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+        assert responses == [], "Both the rejected and the accepted response should have been consumed"
+        errors_reported = [call for call in update_module_health.call_args_list if call.kwargs.get("is_error")]
+        assert not errors_reported, f"A recovered send must not mark the instance as errored, got: {errors_reported}"
+
+    @pytest.mark.asyncio
+    async def test_server_error_backs_off_between_attempts(self, mocker):
+        """
+        Given: XSIAM returns 502 on every attempt and num_of_attempts=3.
+        When:  xsiam_api_call_async is awaited.
+        Then:  It waits before each retry.
+
+        Without a wait the three attempts leave in the same millisecond, so a gateway blip lasting
+        a second outlives the whole retry budget and the retries buy nothing.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        sleep = mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+        self._patch_session_post(mocker, 502, "Bad Gateway")
+
+        with pytest.raises(DemistoException):
+            await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+        waits = [call.args[0] for call in sleep.call_args_list]
+        assert len(waits) == 2, f"3 attempts means a wait before each of the 2 retries, got waits: {waits}"
+        assert all(wait > 0 for wait in waits), f"Each wait must be a real pause, got: {waits}"
+
+    @pytest.mark.asyncio
+    async def test_failed_send_does_not_abort_the_severity(self, mocker):
+        """
+        Given: Three pages for HIGH severity where the send of page 2 fails outright.
+        When:  fetch_vulnerabilities_by_severity runs.
+        Then:  The fetch continues to page 3, only the successfully stored records are counted,
+               and the failed page's records are simply not counted.
+
+        This is the behaviour the raise in xsiam_api_call_async feeds into: the send failure must
+        surface as an exception (so it is not miscounted) without killing the severity.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        mock_client = mocker.AsyncMock()
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        def page(vulns, after):
+            response = mocker.Mock()
+            response.json.return_value = {"resources": vulns, "meta": {"pagination": {"after": after}}}
+            return response
+
+        # Page 1 withholds one record for the seal, so it only sends 2 of its 3.
+        mock_client._request.side_effect = [
+            page([{"id": "v1", "aid": "a1"}, {"id": "v2", "aid": "a1"}, {"id": "v3", "aid": "a1"}], "t2"),
+            page([{"id": "v4", "aid": "a2"}, {"id": "v5", "aid": "a2"}], "t3"),
+            page([{"id": "v6", "aid": "a3"}], None),
+        ]
+
+        pages_sent: list[int] = []
+
+        def create_task_side_effect(*_args, **kwargs):
+            batch = kwargs.get("data", [])
+            pages_sent.append(len(batch))
+            future = asyncio.Future()
+            if any(record["id"] == "v4" for record in batch):
+                # XSIAM rejected the whole batch, as the 502 path now reports.
+                future.set_exception(DemistoException("Failed sending assets to XSIAM (HTTP 502 Bad Gateway)."))
+            else:
+                future.set_result((1, len(batch)))
+            return future
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        total, aids, withheld = await fetch_vulnerabilities_by_severity(
+            client=mock_client,
+            severity="HIGH",
+            context_store=mocker.Mock(),
+            spotlight_state=mocker.Mock(),
+            snapshot_id="snap123",
+            asset_handler=mock_handler,
+        )
+
+        assert pages_sent == [2, 2, 1], "All three pages must be attempted; the failure must not stop pagination"
+        # Stored: 2 from page 1 + 0 from the rejected page 2 + 1 from page 3, plus the withheld seal record.
+        assert total == 4, "Only records XSIAM stored (plus the withheld seal record) may be counted"
+        assert withheld == [{"id": "v1", "aid": "a1"}]
+        assert aids == {"a1", "a2", "a3"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status, message", [(500, "Internal Server Error"), (502, "Bad Gateway"), (503, "Service Unavailable")]
+    )
+    async def test_every_server_error_raises_and_counts_zero(self, mocker, status, message):
+        """
+        Given: XSIAM rejects the batch with a 5xx on every attempt.
+        When:  send_batch_to_xsiam_and_save_context runs with count_stored=True.
+        Then:  records_stored is 0 and the saved batch number does not advance.
+
+        The live tenant happened to return 502, so that is the status the original regression test
+        pinned. Nothing in the fix is specific to 502 though, and the mock server reproduced the
+        same class of failure with 500 - so the guarantee is asserted across the range rather than
+        for the single status we happened to observe.
+        """
+        from CrowdStrikeFalcon import send_batch_to_xsiam_and_save_context
+
+        self._patch_xsiam_env(mocker)
+        self._patch_session_post(mocker, status, message)
+
+        save_state_callback = mocker.MagicMock()
+
+        saved_batch_number, records_stored = await send_batch_to_xsiam_and_save_context(
+            data=[{"id": f"vuln{i}", "aid": "aid1"} for i in range(25)],
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight_Vulnerabilities",
+            snapshot_id="snap123",
+            items_count=25,
+            batch_number=5,
+            last_saved_batch_number=4,
+            context_store=mocker.MagicMock(),
+            state=mocker.MagicMock(),
+            save_state_callback=save_state_callback,
+            data_type="assets",
+            count_stored=True,
+        )
+
+        assert records_stored == 0, f"HTTP {status} must not be counted as stored"
+        assert saved_batch_number == 4, f"HTTP {status} must not advance the saved batch number"
+        save_state_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_throttling_that_never_clears_still_raises(self, mocker):
+        """
+        Given: XSIAM answers 429 on every single attempt, so the throttling never clears.
+        When:  xsiam_api_call_async is awaited with num_of_attempts=3.
+        Then:  It raises.
+
+        This is the awkward edge of the retry loop, and the reason it deserves its own test:
+        429 is deliberately tolerated via ``ok_codes`` so that throttling is retried rather than
+        treated as failure. But ``ok_codes`` is set to None on the final attempt, so a 429 that
+        never clears has to fall through to the raise. Were that last-attempt narrowing ever
+        dropped, the loop would exit with status_code=429 having swallowed the error, and we would
+        be back to counting records XSIAM never stored - the exact bug this class exists to prevent.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+        self._patch_session_post(mocker, 429, "Too Many Requests")
+
+        with pytest.raises(DemistoException, match="NOT stored and must not be counted"):
+            await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+    @pytest.mark.asyncio
+    async def test_batch_counts_only_the_chunks_xsiam_accepted(self, mocker):
+        """
+        Given: A batch split into 3 chunks of 10 records, where XSIAM accepts chunks 1 and 3 but
+               rejects chunk 2 on every attempt.
+        When:  send_batch_to_xsiam_and_save_context runs with count_stored=True.
+        Then:  records_stored counts ONLY the 20 records in the accepted chunks, and the saved batch
+               number does not advance because the batch is not fully stored.
+
+        The other tests in this class fail every chunk, so "stored == 0" would also be satisfied by
+        code that simply gave up on the first bad chunk. This one pins the partial case: the
+        surviving chunks must still be counted and the rejected one must not. Getting it wrong in
+        either direction breaks declared == stored - over-counting leaves the snapshot unsealable
+        (the original bug), under-counting silently discards rows XSIAM did store.
+
+        Note on the setup: chunking is driven by a *byte* budget (XSIAM_EVENT_CHUNK_SIZE is 1 MiB),
+        not a record count, so the split is pinned directly rather than inferred from data size.
+        The chunks are also sent concurrently, so the failure is keyed off the chunk's payload
+        instead of call ordering, which is not deterministic.
+        """
+        import gzip as _gzip
+
+        from CrowdStrikeFalcon import send_batch_to_xsiam_and_save_context
+
+        self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+
+        records_per_chunk = 10
+        records = [{"id": f"vuln{i}", "aid": "aid1"} for i in range(3 * records_per_chunk)]
+        # Tag the middle chunk so the fault injector can identify it regardless of completion order.
+        for record in records[records_per_chunk : 2 * records_per_chunk]:
+            record["reject_me"] = "yes"
+
+        def fake_split(data_str, _chunk_size):
+            lines = data_str.split("\n") if isinstance(data_str, str) else list(data_str)
+            for start in range(0, len(lines), records_per_chunk):
+                yield lines[start : start + records_per_chunk]
+
+        mocker.patch("CrowdStrikeFalcon.split_data_to_chunks", side_effect=fake_split)
+
+        async def fake_api_call(xsiam_url, zipped_data, headers, num_of_attempts, data_type, **_kwargs):
+            if "reject_me" in _gzip.decompress(zipped_data).decode():
+                raise DemistoException("Failed sending assets to XSIAM. The batch was NOT stored and must not be counted.")
+
+        mocker.patch("CrowdStrikeFalcon.xsiam_api_call_async", side_effect=fake_api_call)
+
+        save_state_callback = mocker.MagicMock()
+
+        saved_batch_number, records_stored = await send_batch_to_xsiam_and_save_context(
+            data=records,
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight_Vulnerabilities",
+            snapshot_id="snap123",
+            items_count=len(records),
+            batch_number=5,
+            last_saved_batch_number=4,
+            context_store=mocker.MagicMock(),
+            state=mocker.MagicMock(),
+            save_state_callback=save_state_callback,
+            data_type="assets",
+            count_stored=True,
+        )
+
+        assert records_stored == 2 * records_per_chunk, "Only the two accepted chunks may be counted"
+        assert saved_batch_number == 4, "A partially stored batch must not advance the saved batch number"
+        save_state_callback.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_chunk_sizes_sum_to_the_record_count_with_the_real_splitter(self, mocker):
+        """
+        Given: A batch sent through the REAL split_data_to_chunks, at a chunk size small enough to
+               force a multi-chunk split, with every chunk accepted.
+        When:  send_batch_to_xsiam_and_save_context runs with count_stored=True.
+        Then:  records_stored equals the number of records sent.
+
+        This underpins the partial-count test above, which patches the splitter and therefore only
+        proves the arithmetic *given* a chunk->record mapping. The counting is only correct if the
+        per-chunk ``chunk_size_val`` genuinely equals the number of vulnerabilities in that chunk.
+        That holds because _normalize_data_to_str emits exactly one line per record (json.dumps
+        escapes any embedded newline), split_data_to_chunks groups whole lines, and chunk_size_val
+        is len(chunk). If a future change made chunking split mid-record, or counted bytes instead
+        of records, declared would silently drift from stored - so the identity is asserted against
+        the real implementation rather than assumed.
+        """
+        from CrowdStrikeFalcon import send_batch_to_xsiam_and_save_context
+
+        self._patch_xsiam_env(mocker)
+
+        record_count = 30
+        # A record whose value contains a newline: json.dumps must escape it, keeping one line each.
+        records = [{"id": f"vuln{i}", "aid": "aid1", "desc": "line1\nline2"} for i in range(record_count)]
+
+        # Small byte budget so the real splitter produces several chunks.
+        mocker.patch("CrowdStrikeFalcon.XSIAM_EVENT_CHUNK_SIZE", 500)
+
+        sent_chunks = []
+
+        async def fake_api_call(xsiam_url, zipped_data, headers, num_of_attempts, data_type, **_kwargs):
+            import gzip as _gzip
+
+            sent_chunks.append(_gzip.decompress(zipped_data).decode())
+
+        mocker.patch("CrowdStrikeFalcon.xsiam_api_call_async", side_effect=fake_api_call)
+
+        _saved_batch_number, records_stored = await send_batch_to_xsiam_and_save_context(
+            data=records,
+            vendor="CrowdStrike",
+            product="Falcon_Spotlight_Vulnerabilities",
+            snapshot_id="snap123",
+            items_count=record_count,
+            batch_number=5,
+            last_saved_batch_number=4,
+            context_store=mocker.MagicMock(),
+            state=mocker.MagicMock(),
+            save_state_callback=mocker.MagicMock(),
+            data_type="assets",
+            count_stored=True,
+        )
+
+        assert len(sent_chunks) > 1, "The chunk size must be small enough to force a real multi-chunk split"
+        assert records_stored == record_count, "Summed chunk sizes must equal the number of records sent"
+        # Every line in every chunk is exactly one record, so no record was split across chunks.
+        assert sum(len(chunk.split("\n")) for chunk in sent_chunks) == record_count
+
+    @pytest.mark.asyncio
+    async def test_server_error_is_retried_the_configured_number_of_times(self, mocker):
+        """
+        Given: XSIAM returns 500 on every attempt and num_of_attempts=3.
+        When:  xsiam_api_call_async is awaited.
+        Then:  Exactly 3 POSTs are made before it gives up.
+
+        Guards the other direction from the tests above: the fix must not turn a transient error
+        into an immediate hard failure. Raising on the *first* 500 would satisfy every
+        "must not be counted" assertion while quietly throwing away data that a retry would have
+        delivered, so the retry budget is asserted explicitly.
+        """
+        from CrowdStrikeFalcon import xsiam_api_call_async
+
+        self._patch_xsiam_env(mocker)
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", mocker.AsyncMock())
+        session = self._patch_session_post(mocker, 500, "Internal Server Error")
+
+        with pytest.raises(DemistoException):
+            await xsiam_api_call_async(xsiam_url="mock_url", zipped_data=b"x", headers={}, num_of_attempts=3, data_type="assets")
+
+        assert session.post.call_count == 3, "A transient 5xx must exhaust the retry budget, not fail on the first attempt"
+
+
+class TestSpotlightCompositeAid:
+    """XSUP-71944 — on multi-CID (Flight Control / MSSP) tenants Spotlight returns ``aid`` as
+    ``<cid><separator><device_id>``. ``/devices/entities/devices/v2`` accepts only the bare
+    device ID, so forwarding the composite failed every enrichment batch with
+    ``400 invalid device id`` and left the assets dataset permanently empty.
+    """
+
+    @pytest.mark.parametrize(
+        "aid, cid, expected",
+        [
+            # Sensor AID (<cid>-<32 hex>). The expected value carries no leading separator, so
+            # this also guards the off-by-one that strips len(cid) and leaves "-" attached.
+            (input_data.spotlight_composite_aid, input_data.spotlight_composite_cid, input_data.spotlight_device_id),
+            # Non-sensor asset (<cid>_<base64url>). The body holds its own "_" and uppercase, so
+            # the expected value proves the helper neither splits on the first separator nor
+            # normalises case. Uppercase never occurs in the CID prefix (verified: 0 rows).
+            (
+                input_data.spotlight_composite_aid_underscore,
+                input_data.spotlight_composite_cid,
+                input_data.spotlight_base64_asset_id,
+            ),
+            # Rare field shape: a ":" inside the body, so the body charset is not base64url.
+            (
+                input_data.spotlight_composite_aid_prefixed,
+                input_data.spotlight_composite_cid,
+                input_data.spotlight_prefixed_device_id,
+            ),
+            # Single-CID tenants already send a bare device ID and must not regress.
+            (input_data.spotlight_bare_aid, input_data.spotlight_single_cid, input_data.spotlight_bare_aid),
+            # Never strip a prefix that was not positively identified as the CID.
+            (input_data.spotlight_composite_aid, input_data.spotlight_unrelated_cid, input_data.spotlight_composite_aid),
+            (input_data.spotlight_composite_aid, None, input_data.spotlight_composite_aid),
+            (input_data.spotlight_composite_aid, "", input_data.spotlight_composite_aid),
+            # Degenerate input must pass through rather than yield an empty ID or raise.
+            (input_data.spotlight_composite_cid, input_data.spotlight_composite_cid, input_data.spotlight_composite_cid),
+            (None, input_data.spotlight_composite_cid, None),
+            ("", input_data.spotlight_composite_cid, ""),
+        ],
+    )
+    def test_extract_device_id_from_aid(self, aid, cid, expected):
+        from CrowdStrikeFalcon import extract_device_id_from_aid
+
+        assert extract_device_id_from_aid(aid, cid) == expected
+
+    def test_extract_unique_aids_collects_bare_device_ids(self):
+        """``cid`` is not carried downstream, so extraction must happen here.
+
+        One mixed batch covers the whole contract: composite AIDs are reduced, duplicates
+        collapse, different CIDs stay distinct, bare AIDs pass through, records without an
+        ``aid`` are skipped, and the accumulator is updated in place across pages.
+        """
+        from CrowdStrikeFalcon import extract_unique_aids
+
+        vulnerabilities = [
+            {"id": "vuln1", "aid": input_data.spotlight_composite_aid, "cid": input_data.spotlight_composite_cid},
+            {"id": "vuln2", "aid": input_data.spotlight_composite_aid, "cid": input_data.spotlight_composite_cid},
+            {
+                "id": "vuln3",
+                "aid": input_data.spotlight_composite_aid_secondary,
+                "cid": input_data.spotlight_composite_cid_secondary,
+            },
+            {"id": "vuln4", "aid": input_data.spotlight_bare_aid, "cid": input_data.spotlight_single_cid},
+            {"id": "vuln5", "cid": input_data.spotlight_composite_cid},
+            {"id": "vuln6", "aid": "", "cid": input_data.spotlight_composite_cid},
+        ]
+        unique_aids = {input_data.spotlight_previously_seen_device_id}
+
+        extract_unique_aids(vulnerabilities, unique_aids)
+
+        assert unique_aids == {
+            input_data.spotlight_previously_seen_device_id,
+            input_data.spotlight_device_id,
+            input_data.spotlight_device_id_secondary,
+            input_data.spotlight_bare_aid,
+        }, "A composite AID reached the enrichment buffer — this is the 400 'invalid device id' bug"
+
+
+class TestModuleTestConnectionErrors:
+    """Tests for module_test() error handling (CRTX-269894)."""
+
+    # The message CommonServerPython raises for a requests ConnectionError (see CRTX-269894).
+    DNS_FAILURE_MESSAGE = (
+        "Verify that the server URL parameter is correct and that you have access to the server from your host."
+        "\nHTTPSConnectionPool(host='api.crowdstrike.cominvalid-domain-000', port=443): Max retries exceeded with url:"
+        " /oauth2/token (Caused by NameResolutionError: Failed to resolve 'api.crowdstrike.cominvalid-domain-000')"
+    )
+
+    def test_connection_error_returns_friendly_message(self, mocker):
+        """
+        Given:
+            - A Server URL whose host cannot be resolved.
+        When:
+            - Running the test-module command.
+        Then:
+            - A friendly message is returned, without the raw connection internals,
+              and the full traceback is written to the debug log.
+        """
+        from CrowdStrikeFalcon import module_test
+
+        debug_mock = mocker.patch.object(demisto, "debug")
+        mocker.patch("CrowdStrikeFalcon.get_token", side_effect=DemistoException(self.DNS_FAILURE_MESSAGE))
+
+        result = module_test()
+
+        assert "Server URL" in result
+        assert "HTTPSConnectionPool" not in result
+        assert "Traceback" in "".join(str(call) for call in debug_mock.call_args_list)
+
+    def test_returns_ok_on_success(self, mocker):
+        """
+        Given:
+            - Valid credentials and a reachable server.
+        When:
+            - Running the test-module command.
+        Then:
+            - "ok" is returned.
+        """
+        from CrowdStrikeFalcon import module_test
+
+        mocker.patch("CrowdStrikeFalcon.get_token", return_value="token")
+
+        assert module_test() == "ok"
+
+
+class TestSpotlightFetchTuning:
+    """The cursor died because each page spent too long off the wire, and memory sat near the
+    container limit. These assert the dials that bound both."""
+
+    @pytest.mark.asyncio
+    async def test_severities_are_fetched_two_at_a_time(self, mocker):
+        """Six concurrent severities was the dominant memory variable and the main source of event
+        loop contention between a page arriving and the next one being requested."""
+        import CrowdStrikeFalcon
+
+        live = 0
+        high_water = 0
+
+        async def track_concurrency(*_args, **kwargs):
+            nonlocal live, high_water
+            live += 1
+            high_water = max(high_water, live)
+            await asyncio.sleep(0)
+            live -= 1
+            return 0, set(), []
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        # running_tasks must be a real empty set: a MagicMock attribute is truthy and would send
+        # the teardown drain down a path this test has nothing in flight for.
+        mocker.patch("CrowdStrikeFalcon.AssetsDeviceHandler").return_value.running_tasks = set()
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+        mocker.patch("CrowdStrikeFalcon.finalize_severity_fetch", new_callable=mocker.AsyncMock, return_value=True)
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_vulnerabilities_by_severity",
+            new_callable=mocker.AsyncMock,
+            side_effect=track_concurrency,
+        )
+
+        await CrowdStrikeFalcon.fetch_spotlight_by_severity_parallel(
+            client=mocker.MagicMock(),
+            context_store=mocker.MagicMock(),
+            spotlight_state=mocker.MagicMock(),
+            snapshot_id="snap-1",
+            completed_severities=[],
+        )
+
+        assert high_water <= CrowdStrikeFalcon.MAX_CONCURRENT_SEVERITIES
+
+    @pytest.mark.asyncio
+    async def test_severities_start_smallest_first(self, mocker):
+        """HIGH and MEDIUM carry the most rows. Starting them together puts the peak at the start
+        of the cycle; smallest-first leaves the largest running alone at the tail."""
+        import CrowdStrikeFalcon
+
+        started = []
+
+        async def record_start(*_args, **kwargs):
+            started.append(kwargs["severity"])
+            return 0, set(), []
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        mocker.patch("CrowdStrikeFalcon.AssetsDeviceHandler").return_value.running_tasks = set()
+        mocker.patch("CrowdStrikeFalcon.update_spotlight_state_and_metadata")
+        mocker.patch("CrowdStrikeFalcon.save_spotlight_state")
+        mocker.patch("CrowdStrikeFalcon.finalize_severity_fetch", new_callable=mocker.AsyncMock, return_value=True)
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_vulnerabilities_by_severity",
+            new_callable=mocker.AsyncMock,
+            side_effect=record_start,
+        )
+
+        await CrowdStrikeFalcon.fetch_spotlight_by_severity_parallel(
+            client=mocker.MagicMock(),
+            context_store=mocker.MagicMock(),
+            spotlight_state=mocker.MagicMock(),
+            snapshot_id="snap-1",
+            completed_severities=[],
+        )
+
+        # Pinned literally: asserting against the constant would pass for any ordering, including
+        # the heaviest-first one this test exists to rule out.
+        assert started == ["UNKNOWN", "NONE", "LOW", "CRITICAL", "MEDIUM", "HIGH"]
+        assert set(started) == set(CrowdStrikeFalcon.SPOTLIGHT_SEVERITIES), "the fetch order must cover every severity"
+
+    def test_completed_severities_are_not_refetched(self, mocker):
+        """The resume path skips what is already done and keeps the rest in fetch order."""
+        import CrowdStrikeFalcon
+
+        remaining = [s for s in CrowdStrikeFalcon.SPOTLIGHT_SEVERITIES if s not in ["LOW", "NONE"]]
+
+        assert "LOW" not in remaining
+        assert "NONE" not in remaining
+        assert len(remaining) == len(CrowdStrikeFalcon.SPOTLIGHT_SEVERITIES) - 2
+
+    def test_long_running_uses_the_smaller_page(self, mocker):
+        """Smaller pages cut both the resident working set and the per-page parse/compress time
+        that is charged against the cursor's TTL."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"longRunning": True})
+
+        assert CrowdStrikeFalcon.get_spotlight_page_size() == CrowdStrikeFalcon.SPOTLIGHT_PAGE_SIZE_LONG_RUNNING
+
+    def test_spotlight_client_uses_the_longer_timeout(self, mocker):
+        """A request abandoned at the default 60s invalidates its cursor, so the retry gets a 404."""
+        import CrowdStrikeFalcon
+
+        mocker.patch.object(CrowdStrikeFalcon, "OAuth2ClientCredentialsHandler")
+        content_client = mocker.patch.object(CrowdStrikeFalcon, "ContentClient")
+
+        CrowdStrikeFalcon.create_spotlight_client(mocker.MagicMock())
+
+        assert content_client.call_args.kwargs["timeout"] == 120
+
+    def test_scheduled_fetch_keeps_the_large_page(self, mocker):
+        """The scheduled flow is bound by a 12h timeout, so extra round trips cost more there than
+        the memory they save."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={})
+
+        assert CrowdStrikeFalcon.get_spotlight_page_size() == CrowdStrikeFalcon.MAX_FETCH_SPOTLIGHT_ASSETS
+
+    def test_shrink_ladder_never_retries_above_the_page_size(self, mocker):
+        """With a 3000 page, retrying at the old 5000 first rung would request more than the
+        original attempt."""
+        import CrowdStrikeFalcon
+
+        ladder = CrowdStrikeFalcon.build_spotlight_shrink_ladder(3000)
+
+        assert ladder[0] == 3000
+        assert ladder == sorted(ladder, reverse=True)
+        assert max(ladder) == 3000
+
+    @pytest.mark.asyncio
+    async def test_ladder_walks_every_rung_before_giving_up(self, mocker):
+        """There is no way to continue a severity without this page, so stopping early only turns a
+        page a smaller limit could still have fetched into a discarded severity. Every rung runs."""
+        import CrowdStrikeFalcon
+        from ContentClientApiModule import ContentClientError
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new_callable=mocker.AsyncMock)
+
+        response = mocker.MagicMock()
+        response.status_code = 500
+        page = mocker.patch.object(
+            CrowdStrikeFalcon,
+            "fetch_spotlight_vulnerabilities_page",
+            new_callable=mocker.AsyncMock,
+            side_effect=ContentClientError("upstream 500", response=response),
+        )
+
+        with pytest.raises(ContentClientError):
+            await CrowdStrikeFalcon.fetch_spotlight_page_with_shrink(
+                client=mocker.MagicMock(), after_token="tok", filter_query="q", severity="LOW", page_size=3000
+            )
+
+        expected_rungs = len(CrowdStrikeFalcon.build_spotlight_shrink_ladder(3000))
+        assert page.call_count == expected_rungs, "the ladder abandoned the page before trying every smaller limit"
+
+    @pytest.mark.asyncio
+    async def test_ladder_recovers_on_a_later_rung(self, mocker):
+        """The rung that matters: a page too large to parse at 3000 can still succeed at a smaller
+        limit. Any early exit would throw away a severity this rescues."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new_callable=mocker.AsyncMock)
+
+        recovered = ([{"id": "vuln1"}], {"meta": {"pagination": {}}})
+        page = mocker.patch.object(
+            CrowdStrikeFalcon,
+            "fetch_spotlight_vulnerabilities_page",
+            new_callable=mocker.AsyncMock,
+            side_effect=[
+                json.JSONDecodeError("oversized", "", 0),
+                json.JSONDecodeError("oversized", "", 0),
+                recovered,
+            ],
+        )
+
+        vulns, response_data, received_at = await CrowdStrikeFalcon.fetch_spotlight_page_with_shrink(
+            client=mocker.MagicMock(), after_token="tok", filter_query="q", severity="LOW", page_size=3000
+        )
+
+        assert (vulns, response_data) == recovered
+        # The arrival stamp is what the cursor-age log measures from, so it must be a real reading.
+        assert isinstance(received_at, float)
+        assert page.call_count == 3
+        # The same cursor is reused on every rung: a new token would skip records.
+        assert {call.kwargs["after_token"] for call in page.call_args_list} == {"tok"}
+
+    @pytest.mark.asyncio
+    async def test_retry_log_reports_the_limit_actually_used_next(self, mocker):
+        """The log must name the rung the code will really try; indexing the module-level ladder
+        instead of the locally built one reports a limit that is never requested."""
+        import CrowdStrikeFalcon
+        from ContentClientApiModule import ContentClientError
+
+        logged: list[str] = []
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets", side_effect=lambda msg, *a, **k: logged.append(msg))
+        mocker.patch("CrowdStrikeFalcon.asyncio.sleep", new_callable=mocker.AsyncMock)
+
+        response = mocker.MagicMock()
+        response.status_code = 500
+        # page_size 2000 gives the ladder [2000, 1000, 500], which is offset from the module
+        # constant [5000, 2500, 1000, 500] - so a wrong index shows up as a wrong number.
+        mocker.patch.object(
+            CrowdStrikeFalcon,
+            "fetch_spotlight_vulnerabilities_page",
+            new_callable=mocker.AsyncMock,
+            side_effect=ContentClientError("upstream 500", response=response),
+        )
+
+        with pytest.raises(ContentClientError):
+            await CrowdStrikeFalcon.fetch_spotlight_page_with_shrink(
+                client=mocker.MagicMock(), after_token="tok", filter_query="q", severity="LOW", page_size=2000
+            )
+
+        retry_lines = [line for line in logged if "then retrying the same page at limit=" in line]
+        assert retry_lines, "no retry line was logged"
+        assert "at limit=1000" in retry_lines[0], f"log names a rung the ladder will not use: {retry_lines[0]}"
+
+    @pytest.mark.asyncio
+    async def test_send_tasks_are_drained_when_a_severity_fails(self, mocker):
+        """A severity that raises must not leave uploads running.
+
+        Nothing downstream awaits them - the caller never receives this severity's task set - so
+        they would still be uploading when the cycle closes the shared XSIAM session underneath
+        them, turning a batch the server actually stored into a client-side error.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+        from ContentClientApiModule import ContentClientError
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock()
+
+        vulnerabilities = [
+            {"id": "vuln1", "aid": "aid1", "cve": {"severity": "HIGH"}},
+            {"id": "vuln2", "aid": "aid2", "cve": {"severity": "HIGH"}},
+        ]
+        first_page = mocker.Mock()
+        first_page.json.return_value = {
+            "resources": vulnerabilities,
+            "meta": {"pagination": {"after": "tok"}},  # A second page, so a send task is spawned.
+        }
+
+        mock_client = mocker.AsyncMock()
+        # First page succeeds and starts an upload; the prefetched second page then fails.
+        mock_client._request.side_effect = [first_page, ContentClientError("boom")]
+
+        send_finished = False
+
+        async def slow_send(**kwargs):
+            nonlocal send_finished
+            await asyncio.sleep(0)
+            send_finished = True
+            return 1, len(kwargs.get("data", []))
+
+        sent_tasks: list[asyncio.Task] = []
+
+        def create_task_side_effect(*args, **kwargs):
+            task = asyncio.create_task(slow_send(**kwargs))
+            sent_tasks.append(task)
+            return task
+
+        mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            side_effect=create_task_side_effect,
+        )
+
+        with pytest.raises(ContentClientError):
+            await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="HIGH",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        assert sent_tasks, "no send task was created, so the drain is not being exercised"
+        assert all(task.done() for task in sent_tasks), "a send task outlived the severity that started it"
+        assert send_finished, "the send was abandoned rather than drained"
+
+    @pytest.mark.asyncio
+    async def test_pending_prefetch_is_cancelled_when_the_severity_fails(self, mocker):
+        """A prefetched page left running would hold its records and log into a dead cycle.
+
+        The prefetch must be *pending*, not already failed: only then does the finally block's
+        cancel() actually run. test_send_tasks_are_drained_when_a_severity_fails makes the
+        prefetch itself raise, so the task is already done() and cancel() is skipped.
+        """
+        from CrowdStrikeFalcon import fetch_vulnerabilities_by_severity
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        mocker.patch("CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context")
+
+        # The downstream work fails on page 1, while the prefetch of page 2 is still running.
+        mock_handler = mocker.Mock()
+        mock_handler.receive_new_aids = mocker.AsyncMock(side_effect=RuntimeError("downstream boom"))
+
+        first_page = mocker.Mock()
+        first_page.json.return_value = {
+            "resources": [{"id": "vuln1", "aid": "aid1", "cve": {"severity": "HIGH"}}],
+            "meta": {"pagination": {"after": "tok"}},  # An 'after' token, so a prefetch is spawned.
+        }
+
+        first_call = True
+
+        async def responses(*_args, **_kwargs):
+            nonlocal first_call
+            if first_call:
+                first_call = False
+                return first_page
+            # Page 2 takes long enough to still be unfinished when the failure hits. Bounded, so a
+            # missing cancel() fails the assertion instead of hanging the suite.
+            await asyncio.sleep(5)
+            return first_page
+
+        mock_client = mocker.AsyncMock()
+        mock_client._request.side_effect = responses
+
+        # Capture the prefetch task itself: receive_new_aids raises before the scheduled prefetch
+        # gets its first turn on the loop, so it is pending-and-unstarted, which is exactly the
+        # state the finally block has to clean up.
+        prefetch_tasks: list[asyncio.Task] = []
+        real_create_task = asyncio.create_task
+
+        def tracking_create_task(coro, *args, **kwargs):
+            task = real_create_task(coro, *args, **kwargs)
+            prefetch_tasks.append(task)
+            return task
+
+        mocker.patch("CrowdStrikeFalcon.asyncio.create_task", side_effect=tracking_create_task)
+
+        with pytest.raises(RuntimeError, match="downstream boom"):
+            await fetch_vulnerabilities_by_severity(
+                client=mock_client,
+                severity="HIGH",
+                context_store=mocker.Mock(),
+                spotlight_state=mocker.Mock(),
+                snapshot_id="snap123",
+                asset_handler=mock_handler,
+            )
+
+        assert prefetch_tasks, "no prefetch was spawned, so cancel() is not being exercised"
+        assert all(
+            task.cancelled() for task in prefetch_tasks
+        ), f"a prefetched page outlived the failed severity: {[t for t in prefetch_tasks if not t.cancelled()]}"
+
+    def test_lookback_defaults_to_100_days(self, mocker):
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={})
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 100
+
+    def test_lookback_is_configurable(self, mocker):
+        """The most direct lever a support engineer has for shrinking a cycle on a huge tenant."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"spotlight_lookback_days": "30"})
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 30
+
+    @pytest.mark.parametrize("configured", ["abc", "30 days", "  "])
+    def test_lookback_falls_back_instead_of_crashing_the_cycle(self, mocker, configured):
+        """arg_to_number RAISES on a non-numeric value, it does not return None.
+
+        A typo in this parameter would otherwise abort the whole fetch with a bare ValueError,
+        which is a far worse outcome than ignoring the typo.
+        """
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"spotlight_lookback_days": configured})
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 100
+        assert mock_log.called, "an ignored configuration value must say so"
+
+    @pytest.mark.parametrize("configured", ["0", "-5"])
+    def test_lookback_warns_when_a_non_positive_value_is_ignored(self, mocker, configured):
+        """A zero or negative window builds a filter that matches nothing.
+
+        Falling back silently costs a full cycle to discover, so the correction is logged.
+        """
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"spotlight_lookback_days": configured})
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 100
+        assert mock_log.called, "an ignored configuration value must say so"
+
+    @pytest.mark.parametrize("configured", ["101", "365", "5000"])
+    def test_lookback_is_capped_at_the_maximum(self, mocker, configured):
+        """The parameter exists to shrink a cycle, so it must not be usable to grow one.
+
+        A value above the default would enlarge the very dataset this setting is meant to bound,
+        which is the opposite of its purpose, so it is clamped rather than honoured.
+        """
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"spotlight_lookback_days": configured})
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 100
+        assert mock_log.called, "a clamped configuration value must say so"
+
+    def test_lookback_accepts_the_maximum_itself(self, mocker):
+        """The boundary is inclusive: 100 is the default, so configuring it explicitly is not an error."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value={"spotlight_lookback_days": "100"})
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 100
+        mock_log.assert_not_called()
+
+    @pytest.mark.parametrize("params", [{}, {"spotlight_lookback_days": ""}, {"spotlight_lookback_days": None}])
+    def test_lookback_is_quiet_when_simply_unset(self, mocker, params):
+        """Not configuring the parameter is the normal case, not a mistake; it must not warn."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.demisto.params", return_value=params)
+        mock_log = mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        assert CrowdStrikeFalcon.get_spotlight_lookback_days() == 100
+        mock_log.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_seal_is_sent_as_a_single_chunk(self, mocker):
+        """A seal split across chunks can partially store. The retry then re-sends the withheld
+        records, so stored can never equal declared again and the snapshot never becomes queryable."""
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        handler = mocker.MagicMock()
+        handler.flush_remaining = mocker.AsyncMock()
+        handler.processed_aids = set()
+
+        seal_task = asyncio.get_running_loop().create_future()
+        seal_task.set_result((1, 1))
+        mock_create = mocker.patch(
+            "CrowdStrikeFalcon.create_task_send_batch_to_xsiam_and_save_context",
+            return_value=seal_task,
+        )
+
+        await CrowdStrikeFalcon.finalize_severity_fetch(
+            current_completed_severities=list(CrowdStrikeFalcon.SPOTLIGHT_SEVERITIES),
+            total_vulnerabilities=42,
+            all_unique_aids=set(),
+            asset_handler=handler,
+            context_store=mocker.MagicMock(),
+            spotlight_state=mocker.MagicMock(),
+            snapshot_id="snap-1",
+            withheld_records=[{"id": "v1"}],
+        )
+
+        assert mock_create.call_args.kwargs["chunk_size"] == CrowdStrikeFalcon.XSIAM_EVENT_CHUNK_SIZE_LIMIT
+        # Left at its default, which is the strict setting: any failing chunk raises rather than
+        # letting a partially stored seal fall through to the state reset.
+        assert mock_create.call_args.kwargs.get("count_stored", False) is False, "the seal must stay all-or-nothing"
+
+    @pytest.mark.asyncio
+    async def test_semaphores_of_different_names_coexist(self, mocker):
+        """Looking up a new name must not disturb the semaphores already handed out.
+
+        All names share one cache. If it were reset whenever a name was missing rather than when
+        the loop changed, the first lookup of a new name mid-cycle would replace the severity
+        semaphore that running tasks were already holding, silently removing the limit.
+        """
+        import CrowdStrikeFalcon
+
+        severity_sem = CrowdStrikeFalcon.get_severity_semaphore()
+        await severity_sem.acquire()
+
+        CrowdStrikeFalcon._loop_semaphore("some_other_name", 3)
+
+        assert (
+            CrowdStrikeFalcon.get_severity_semaphore() is severity_sem
+        ), "the severity semaphore was replaced, so its limit no longer applies to in-flight tasks"
+        assert severity_sem.locked() is (CrowdStrikeFalcon.MAX_CONCURRENT_SEVERITIES == 1)
+        severity_sem.release()
+
+    @pytest.mark.asyncio
+    async def test_semaphores_are_rebuilt_for_a_new_event_loop(self, mocker):
+        """The long-running flow calls asyncio.run() per cycle; a semaphore bound to a closed loop
+        raises when awaited from the next one, so each cycle must get fresh ones.
+
+        The previous cycle's loop is seeded directly rather than by running a second loop, because
+        the cache must be invalidated even when the new loop reuses the freed one's id() - which is
+        what CPython does with addresses, and what a two-live-loops test can never reproduce.
+        """
+        import CrowdStrikeFalcon
+
+        closed_loop = asyncio.new_event_loop()
+        closed_loop.close()
+        stale = asyncio.Semaphore(CrowdStrikeFalcon.MAX_CONCURRENT_SEVERITIES)
+        mocker.patch.object(CrowdStrikeFalcon, "_SEMAPHORE_LOOP", closed_loop)
+        mocker.patch.dict(CrowdStrikeFalcon._LOOP_SEMAPHORES, {"severity": stale}, clear=True)
+
+        assert (
+            CrowdStrikeFalcon.get_severity_semaphore() is not stale
+        ), "a semaphore bound to a closed event loop was handed to the new cycle"
+
+    def test_loop_identity_is_the_loop_object_not_its_id(self):
+        """id() is an address and CPython reuses the addresses of freed objects, so comparing ids
+        would let a new cycle's loop masquerade as the previous one and keep its dead semaphores."""
+        import CrowdStrikeFalcon
+
+        assert not isinstance(
+            CrowdStrikeFalcon._SEMAPHORE_LOOP, int
+        ), "the cached loop identity must be the loop object itself, not its id()"
+
+    @pytest.mark.asyncio
+    async def test_asset_enrichment_tasks_are_bounded(self, mocker):
+        """Nothing else bounds these: they are spawned from the vulnerability stream and only
+        awaited at the end of the cycle, so their payloads otherwise accumulate for the whole run.
+
+        Patches the inner body, not enrich_and_ingest_batch: the latter is the semaphore wrapper,
+        so patching it would replace the limit being measured and the test would pass with the
+        bound removed entirely.
+        """
+        import CrowdStrikeFalcon
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+        handler = CrowdStrikeFalcon.AssetsDeviceHandler(
+            client=mocker.MagicMock(),
+            context_store=mocker.MagicMock(),
+            spotlight_state=mocker.MagicMock(),
+            snapshot_id="snap-1",
+            processed_aids=set(),
+            batch_limit=1,
+        )
+
+        live = 0
+        high_water = 0
+
+        async def slow_body(_self, _batch):
+            nonlocal live, high_water
+            live += 1
+            high_water = max(high_water, live)
+            # Several turns, so a batch stays in flight past the tick that starts the next one.
+            for _ in range(5):
+                await asyncio.sleep(0)
+            live -= 1
+
+        mocker.patch.object(CrowdStrikeFalcon.AssetsDeviceHandler, "_enrich_and_ingest_batch", slow_body)
+
+        await handler.receive_new_aids({f"aid{i}" for i in range(40)})
+        # Dispatch no longer blocks, so nothing has run yet at this point.
+        await handler.drain()
+
+        assert high_water <= CrowdStrikeFalcon.MAX_PENDING_ASSET_TASKS
+        assert high_water > 1, "no batches overlapped, so the bound was never exercised"
+
+    @pytest.mark.asyncio
+    async def test_asset_tasks_are_drained_when_the_cycle_does_not_seal(self, mocker):
+        """flush_remaining only runs when every severity completed.
+
+        On any other exit the enrichment tasks are still uploading, and the caller closes the
+        shared XSIAM session the moment this returns - so they must be settled here rather than
+        left to fail against a closed connector.
+        """
+        import CrowdStrikeFalcon
+        from ContentClientApiModule import ContentClientError
+
+        mocker.patch("CrowdStrikeFalcon.log_falcon_assets")
+
+        finished = False
+        send_finished = False
+        running_tasks: set = set()
+
+        async def slow_send():
+            nonlocal send_finished
+            await asyncio.sleep(0.2)
+            send_finished = True
+
+        async def slow_enrich():
+            nonlocal finished
+            # Long enough that it cannot finish incidentally while the severities unwind:
+            # a sleep(0) would be resumed by any of the awaits on the way out and the test
+            # would pass with or without the drain.
+            await asyncio.sleep(0.2)
+            finished = True
+            # Two-stage, like the real enrich_and_ingest_batch: the send task only joins
+            # running_tasks after the enrichment await. A drain that gathers a single snapshot
+            # never sees this one, so the upload would race the closing XSIAM session.
+            send_task = asyncio.create_task(slow_send())
+            running_tasks.add(send_task)
+            send_task.add_done_callback(running_tasks.discard)
+
+        enrichment_task = asyncio.create_task(slow_enrich())
+        running_tasks.add(enrichment_task)
+
+        handler = mocker.MagicMock()
+        handler.running_tasks = running_tasks
+        handler.flush_remaining = mocker.AsyncMock()
+        handler.processed_aids = set()
+        # Bind the real drain so this exercises the production loop rather than a mock that
+        # would "succeed" no matter how the drain is implemented.
+        handler.drain = CrowdStrikeFalcon.AssetsDeviceHandler.drain.__get__(handler)
+        mocker.patch("CrowdStrikeFalcon.AssetsDeviceHandler", return_value=handler)
+
+        # Every severity dies, so none is marked complete, the snapshot cannot seal and
+        # flush_remaining is never reached - the exact path that used to abandon these tasks.
+        mocker.patch(
+            "CrowdStrikeFalcon.fetch_vulnerabilities_by_severity",
+            new_callable=mocker.AsyncMock,
+            side_effect=ContentClientError("severity died"),
+        )
+
+        await CrowdStrikeFalcon.fetch_spotlight_by_severity_parallel(
+            client=mocker.MagicMock(),
+            context_store=mocker.MagicMock(),
+            spotlight_state=mocker.MagicMock(),
+            snapshot_id="snap-1",
+            completed_severities=[],
+        )
+
+        handler.flush_remaining.assert_not_awaited()
+        assert enrichment_task.done(), "an enrichment task outlived the cycle that owns it"
+        assert finished, "the enrichment upload was abandoned rather than drained"
+        assert send_finished, "the send task spawned during the drain was left running"

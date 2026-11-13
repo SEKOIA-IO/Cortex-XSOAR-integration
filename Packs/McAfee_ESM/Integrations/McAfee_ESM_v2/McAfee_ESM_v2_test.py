@@ -1,166 +1,89 @@
 import datetime
 
-from freezegun import freeze_time
 import pytest
+from freezegun import freeze_time
 from McAfee_ESM_v2 import *
 from McAfee_ESM_v2 import McAfeeESMClient
 
-list_test_filtering_incidents = [
-    {'id': 3},
-    {'id': 1},
-    {'id': 5},
-    {'id': 4},
-    {'id': 0},
-    {'id': 2}
-]
+list_test_filtering_incidents = [{"id": 3}, {"id": 1}, {"id": 5}, {"id": 4}, {"id": 0}, {"id": 2}]
 data_test_filtering_incidents = [
-    (
-        (
-            0, 0
-        ),
-        (
-            [5, 4, 3, 2, 1]
-        )
-    ),
-    (
-        (
-            0, 1
-        ),
-        (
-            [1]
-        )
-    ),
-    (
-        (
-            0, 2
-        ),
-        (
-            [2, 1]
-        )
-    ),
-    (
-        (
-            3, 1
-        ),
-        (
-            [4]
-        )
-    ),
-    (
-        (
-            3, 0
-        ),
-        (
-            [5, 4]
-        )
-    )
+    ((0, 0), ([5, 4, 3, 2, 1])),
+    ((0, 1), ([1])),
+    ((0, 2), ([2, 1])),
+    ((3, 1), ([4])),
+    ((3, 0), ([5, 4])),
 ]
 data_test_expected_errors = [
-    ('error', False),
-    ('', False),
-    ('alarmUnacknowledgeTriggeredAlarm failed with error[ERROR_BadRequest (60)].', True),
-    ('alarmAcknowledgeTriggeredAlarm failed with error[ERROR_BadRequest (60)].', True),
+    ("error", False),
+    ("", False),
+    ("alarmUnacknowledgeTriggeredAlarm failed with error[ERROR_BadRequest (60)].", True),
+    ("alarmAcknowledgeTriggeredAlarm failed with error[ERROR_BadRequest (60)].", True),
     (
-        'qryGetResults failed with error[Error deserializing EsmQueryResults, see logs for more information '
-        '(Error deserializing EsmQueryResults, see logs for more information '
-        '(Internal communication error, see logs for more details))].',
-        True
-    )
+        "qryGetResults failed with error[Error deserializing EsmQueryResults, see logs for more information "
+        "(Error deserializing EsmQueryResults, see logs for more information "
+        "(Internal communication error, see logs for more details))].",
+        True,
+    ),
 ]
 data_test_time_format = [
-    ('', 'time data \'\' does not match the time format.'),
-    ('test', 'time data \'test\' does not match the time format.')
+    ("", "time data '' does not match the time format."),
+    ("test", "time data 'test' does not match the time format."),
 ]
 data_test_convert_time_format = [
-    (('2019-12-19T00:00:00', 0, False), '2019-12-19T00:00:00Z'),
-    (('2019-12-19T00:00:00', 2, False), '2019-12-19T02:00:00Z'),
-    (('2019-12-19T02:00:00', -2, False), '2019-12-19T00:00:00Z'),
-    (('2019-12-19T00:00:00Z', 0, False), '2019-12-19T00:00:00Z'),
-    (('2019-12-19T00:00:00Z', 2, False), '2019-12-19T02:00:00Z'),
-    (('2019-12-19T02:00:00Z', -2, False), '2019-12-19T00:00:00Z'),
-    (('2019/12/19 00:00:00', 0, True), '2019-12-19T00:00:00Z'),
-    (('2019/12/19 00:00:00', -2, True), '2019-12-19T02:00:00Z'),
-    (('2019/12/19 02:00:00', 2, True), '2019-12-19T00:00:00Z'),
-
+    (("2019-12-19T00:00:00", 0, False), "2019-12-19T00:00:00Z"),
+    (("2019-12-19T00:00:00", 2, False), "2019-12-19T02:00:00Z"),
+    (("2019-12-19T02:00:00", -2, False), "2019-12-19T00:00:00Z"),
+    (("2019-12-19T00:00:00Z", 0, False), "2019-12-19T00:00:00Z"),
+    (("2019-12-19T00:00:00Z", 2, False), "2019-12-19T02:00:00Z"),
+    (("2019-12-19T02:00:00Z", -2, False), "2019-12-19T00:00:00Z"),
+    (("2019/12/19 00:00:00", 0, True), "2019-12-19T00:00:00Z"),
+    (("2019/12/19 00:00:00", -2, True), "2019-12-19T02:00:00Z"),
+    (("2019/12/19 02:00:00", 2, True), "2019-12-19T00:00:00Z"),
 ]
 data_test_set_query_times = [
-    ((None, None, None, 0), ('CUSTOM', None, None)),
-    (('1 day', None, None, 0), ('1 day', '2019/12/31 00:00:00', None)),
-    (('LAST_WEEK', '', None, 0), ('LAST_WEEK', '', None)),
-    (('LAST_YEAR', 'TEST', None, 0), 'Invalid set times.'),
-    (('LAST_YEAR', None, 'TEST', 0), 'Invalid set times.'),
-    (
-        (None, '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z', 0),
-        ('CUSTOM', '2020-01-01T00:00:00Z', '2020-01-01T00:00:00Z')
-    )
+    ((None, None, None, 0), ("CUSTOM", None, None)),
+    (("1 day", None, None, 0), ("1 day", "2019/12/31 00:00:00", None)),
+    (("LAST_WEEK", "", None, 0), ("LAST_WEEK", "", None)),
+    (("LAST_YEAR", "TEST", None, 0), "Invalid set times."),
+    (("LAST_YEAR", None, "TEST", 0), "Invalid set times."),
+    ((None, "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", 0), ("CUSTOM", "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z")),
 ]
 data_test_list_times_set = [
+    (([], [], 0), []),
+    (([0, 0], [], 2), [0, 0]),
     (
-        ([], [], 0),
-        []
+        (["2019/12/19 00:00:00", "2019/12/19 00:00:00", 0, "2019/12/19 00:00:00"], [0, 1], 0),
+        ["2019-12-19T00:00:00Z", "2019-12-19T00:00:00Z", 0, "2019/12/19 00:00:00"],
     ),
-    (
-        ([0, 0], [], 2),
-        [0, 0]
-    ),
-    (
-        (['2019/12/19 00:00:00', '2019/12/19 00:00:00', 0, '2019/12/19 00:00:00'], [0, 1], 0),
-        ['2019-12-19T00:00:00Z', '2019-12-19T00:00:00Z', 0, '2019/12/19 00:00:00']
-    ),
-    (
-        ([0, '2019/12/19 00:00:00'], [1], -2),
-        [0, '2019-12-19T02:00:00Z']
-    ),
-    (
-        ([0, '2019/12/19 00:00:00'], [], -2),
-        [0, '2019/12/19 00:00:00']
-    ),
-    (
-        (['2019/12/19 00:00:00'], [0], -2),
-        ['2019-12-19T02:00:00Z']
-    )
+    (([0, "2019/12/19 00:00:00"], [1], -2), [0, "2019-12-19T02:00:00Z"]),
+    (([0, "2019/12/19 00:00:00"], [], -2), [0, "2019/12/19 00:00:00"]),
+    ((["2019/12/19 00:00:00"], [0], -2), ["2019-12-19T02:00:00Z"]),
 ]
 data_test_time_fields = [
-    [
-        ['time', 'date'],
-        [0, 1]
-    ],
-    [
-        ['name', 'TiMe', 'Datetime'],
-        [1, 2]
-    ],
-    [
-        [],
-        []
-    ],
-    [
-        ['r', 't'],
-        []
-    ],
-    [
-        ['', ''],
-        []
-    ]
+    [["time", "date"], [0, 1]],
+    [["name", "TiMe", "Datetime"], [1, 2]],
+    [[], []],
+    [["r", "t"], []],
+    [["", ""], []],
 ]
 data_test_mcafee_severity_to_demisto = [(100, 3), (65, 2), (32, 1), (0, 0)]
 
 
-@pytest.mark.parametrize('test_input, output', data_test_filtering_incidents)
+@pytest.mark.parametrize("test_input, output", data_test_filtering_incidents)
 def test_filtering_incidents(test_input, output):
     temp_output = filtering_incidents(list_test_filtering_incidents, test_input[0], test_input[1])
     test_output = [0] * len(temp_output)
     for i in range(len(temp_output)):
-        test_output[i] = temp_output[i]['id']
-    assert test_output == output, f'filtering_incidents({test_input}) returns: {test_input} instead: {output}.'
+        test_output[i] = temp_output[i]["id"]
+    assert test_output == output, f"filtering_incidents({test_input}) returns: {test_input} instead: {output}."
 
 
-@pytest.mark.parametrize('test_input, output', data_test_expected_errors)
+@pytest.mark.parametrize("test_input, output", data_test_expected_errors)
 def test_expected_errors(test_input, output):
-    assert expected_errors(test_input) == output, f'expected_errors({test_input})' \
-                                                  f' returns: {not output} instead: {output}.'
+    assert expected_errors(test_input) == output, f"expected_errors({test_input}) returns: {not output} instead: {output}."
 
 
-@pytest.mark.parametrize('test_input, output', data_test_time_format)
+@pytest.mark.parametrize("test_input, output", data_test_time_format)
 def test_time_format(test_input, output):
     test_output = None
     try:
@@ -168,18 +91,19 @@ def test_time_format(test_input, output):
     except ValueError as error:
         test_output = str(error)
     finally:
-        assert test_output == output, f'time_format({test_input}) returns error: {test_output} instead: {output}.'
+        assert test_output == output, f"time_format({test_input}) returns error: {test_output} instead: {output}."
 
 
-@pytest.mark.parametrize('test_input, output', data_test_convert_time_format)
+@pytest.mark.parametrize("test_input, output", data_test_convert_time_format)
 def test_convert_time_format(test_input, output):
     temp = convert_time_format(test_input[0], test_input[1], test_input[2])
-    assert temp == output, f'convert_time_format({test_input[0]}, {test_input[1]}, {test_input[2]}) ' \
-                           f'returns: {temp} instead: {output}.'
+    assert (
+        temp == output
+    ), f"convert_time_format({test_input[0]}, {test_input[1]}, {test_input[2]}) returns: {temp} instead: {output}."
 
 
-@freeze_time('2020-01-01 00:00:00')
-@pytest.mark.parametrize('test_input, output', data_test_set_query_times)
+@freeze_time("2020-01-01 00:00:00")
+@pytest.mark.parametrize("test_input, output", data_test_set_query_times)
 def test_set_query_times(test_input, output):
     test_output = None
     try:
@@ -187,72 +111,75 @@ def test_set_query_times(test_input, output):
     except ValueError as error:
         test_output = str(error)
     finally:
-        assert test_output == output, f'time_format({test_input}) returns: {test_output} instead: {output}.'
+        assert test_output == output, f"time_format({test_input}) returns: {test_output} instead: {output}."
 
 
-@pytest.mark.parametrize('test_input, output', data_test_list_times_set)
+@pytest.mark.parametrize("test_input, output", data_test_list_times_set)
 def test_list_times_set(test_input, output):
     temp = list_times_set(test_input[0], test_input[1], test_input[2])
-    assert temp == output, f'list_times_set({test_input[0]}, {test_input[1]}, {test_input[2]}) ' \
-                           f'returns: {temp} instead: {output}.'
+    assert temp == output, f"list_times_set({test_input[0]}, {test_input[1]}, {test_input[2]}) returns: {temp} instead: {output}."
 
 
-@pytest.mark.parametrize('test_input, output', data_test_time_fields)
+@pytest.mark.parametrize("test_input, output", data_test_time_fields)
 def test_time_fields(test_input, output):
     for i in range(len(test_input)):
-        test_input[i] = {'name': test_input[i]}
+        test_input[i] = {"name": test_input[i]}
     temp = time_fields(test_input)
-    assert temp == output, f'time_fields({test_input}) returns: {temp} instead: {output}.'
+    assert temp == output, f"time_fields({test_input}) returns: {temp} instead: {output}."
 
 
-@pytest.mark.parametrize('test_input, output', data_test_mcafee_severity_to_demisto)
+@pytest.mark.parametrize("test_input, output", data_test_mcafee_severity_to_demisto)
 def test_mcafee_severity_to_demisto(test_input, output):
     temp = mcafee_severity_to_demisto(test_input)
-    assert temp == output, f'mcafee_severity_to_demisto({test_input}) returns: {temp} instead: {output}.'
+    assert temp == output, f"mcafee_severity_to_demisto({test_input}) returns: {temp} instead: {output}."
 
 
-@pytest.mark.filterwarnings('ignore::urllib3.exceptions.InsecureRequestWarning',
-                            'ignore::pytest.PytestUnraisableExceptionWarning')
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
 def test_edit_case(mocker):
     params = {
         "url": "https://example.com",
         "insecure": True,
-        "credentials": {
-            "identifier": "TEST",
-            "password": "TEST"
-        },
-        "version": "11.3"}
-    raw_response_has_event_list = {"assignedTo": 8207, "closeTime": "2021-05-25T10:29:17Z", "dataSourceList": ["47"],
-                                   "deviceList": None,
-                                   "eventList": [
-                                       {"id": "144117387300438016|6204912068", "lastTime": "2021-05-25T09:47:10Z",
-                                        "message": "TEST"}],
-                                   "history": "\n------- Viewed: 05/25/2021 10:26:37(GMT)"
-                                              "TEST@TEST -------\n\n------- Viewed: 05/25/2021 10:27:34("
-                                              "GMT) "
-                                              "   TEST@TEST -------\n",
-                                   "id": 58136,
-                                   "notes": "------- Opened on 2021/05/25 09:53:53(GMT) by Triggered Condition -------"
-                                            "\n\n------- In Progress: 05/25/2021 10:29:17(GMT)   Xsoar@TEST -------"
-                                            "\n\n------- Changes:  05/25/2021 10:29:17(GMT)   Xsoar@TEST -------"
-                                            "\n  Organization\n    old: None\n    new: BRD"
-                                            "\n\n", "openTime": "2021-05-25T09:53:53Z",
-                                   "orgId": 2, "severity": 50, "statusId": 3,
-                                   "summary": "ALERT - Scan"}
+        "credentials": {"identifier": "TEST", "password": "TEST"},
+        "version": "11.6.11",
+    }
+    raw_response_has_event_list = {
+        "assignedTo": 8207,
+        "closeTime": "2021-05-25T10:29:17Z",
+        "dataSourceList": ["47"],
+        "deviceList": None,
+        "eventList": [{"id": "144117387300438016|6204912068", "lastTime": "2021-05-25T09:47:10Z", "message": "TEST"}],
+        "history": "\n------- Viewed: 05/25/2021 10:26:37(GMT)"
+        "TEST@TEST -------\n\n------- Viewed: 05/25/2021 10:27:34("
+        "GMT) "
+        "   TEST@TEST -------\n",
+        "id": 58136,
+        "notes": "------- Opened on 2021/05/25 09:53:53(GMT) by Triggered Condition -------"
+        "\n\n------- In Progress: 05/25/2021 10:29:17(GMT)   Xsoar@TEST -------"
+        "\n\n------- Changes:  05/25/2021 10:29:17(GMT)   Xsoar@TEST -------"
+        "\n  Organization\n    old: None\n    new: BRD"
+        "\n\n",
+        "openTime": "2021-05-25T09:53:53Z",
+        "orgId": 2,
+        "severity": 50,
+        "statusId": 3,
+        "summary": "ALERT - Scan",
+    }
 
-    mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__login', return_value={})
-    mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__request', return_value={})
-    mocker.patch.object(McAfeeESMClient, 'get_case_detail', return_value=('', {}, raw_response_has_event_list))
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__request", return_value={})
+    mocker.patch.object(McAfeeESMClient, "get_case_detail", return_value=("", {}, raw_response_has_event_list))
     try:
         client = McAfeeESMClient(params)
         client.edit_case()
-        result = client._McAfeeESMClient__request.call_args.kwargs['data']['caseDetail']
+        result = client._McAfeeESMClient__request.call_args.kwargs["data"]["caseDetail"]
     except Exception:
         pass
-    assert len(result['eventList']) > 0
+    assert len(result["eventList"]) > 0
 
 
-MOCK_CURRENT_TIME = '2022-10-18T16:46:25Z'
+MOCK_CURRENT_TIME = "2022-10-18T16:46:25Z"
 
 
 def create_time_difference_string(days=0, hours=0):
@@ -261,7 +188,7 @@ def create_time_difference_string(days=0, hours=0):
 
 
 @freeze_time(MOCK_CURRENT_TIME)
-@pytest.mark.filterwarnings('ignore::pytest.PytestUnraisableExceptionWarning')
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
 def test_alarm_to_incidents(mocker):
     """
     Given:
@@ -284,54 +211,49 @@ def test_alarm_to_incidents(mocker):
     params = {
         "url": "https://example.com",
         "insecure": True,
-        "credentials": {
-            "identifier": "TEST",
-            "password": "TEST"
-        },
-        "version": "11.3",
-        'fetchTime': create_time_difference_string(days=3, hours=6),
-        'startingFetchID': 0}
-    alarms = [{
-        'id': 1,
-        'triggeredDate': create_time_difference_string(hours=6)
-    },
-        {
-            'id': 2,
-            'triggeredDate': create_time_difference_string(hours=5)
+        "credentials": {"identifier": "TEST", "password": "TEST"},
+        "version": "11.6.11",
+        "fetchTime": create_time_difference_string(days=3, hours=6),
+        "startingFetchID": 0,
     }
+    alarms = [
+        {"id": 1, "triggeredDate": create_time_difference_string(hours=6)},
+        {"id": 2, "triggeredDate": create_time_difference_string(hours=5)},
     ]
 
     def mock_fetch_alarams(since: str = None, start_time: str = None, end_time: str = None, raw: bool = False):
-        if type(start_time) == str:
+        if type(start_time) is str:
             start_time = datetime.strptime(start_time, McAfeeESMClient.demisto_format)
-        all_alarms = [alarm for alarm in alarms if
-                      datetime.strptime(alarm.get('triggeredDate'), McAfeeESMClient.demisto_format)
-                      > start_time]
+        all_alarms = [
+            alarm
+            for alarm in alarms
+            if datetime.strptime(alarm.get("triggeredDate"), McAfeeESMClient.demisto_format) > start_time
+        ]
         return None, None, all_alarms
 
     def mock_fetch_alarm_without_results(client):
-        mocker.patch.object(McAfeeESMClient, 'fetch_alarms', return_value=(None, None, []))
+        mocker.patch.object(McAfeeESMClient, "fetch_alarms", return_value=(None, None, []))
         try:
             client.fetch_incidents(params=params)
         except Exception:
             pass
         return demisto.setLastRun.call_args[0][0]
 
-    mocker.patch('McAfee_ESM_v2.parse_date_range', return_value=['', ''])
-    mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__login', return_value={})
-    mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__request', return_value={})
-    mocker.patch.object(demisto, 'getLastRun', return_value={'alarms': {'time': create_time_difference_string(days=3)}})
-    mocker.patch.object(demisto, 'setLastRun')
+    mocker.patch("McAfee_ESM_v2.parse_date_range", return_value=["", ""])
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__request", return_value={})
+    mocker.patch.object(demisto, "getLastRun", return_value={"alarms": {"time": create_time_difference_string(days=3)}})
+    mocker.patch.object(demisto, "setLastRun")
 
     try:
         client = McAfeeESMClient(params)
 
         last_run = mock_fetch_alarm_without_results(client)
-        assert last_run.get('alarms').get('time') == create_time_difference_string(days=3)
+        assert last_run.get("alarms").get("time") == create_time_difference_string(days=3)
 
-        mocker.patch.object(demisto, 'getLastRun', return_value=last_run)
-        mocker.patch.object(McAfeeESMClient, 'fetch_alarms', side_effect=mock_fetch_alarams)
-        mocker.patch.object(demisto, 'incidents')
+        mocker.patch.object(demisto, "getLastRun", return_value=last_run)
+        mocker.patch.object(McAfeeESMClient, "fetch_alarms", side_effect=mock_fetch_alarams)
+        mocker.patch.object(demisto, "incidents")
         client.fetch_incidents(params=params)
     except Exception:
         pass
@@ -339,48 +261,688 @@ def test_alarm_to_incidents(mocker):
     last_run = demisto.setLastRun.call_args[0][0]
 
     assert len(incidents) == 2
-    assert last_run.get('alarms').get('time') == create_time_difference_string(hours=5)
+    assert last_run.get("alarms").get("time") == create_time_difference_string(hours=5)
 
 
 # testing if can upload
 class TestTestModule:
     @staticmethod
-    @pytest.mark.filterwarnings('ignore::pytest.PytestUnraisableExceptionWarning')
+    @pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
     def test_sanity(mocker):
         params = {
             "url": "https://example.com",
             "insecure": True,
-            "credentials": {
-                "identifier": "Shahaf",
-                "password": "TEST"
-            },
-            "version": "11.3"
+            "credentials": {"identifier": "Shahaf", "password": "TEST"},
+            "version": "11.6.11",
         }
-        mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__login', return_value={})
-        mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__request', return_value={})
+        mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+        mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__request", return_value={})
         try:
             client = McAfeeESMClient(params)
             _, _, raw = client.test_module()
         except Exception:
             pass
-        assert raw == 'ok'
+        assert raw == "ok"
 
     @staticmethod
     def test_invalid_starting_id(mocker):
         params = {
-            'url': 'https://example.com',
-            'insecure': True,
-            'credentials': {
-                'identifier': 'Shahaf',
-                'password': 'TEST',
+            "url": "https://example.com",
+            "insecure": True,
+            "credentials": {
+                "identifier": "Shahaf",
+                "password": "TEST",
             },
-            'version': '11.3',
-            'startingFetchID': '',
-            'isFetch': True,
+            "version": "11.6.11",
+            "startingFetchID": "",
+            "isFetch": True,
         }
-        mocker.patch.object(McAfeeESMClient, '_McAfeeESMClient__login', return_value={})
-        mocker.patch.object(McAfeeESMClient, '_http_request')
-        mocker.patch.object(demisto, 'params', return_value=params)
+        mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+        mocker.patch.object(McAfeeESMClient, "_http_request")
+        mocker.patch.object(demisto, "params", return_value=params)
         client = McAfeeESMClient(params)
         with pytest.raises(DemistoException):
             client.test_module()
+
+
+# Test vectors published by Trellix in KB90289 (https://support.trellix.com/s/article/KB90289).
+# The article's prose labels the second plaintext "Trellix123!", but its ciphertext actually
+# decrypts to "Mcafee123!" - a stale value left over from the McAfee-to-Trellix rebrand.
+# The plaintext below is the one that genuinely round-trips against the published ciphertext.
+data_test_encrypt_credential = [
+    ("NGCP", "jwNLgaSY2PFsAjF87bRyPg=="),
+    ("Mcafee123!", "uTl8FIeRQJNFOybh6521Hg=="),
+]
+
+
+@pytest.mark.parametrize("plaintext, expected", data_test_encrypt_credential)
+def test_encrypt_credential_matches_vendor_vectors(plaintext, expected):
+    """
+    Given:
+    - A credential and the matching AES ciphertext published by Trellix in KB90289.
+
+    When:
+    - Encrypting the credential for an ESM 11.6.11+ login.
+
+    Then:
+    - The result matches the vendor's published ciphertext exactly, confirming the
+      integration interoperates with the ESM login API (AES-128-CBC, PKCS7, base64).
+    """
+    assert encrypt_credential(plaintext) == expected
+
+
+def test_encode_credential_aes_version():
+    """
+    Given:
+    - An instance configured with ESM 11.6.11 (AES threshold).
+
+    When:
+    - Encoding a credential for the login request.
+
+    Then:
+    - The credential is AES-encrypted rather than only base64-encoded.
+    """
+    assert encode_credential("NGCP", "11.6.11") == "jwNLgaSY2PFsAjF87bRyPg=="
+
+
+def test_encode_credential_base64_version():
+    """
+    Given:
+    - An instance configured with ESM 11.6.10 (last Base64 version).
+
+    When:
+    - Encoding a credential for the login request.
+
+    Then:
+    - The legacy base64 encoding is used, unchanged from previous versions.
+    """
+    assert encode_credential("NGCP", "11.6.10") == base64.b64encode(b"NGCP").decode()
+
+
+def test_encode_credential_non_ascii():
+    """
+    Given:
+    - A password containing non-ASCII characters.
+
+    When:
+    - Encoding it for both the Base64 (11.6.0) and AES (11.6.11) paths.
+
+    Then:
+    - Encoding succeeds (UTF-8), and the AES result decrypts back to the original password.
+    """
+    password = "sécrèt-ñ-密碼"
+    assert encode_credential(password, "11.6.0") == base64.b64encode(password.encode("utf-8")).decode()
+
+    from cryptography.hazmat.primitives import padding as crypto_padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    ciphertext = base64.b64decode(encode_credential(password, "11.6.11"))
+    decryptor = Cipher(algorithms.AES(ESM_AES_KEY), modes.CBC(ESM_AES_IV)).decryptor()
+    padded = decryptor.update(ciphertext) + decryptor.finalize()
+    unpadder = crypto_padding.PKCS7(AES_BLOCK_SIZE_BITS).unpadder()
+    assert (unpadder.update(padded) + unpadder.finalize()).decode("utf-8") == password
+
+
+@pytest.mark.parametrize("version", ["10.2", "11.1", "11.3", "11.5.9", "11.5"])
+def test_validate_version_rejects_below_11_6(version):
+    """
+    Given:
+    - An instance configured with an ESM version below 11.6.0 (Trellix end-of-life).
+
+    When:
+    - Validating the version.
+
+    Then:
+    - A DemistoException is raised immediately, naming the configured version and the
+      minimum supported version, so the user can fix the instance.
+    """
+    with pytest.raises(DemistoException) as exception_info:
+        validate_version(version)
+
+    message = str(exception_info.value)
+    assert version in message
+    assert "11.6.0" in message
+
+
+@pytest.mark.parametrize("version", ["", "latest", "11.6.11 and later", "v11,6,11", "eleven"])
+def test_validate_version_rejects_invalid_version_string(version):
+    """
+    Given:
+    - A *Version* parameter that is not a version number (for example a label or free text).
+
+    When:
+    - Validating the version.
+
+    Then:
+    - A DemistoException with an actionable message is raised instead of an unhandled
+      packaging.version.InvalidVersion error.
+    """
+    with pytest.raises(DemistoException) as exception_info:
+        validate_version(version)
+
+    message = str(exception_info.value)
+    assert "Invalid ESM version" in message
+    assert "11.6.11" in message
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["11.6.0", "11.6.5", "11.6.10", "11.6.11", "11.6.20", "11.7.0", "12.0.0", "11.6", "11.7"],
+)
+def test_validate_version_accepts_supported(version):
+    """
+    Given:
+    - An instance configured with a supported ESM version (11.6.0 or later), including
+      short two-part versions like "11.6" and "11.7".
+
+    When:
+    - Validating the version.
+
+    Then:
+    - No exception is raised.
+    """
+    validate_version(version)
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+def test_client_init_rejects_unsupported_version(mocker):
+    """
+    Given:
+    - An existing instance that was configured before support for versions earlier than 11.6 was removed.
+
+    When:
+    - The client is initialized after the upgrade.
+
+    Then:
+    - Initialization fails fast with an actionable error, before any login attempt is made.
+    """
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+    params = {
+        "url": "https://example.com",
+        "insecure": True,
+        "credentials": {"identifier": "TEST", "password": "TEST"},
+        "version": "11.3",
+    }
+    with pytest.raises(DemistoException, match="is not supported"):
+        McAfeeESMClient(params)
+
+
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
+@pytest.mark.parametrize(
+    "version, expected_username",
+    [
+        ("11.6.11", "jwNLgaSY2PFsAjF87bRyPg=="),
+        ("11.6.10", base64.b64encode(b"NGCP").decode()),
+    ],
+)
+def test_login_body_encoding_per_version(mocker, version, expected_username):
+    """
+    Given:
+    - An instance configured with each of the supported ESM versions.
+
+    When:
+    - The client logs in.
+
+    Then:
+    - The login request body carries the credentials encoded as that version requires,
+      and the session headers are taken from the response.
+    """
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+        headers = {"Xsrf-Token": "test-xsrf"}
+
+        class cookies:  # noqa: N801
+            @staticmethod
+            def get(_name):
+                return "test-jwt"
+
+    mocker.patch.object(demisto, "getIntegrationContext", return_value={})
+    mocker.patch.object(demisto, "setIntegrationContext")
+    http_request = mocker.patch.object(McAfeeESMClient, "_http_request", return_value=MockResponse())
+    params = {
+        "url": "https://example.com",
+        "insecure": True,
+        "credentials": {"identifier": "NGCP", "password": "NGCP"},
+        "version": version,
+    }
+
+    client = McAfeeESMClient(params)
+
+    login_body = json.loads(http_request.call_args.kwargs["data"])
+    assert login_body["username"] == expected_username
+    assert login_body["password"] == expected_username
+    assert login_body["locale"] == "en_US"
+    assert client._headers["Cookie"] == "JWTToken=test-jwt"
+    assert client._headers["X-Xsrf-Token"] == "test-xsrf"
+
+
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
+def test_session_is_cached_in_integration_context(mocker):
+    """
+    Given:
+    - An instance with no cached ESM session.
+
+    When:
+    - The client is initialized and logs in.
+
+    Then:
+    - The JWT and XSRF tokens are stored in the integration context with an expiry,
+      so the next execution can reuse them instead of logging in again.
+    """
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+        headers = {"Xsrf-Token": "test-xsrf"}
+
+        class cookies:  # noqa: N801
+            @staticmethod
+            def get(_name):
+                return "test-jwt"
+
+    mocker.patch.object(demisto, "getIntegrationContext", return_value={})
+    set_context = mocker.patch.object(demisto, "setIntegrationContext")
+    mocker.patch.object(McAfeeESMClient, "_http_request", return_value=MockResponse())
+
+    McAfeeESMClient(
+        {
+            "url": "https://example.com",
+            "insecure": True,
+            "credentials": {"identifier": "NGCP", "password": "NGCP"},
+            "version": "11.6.11",
+        }
+    )
+
+    cached_session = set_context.call_args[0][0][SESSION_CACHE_KEY]
+    assert cached_session["cookie"] == "JWTToken=test-jwt"
+    assert cached_session["xsrf_token"] == "test-xsrf"
+    assert cached_session["expiry"] > time.time()
+
+
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
+def test_valid_cached_session_is_reused_without_login(mocker):
+    """
+    Given:
+    - A cached ESM session in the integration context that has not expired.
+
+    When:
+    - The client is initialized.
+
+    Then:
+    - The cached tokens are used for the session headers and no login request is sent.
+    """
+    mocker.patch.object(
+        demisto,
+        "getIntegrationContext",
+        return_value={
+            SESSION_CACHE_KEY: {
+                "cookie": "JWTToken=cached-jwt",
+                "xsrf_token": "cached-xsrf",
+                "expiry": time.time() + SESSION_TTL_SECONDS,
+            }
+        },
+    )
+    http_request = mocker.patch.object(McAfeeESMClient, "_http_request")
+
+    client = McAfeeESMClient(
+        {
+            "url": "https://example.com",
+            "insecure": True,
+            "credentials": {"identifier": "NGCP", "password": "NGCP"},
+            "version": "11.6.11",
+        }
+    )
+
+    assert client._headers["Cookie"] == "JWTToken=cached-jwt"
+    assert client._headers["X-Xsrf-Token"] == "cached-xsrf"
+    http_request.assert_not_called()
+
+
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
+def test_expired_cached_session_triggers_login(mocker):
+    """
+    Given:
+    - A cached ESM session in the integration context whose expiry has passed.
+
+    When:
+    - The client is initialized.
+
+    Then:
+    - The stale session is discarded and a new login request is sent.
+    """
+
+    class MockResponse:
+        status_code = 200
+        text = ""
+        headers = {"Xsrf-Token": "fresh-xsrf"}
+
+        class cookies:  # noqa: N801
+            @staticmethod
+            def get(_name):
+                return "fresh-jwt"
+
+    mocker.patch.object(
+        demisto,
+        "getIntegrationContext",
+        return_value={
+            SESSION_CACHE_KEY: {
+                "cookie": "JWTToken=stale-jwt",
+                "xsrf_token": "stale-xsrf",
+                "expiry": time.time() - 1,
+            }
+        },
+    )
+    mocker.patch.object(demisto, "setIntegrationContext")
+    http_request = mocker.patch.object(McAfeeESMClient, "_http_request", return_value=MockResponse())
+
+    client = McAfeeESMClient(
+        {
+            "url": "https://example.com",
+            "insecure": True,
+            "credentials": {"identifier": "NGCP", "password": "NGCP"},
+            "version": "11.6.11",
+        }
+    )
+
+    assert http_request.call_args.args[1] == "login"
+    assert client._headers["Cookie"] == "JWTToken=fresh-jwt"
+    assert client._headers["X-Xsrf-Token"] == "fresh-xsrf"
+
+
+class LoginResponse:
+    """A successful ESM login response."""
+
+    status_code = 200
+    text = ""
+    headers = {"Xsrf-Token": "fresh-xsrf"}
+
+    class cookies:  # noqa: N801
+        @staticmethod
+        def get(_name):
+            return "fresh-jwt"
+
+
+class ApiResponse:
+    """An ESM response to a command request."""
+
+    def __init__(self, status_code: int, content: bytes):
+        self.status_code = status_code
+        self.content = content
+        self.ok = status_code < 300
+
+    def json(self):
+        return json.loads(self.content)
+
+
+def build_add_watchlist_client(mocker):
+    """Builds a logged-in client and returns it with the patched _http_request for the next call."""
+    mocker.patch.object(demisto, "getIntegrationContext", return_value={})
+    mocker.patch.object(demisto, "setIntegrationContext")
+    mocker.patch.object(McAfeeESMClient, "_http_request", return_value=LoginResponse())
+    client = McAfeeESMClient(
+        {
+            "url": "https://example.com",
+            "insecure": True,
+            "credentials": {"identifier": "NGCP", "password": "NGCP"},
+            "version": "11.6.11",
+        }
+    )
+    http_request = mocker.patch.object(McAfeeESMClient, "_http_request", return_value=ApiResponse(200, b'{"value": 54}'))
+    return client, http_request
+
+
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
+def test_add_watchlist_sends_values(mocker):
+    """
+    Given:
+    - A request to create a watchlist.
+
+    When:
+    - The create-watchlist request body is built.
+
+    Then:
+    - "values" is sent. ESM 11.7.1 rejects a body without it, with the opaque
+      "Error processing request, see server logs for more details (null)". Verified on the
+      appliance: adding "values" as the only change to the failing body creates the watchlist.
+    """
+    client, http_request = build_add_watchlist_client(mocker)
+    client.args = {"name": "test_watchlist", "type": "IPAddress"}
+    client.add_watchlist()
+
+    assert json.loads(http_request.call_args.kwargs["data"]) == {
+        "watchlist": {
+            "name": "test_watchlist",
+            "type": {"name": "IPAddress", "id": 0},
+            "customType": {"name": "IPAddress", "id": 0},
+            "dynamic": False,
+            "enabled": True,
+            "values": [],
+        }
+    }
+
+
+@pytest.mark.filterwarnings(
+    "ignore::urllib3.exceptions.InsecureRequestWarning", "ignore::pytest.PytestUnraisableExceptionWarning"
+)
+def test_add_watchlist_sends_real_booleans(mocker):
+    """
+    Given:
+    - A request to create a watchlist.
+
+    When:
+    - The create-watchlist request body is built.
+
+    Then:
+    - "dynamic" and "enabled" are JSON booleans, not the strings "False"/"True". As strings both
+      values are truthy, so a string "False" could enable a dynamic watchlist.
+    """
+    client, http_request = build_add_watchlist_client(mocker)
+    client.args = {"name": "test_watchlist", "type": "IPAddress"}
+    client.add_watchlist()
+
+    watchlist = json.loads(http_request.call_args.kwargs["data"])["watchlist"]
+    assert watchlist["dynamic"] is False
+    assert watchlist["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "start_time, end_time, difference, expected",
+    [
+        pytest.param(
+            "2026-11-10T09:00:00Z",
+            "2026-11-10T10:00:00Z",
+            0,
+            ("CUSTOM", "2026-10-11T09:00:00Z", "2026-10-11T10:00:00Z"),
+            id="day and month swapped",
+        ),
+        pytest.param(
+            "2026-11-10T03:30:00Z",
+            "2026-11-10T04:30:00Z",
+            5.5,
+            ("CUSTOM", "2026-10-11T09:00:00Z", "2026-10-11T10:00:00Z"),
+            id="half-hour timezone",
+        ),
+        pytest.param(
+            "2026-11-09T00:00:00Z",
+            "2026-12-01T00:00:00Z",
+            0,
+            ("CUSTOM", "2026-09-11T00:00:00Z", "2026-01-12T00:00:00Z"),
+            id="order validated before the swap",
+        ),
+    ],
+)
+def test_set_query_times_day_first(start_time, end_time, difference, expected):
+    """
+    Given:
+    - A custom time range, and an ESM with a day-first date format.
+    When:
+    - Building the query times.
+    Then:
+    - The times are converted to the ESM timezone and sent with the day and month swapped, which the ESM reads as the
+      intended dates. A valid range is not rejected because the swapped strings no longer sort in order.
+    """
+    assert set_query_times(None, start_time, end_time, difference, day_first=True) == expected
+
+
+def test_set_query_times_month_first_unchanged():
+    """
+    Given:
+    - A custom time range, and an ESM with the default month-first date format.
+    When:
+    - Building the query times.
+    Then:
+    - The times are sent as before, without swapping.
+    """
+    assert set_query_times(None, "2026-11-10T09:00:00Z", "2026-11-10T10:00:00Z") == (
+        "CUSTOM",
+        "2026-11-10T09:00:00Z",
+        "2026-11-10T10:00:00Z",
+    )
+
+
+@freeze_time("2026-11-11T10:23:17Z")
+@pytest.mark.parametrize(
+    "date_format, expected_start, expected_end",
+    [
+        pytest.param("DD/MM/YYYY", "2026-11-11T14:53:17Z", "2026-11-11T15:53:17Z", id="day first, 11/11 reads the same"),
+        pytest.param(None, "2026-11-11T14:53:17Z", "2026-11-11T15:53:17Z", id="default"),
+    ],
+)
+def test_fetch_alarms_query_times_day_first_same_day_month(mocker, date_format, expected_start, expected_end):
+    """
+    Given:
+    - An ESM set to India time (+05:30), with the McAfee ESM Timezone in hours parameter set to 5.5.
+    When:
+    - Fetching alarms from the last hour on November 11.
+    Then:
+    - The query range is sent in India time. November 11 reads the same in either date order.
+    """
+    params = {
+        "url": "https://example.com",
+        "credentials": {"identifier": "TEST", "password": "TEST"},
+        "version": "11.6.11",
+        "timezone": "5.5",
+        "dateFormat": date_format,
+    }
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+    request = mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__request", return_value=[])
+    mocker.patch.object(demisto, "args", return_value={})
+    client = McAfeeESMClient(params)
+    client.fetch_alarms(start_time="2026-11-11T09:23:17Z", end_time="2026-11-11T10:23:17Z", raw=True)
+
+    assert request.call_args.kwargs["params"] == {
+        "triggeredTimeRange": "CUSTOM",
+        "customStart": expected_start,
+        "customEnd": expected_end,
+    }
+
+
+def test_fetch_incidents_day_first_queries_intended_date(mocker):
+    """
+    Given:
+    - The XSUP-80724 setup: an ESM with a day-first date format (DD-MM-YYYY) in India time (+05:30), which reads the
+      custom query time 2026-11-10T09:00:00Z as October 11, and the instance parameters DD/MM/YYYY and 5.5.
+    - A lastRun at November 10, 03:30 UTC (09:00 India time).
+    When:
+    - Fetching incidents.
+    Then:
+    - The query starts at 2026-10-11T09:00:00Z, which the ESM reads as November 10, 09:00 India time.
+    - The alarm returned in the ESM format (DD-MM-YYYY, India time) becomes an incident in UTC.
+    """
+    params = {
+        "url": "https://example.com",
+        "credentials": {"identifier": "TEST", "password": "TEST"},
+        "version": "11.6.11",
+        "timezone": "5.5",
+        "dateFormat": "DD/MM/YYYY",
+        "fetchLimitAlarms": "50",
+        "startingFetchID": "0",
+        "fetchTime": "1 hour",
+    }
+    mocker.patch.object(McAfeeESMClient, "_McAfeeESMClient__set_session", return_value={})
+    request = mocker.patch.object(
+        McAfeeESMClient, "_McAfeeESMClient__request", return_value=[{"id": 912430, "triggeredDate": "10-11-2026 09:31:39"}]
+    )
+    mocker.patch.object(demisto, "args", return_value={})
+    mocker.patch.object(demisto, "getLastRun", return_value={"alarms": {"id": 912429, "time": "2026-11-10T03:30:00Z"}})
+    mocker.patch.object(demisto, "setLastRun")
+    mocker.patch.object(demisto, "incidents")
+
+    with freeze_time("2026-11-10T04:30:00Z"):
+        McAfeeESMClient(params).fetch_incidents(params)
+
+    request_params = request.call_args.kwargs["params"]
+    assert request_params["customStart"] == "2026-10-11T09:00:00Z"
+    assert request_params["customEnd"] == "2026-10-11T10:00:00Z"
+    assert demisto.incidents.call_args[0][0][0]["occurred"] == "2026-11-10T04:01:39Z"
+    assert demisto.setLastRun.call_args[0][0] == {"alarms": {"time": "2026-11-10T04:01:39Z", "id": 912430}}
+
+
+@pytest.mark.parametrize(
+    "date_format, expected",
+    [(None, False), ("", False), ("MM/DD/YYYY", False), ("DD/MM/YYYY", True)],
+)
+def test_is_day_first_date_format(date_format, expected):
+    """
+    Given:
+    - The ESM date format parameter.
+    When:
+    - Checking whether the ESM uses a day-first date format.
+    Then:
+    - Only DD/MM/YYYY is day first, and the default is month first.
+    """
+    assert is_day_first_date_format(date_format) is expected
+
+
+def test_is_day_first_date_format_rejects_invalid_value():
+    """
+    Given:
+    - An invalid ESM date format value.
+    When:
+    - Checking the date format.
+    Then:
+    - An error is raised.
+    """
+    with pytest.raises(DemistoException, match="Invalid ESM date format"):
+        is_day_first_date_format("YYYY.MM.DD")
+
+
+@pytest.mark.parametrize(
+    "timezone_offset, expected",
+    [(None, 0), ("", 0), ("3", 3), ("-5", -5), ("5.5", 5.5)],
+)
+def test_parse_timezone_offset(timezone_offset, expected):
+    """
+    Given:
+    - The McAfee ESM Timezone in hours parameter.
+    When:
+    - Parsing the offset.
+    Then:
+    - Whole and decimal offsets are returned in hours.
+    """
+    assert parse_timezone_offset(timezone_offset) == expected
+
+
+def test_parse_timezone_offset_rejects_invalid_value():
+    """
+    Given:
+    - An offset that is not a number (e.g. +05:30).
+    When:
+    - Parsing the offset.
+    Then:
+    - An error explaining the expected format is raised.
+    """
+    with pytest.raises(DemistoException, match="Invalid McAfee ESM Timezone in hours"):
+        parse_timezone_offset("+05:30")

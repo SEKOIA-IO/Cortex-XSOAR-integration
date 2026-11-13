@@ -1,12 +1,12 @@
 import demistomock as demisto  # noqa: F401
 from CommonServerPython import *  # noqa: F401
+
 """Cohesity Helios Integration for Cortex XSOAR (aka Demisto).
 """
 from CommonServerUserPython import *  # noqa
 
-from datetime import datetime, timedelta
-from dateparser import parse
-from typing import Dict, Any
+from datetime import datetime, timedelta, UTC
+from typing import Any
 import json
 import urllib3
 import traceback
@@ -15,136 +15,155 @@ import traceback
 urllib3.disable_warnings()  # pylint: disable=no-member
 
 
-''' CONSTANTS '''
+""" CONSTANTS """
 
-DATE_FORMAT = '%Y-%m-%dT%H:%M:%SZ'  # ISO8601 format with UTC, default in XSOAR
-MAX_FETCH_DEFAULT = 20
+DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"  # ISO8601 format with UTC, default in XSOAR
+MAX_FETCH_DEFAULT = 200
 NUM_OF_RETRIES = 3
 BACKOFF_FACTOR = 1.0
 
-''' CLIENT CLASS '''
+""" CLIENT CLASS """
 
 
 class Client(BaseClient):
-    """ Client class to interact with Cohesity Helios.
-    """
+    """Client class to interact with Cohesity Helios."""
 
-    def get_ransomware_alerts(self, start_time_usecs=None, end_time_usecs=None, max_fetch=MAX_FETCH_DEFAULT,
-                              alert_ids=[], alert_state_list=[], alert_severity_list=[],
-                              region_ids=[], cluster_ids=[]):
-        """Gets the Cohesity Helios ransomware alerts.
-        """
-        # Prepare default request params.
-        request_params = {
+    def _api_request(self, method: str, url_suffix: str, **kwargs):
+        """Wraps _http_request with response logging and error handling."""
+        request_info = {
+            "method": method,
+            "url": url_suffix,
+            "params": kwargs.get("params"),
+            "json_data": kwargs.get("json_data"),
+        }
+        try:
+            resp = self._http_request(
+                method=method,
+                url_suffix=url_suffix,
+                retries=NUM_OF_RETRIES,
+                backoff_factor=BACKOFF_FACTOR,
+                **kwargs,
+            )
+            demisto.debug(f"API Request: {request_info}")
+            demisto.debug(f"API Response: {resp}")
+            return resp
+        except DemistoException as e:
+            demisto.debug(f"API Request failed: {request_info}")
+            demisto.debug(f"API Error: {e}")
+            raise
+
+    def get_ransomware_alerts(
+        self,
+        start_time_usecs=None,
+        end_time_usecs=None,
+        max_fetch=MAX_FETCH_DEFAULT,
+        alert_ids=[],
+        alert_state_list=[],
+        alert_severity_list=[],
+        region_ids=[],
+        cluster_ids=[],
+    ):
+        """Gets the Cohesity Helios ransomware alerts via v2 /mcm/alerts API."""
+        request_params: dict[str, Any] = {
             "maxAlerts": max_fetch,
             "alertCategoryList": "kSecurity",
             "alertStateList": "kOpen",
-            "_includeTenantInfo": True
+            "alertName": "DataIngestAnomalyAlert",
         }
 
-        # Populate request params filters.
         if start_time_usecs is not None:
             request_params["startDateUsecs"] = int(start_time_usecs)
         if end_time_usecs is not None:
             request_params["endDateUsecs"] = int(end_time_usecs)
-        if alert_ids != []:
+        if alert_ids:
             request_params["alertIdList"] = alert_ids
-        if alert_state_list != []:
+        if alert_state_list:
             request_params["alertStateList"] = alert_state_list
-        if alert_severity_list != []:
+        if alert_severity_list:
             request_params["alertSeverityList"] = alert_severity_list
-        if region_ids != []:
-            request_params["region_ids"] = region_ids
-        if cluster_ids != []:
+        if region_ids:
+            request_params["regionIds"] = region_ids
+        if cluster_ids:
             request_params["clusterIdentifiers"] = cluster_ids
 
-        resp = self._http_request(
-            method='GET',
-            url_suffix='/mcm/alerts',
+        resp = self._api_request(
+            method="GET",
+            url_suffix="/v2/mcm/alerts",
             params=request_params,
-            retries=NUM_OF_RETRIES,
-            backoff_factor=BACKOFF_FACTOR
         )
 
-        # Filter ransomware alerts.
-        ransomware_alerts = []
-        for alert in resp:
-            if alert['alertCode'] == 'CE01516011':
-                ransomware_alerts.append(alert)
-
-        return ransomware_alerts
+        return resp.get("alertsList", [])
 
     def suppress_ransomware_alert_by_id(self, alert_id: str):
-        """Patch API call to suppress ransomware alert by id.
-        """
-        return self._http_request(
-            method='PATCH',
-            url_suffix='/mcm/alerts/' + alert_id,
+        """Patch API call to suppress ransomware alert by id."""
+        demisto.debug(f"Suppressing alert: {alert_id}")
+        return self._api_request(
+            method="PATCH",
+            url_suffix="/mcm/alerts/" + alert_id,
             json_data={"status": "kSuppressed"},
             return_empty_response=True,
             empty_valid_codes=[200],
-            retries=NUM_OF_RETRIES,
-            backoff_factor=BACKOFF_FACTOR
         )
 
     def resolve_ransomware_alert_by_id(self, alert_id: str):
-        """Patch API call to resolve ransomware alert by id.
-        """
-        return self._http_request(
-            method='PATCH',
-            url_suffix='/mcm/alerts/' + alert_id,
+        """Patch API call to resolve ransomware alert by id."""
+        demisto.debug(f"Resolving alert: {alert_id}")
+        return self._api_request(
+            method="PATCH",
+            url_suffix="/mcm/alerts/" + alert_id,
             json_data={"status": "kResolved"},
             return_empty_response=True,
             empty_valid_codes=[200],
-            retries=NUM_OF_RETRIES,
-            backoff_factor=BACKOFF_FACTOR
         )
 
-    def restore_vm_object(self, cluster_id, payload):
-        """Posts recover vm object details to Helios.
+    def get_incidence_details(self, alert_id: str) -> dict[str, Any]:
+        """Gets incidence details via /mcm/argus/api/v1/public/incidences API.
+
+        Returns the first incidence object from the response.
+        antiRansomwareDetails data is available under the returned dict key
+        "antiRansomwareDetails".
         """
+        resp = self._api_request(
+            method="GET",
+            url_suffix="/mcm/argus/api/v1/public/incidences",
+            params={
+                "incidenceIds": alert_id,
+                "shieldTypes": "ANTI_RANSOMWARE",
+            },
+        )
+        incidences = resp.get("incidences") or []
+        if not incidences:
+            raise ValueError(f"CohesityHelios error: no incidence found for alert_id={alert_id}.")
+        return incidences[0]
+
+    def create_recovery(self, cluster_id, payload):
+        """Creates a recovery via v2 /data-protect/recoveries API."""
         if self._headers is not None:
             client_headers = self._headers.copy()
         else:
             client_headers = {}
 
-        client_headers['clusterid'] = cluster_id
+        client_headers["accessClusterId"] = str(cluster_id)
 
-        return self._http_request(
-            method='POST',
-            url_suffix='/irisservices/api/v1/public/restore/recover',
+        demisto.debug(f"Creating recovery on cluster_id={cluster_id}.")
+        return self._api_request(
+            method="POST",
+            url_suffix="/v2/data-protect/recoveries",
             json_data=payload,
             headers=client_headers,
-            retries=NUM_OF_RETRIES,
-            backoff_factor=BACKOFF_FACTOR
         )
 
 
-''' HELPER FUNCTIONS '''
+""" HELPER FUNCTIONS """
 
 
 def get_date_time_from_usecs(time_in_usecs):
     """Get date time from epoch usecs"""
-    return datetime.fromtimestamp(time_in_usecs / 1000000.0)
+    return datetime.fromtimestamp(time_in_usecs / 1000000.0, tz=UTC)
 
 
 def get_usecs_from_date_time(dt):
     """Get epoch milllis from date time"""
-    return int(dt.timestamp() * 1000000)
-
-
-def get_current_usecs():
-    """Get current epoch usecs"""
-    dt = datetime.now()
-    return int(dt.timestamp() * 1000000)
-
-
-def datestring_to_usecs(ds: str):
-    """Get epoch usecs from datestring"""
-    dt = parse(ds)
-    if dt is None:
-        return dt
-
     return int(dt.timestamp() * 1000000)
 
 
@@ -155,7 +174,7 @@ def _get_property_dict(property_list):
     """
     property_dict = {}
     for property in property_list:
-        property_dict[property['key']] = property['value']
+        property_dict[property["key"]] = property["value"]
     return property_dict
 
 
@@ -168,61 +187,70 @@ def convert_to_demisto_severity_int(severity: str):
     :rtype: ``int``
     """
     return {
-        'kInfo': IncidentSeverity.INFO,   # Informational alert
-        'kWarning': IncidentSeverity.LOW,  # low severity
-        'kCritical': IncidentSeverity.HIGH  # critical severity
+        "kInfo": IncidentSeverity.INFO,  # Informational alert
+        "kWarning": IncidentSeverity.LOW,  # low severity
+        "kCritical": IncidentSeverity.HIGH,  # critical severity
     }.get(severity, IncidentSeverity.UNKNOWN)
 
 
-def create_ransomware_incident(alert) -> Dict[str, Any]:
+def create_ransomware_incident(alert) -> dict[str, Any]:
     """Helper method to create ransomware incident from alert.
+
+    Actual alert response fields:
+        Top-level: id, alertCategory, alertCode, alertDocument, alertState, alertType,
+                   clusterId, clusterName, severity, latestTimestampUsecs, firstTimestampUsecs
+        propertyList keys: entity_id, job_id
+        alertDocument keys: alertName, alertDescription, alertCause, alertHelpText
     """
-    property_dict = _get_property_dict(alert['propertyList'])
+    property_dict = _get_property_dict(alert.get("propertyList", []))
     incidence_usecs = alert.get("latestTimestampUsecs", 0)
-    occurance_time = get_date_time_from_usecs(
-        incidence_usecs).strftime(DATE_FORMAT)
+    occurance_time = get_date_time_from_usecs(incidence_usecs).strftime(DATE_FORMAT)
+
+    enriched_alert = alert.copy()
+    enriched_alert["alertId"] = str(alert.get("id", ""))
+    enriched_alert["objectId"] = property_dict.get("entity_id", "")
+    enriched_alert["jobId"] = property_dict.get("job_id", "")
 
     return {
-        "name": alert['alertDocument']['alertName'],
+        "name": alert["alertDocument"]["alertName"],
         "type": "Cohesity-Helios-Ransomware-Incident",
         "event_id": alert.get("id"),
         "occurred": occurance_time,
         "CustomFields": {
-            "alert_description": alert['alertDocument']['alertDescription'],
-            "alert_cause": alert['alertDocument']['alertCause'],
-            "anomalous_object": property_dict.get('object'),
-            "environment": property_dict.get('environment'),
-            "anomaly_strength": property_dict.get('anomalyStrength')
+            "cohesityheliosalertid": alert.get("id", ""),
+            "cohesityheliosalertdescription": alert["alertDocument"]["alertDescription"],
+            "cohesityheliosalertcause": alert["alertDocument"]["alertCause"],
+            "cohesityheliosobjectid": property_dict.get("entity_id", ""),
+            "cohesityheliosclusterid": alert.get("clusterId", ""),
+            "cohesityheliosclustername": alert.get("clusterName", ""),
         },
-        "rawJSON": json.dumps(alert),
-        "severity": convert_to_demisto_severity_int(alert.get('severity'))
+        "rawJSON": json.dumps(enriched_alert),
+        "severity": convert_to_demisto_severity_int(alert.get("severity")),
     }
 
 
-def get_ransomware_alert_details(alert) -> Dict[str, Any]:
-    """Helper method to parse ransomware alert for details.
-    """
-    # Get alert properties.
-    property_dict = _get_property_dict(alert['propertyList'])
-    occurance_time = get_date_time_from_usecs(
-        alert.get("latestTimestampUsecs", 0)).strftime(DATE_FORMAT)
+def get_ransomware_alert_details(alert) -> dict[str, Any]:
+    """Helper method to parse ransomware alert for readable output."""
+    property_dict = _get_property_dict(alert.get("propertyList", []))
+    occurance_time = get_date_time_from_usecs(alert.get("latestTimestampUsecs", 0)).strftime(DATE_FORMAT)
 
     return {
-        "alert_id": alert['id'],
+        "alert_id": alert["id"],
         "occurrence_time": occurance_time,
-        "severity": alert.get('severity'),
-        "alert_description": alert['alertDocument']['alertDescription'],
-        "alert_cause": alert['alertDocument']['alertCause'],
-        "anomalous_object_name": property_dict.get('object'),
-        "anomalous_object_env": property_dict.get('environment'),
-        "anomaly_strength": property_dict.get('anomalyStrength')
+        "severity": alert.get("severity"),
+        "alert_description": alert["alertDocument"]["alertDescription"],
+        "alert_cause": alert["alertDocument"]["alertCause"],
+        "cluster_id": alert.get("clusterId"),
+        "cluster_name": alert.get("clusterName"),
+        "entity_id": property_dict.get("entity_id"),
+        "job_id": property_dict.get("job_id"),
     }
 
 
-''' COMMAND FUNCTIONS '''
+""" COMMAND FUNCTIONS """
 
 
-def get_ransomware_alerts_command(client: Client, args: Dict[str, Any]) -> CommandResults:
+def get_ransomware_alerts_command(client: Client, args: dict[str, Any]) -> CommandResults:
     """
     Gets ransomware alerts detected by Cohesity Helios.
 
@@ -234,24 +262,27 @@ def get_ransomware_alerts_command(client: Client, args: Dict[str, Any]) -> Comma
 
     Returns command result with the list of fetched ransomware alerts.
     """
-    start_time_usecs = datestring_to_usecs(args.get('created_after', ''))
-    end_time_usecs = datestring_to_usecs(args.get('created_before', ''))
-    alert_severity_list = argToList(args.get('alert_severity_list', []))
-    alert_id_list = argToList(args.get('alert_id_list', []))
-    region_id_list = argToList(args.get('region_id_list', []))
-    cluster_id_list = argToList(args.get('cluster_id_list', []))
-    alert_state_list = argToList(args.get('alert_state_list', []))
-    limit = args.get('limit', MAX_FETCH_DEFAULT)
+    created_after_dt = arg_to_datetime(args.get("created_after"), arg_name="created_after")
+    created_before_dt = arg_to_datetime(args.get("created_before"), arg_name="created_before")
+    start_time_usecs = get_usecs_from_date_time(created_after_dt) if created_after_dt else None
+    end_time_usecs = get_usecs_from_date_time(created_before_dt) if created_before_dt else None
+    alert_severity_list = argToList(args.get("alert_severity_list", []))
+    alert_id_list = argToList(args.get("alert_id_list", []))
+    region_id_list = argToList(args.get("region_id_list", []))
+    cluster_id_list = argToList(args.get("cluster_id_list", []))
+    alert_state_list = argToList(args.get("alert_state_list", []))
+    limit = args.get("limit", MAX_FETCH_DEFAULT)
 
-    # Fetch ransomware alerts via client.
     resp = client.get_ransomware_alerts(
         start_time_usecs=start_time_usecs,
-        end_time_usecs=end_time_usecs, alert_ids=alert_id_list,
+        end_time_usecs=end_time_usecs,
+        alert_ids=alert_id_list,
         alert_state_list=alert_state_list,
         alert_severity_list=alert_severity_list,
         region_ids=region_id_list,
         cluster_ids=cluster_id_list,
-        max_fetch=limit)
+        max_fetch=limit,
+    )
     demisto.debug(f"Got {len(resp)} alerts between {start_time_usecs} and {end_time_usecs}.")
 
     # Parse alerts for readable output.
@@ -260,149 +291,143 @@ def get_ransomware_alerts_command(client: Client, args: Dict[str, Any]) -> Comma
         alert_details = get_ransomware_alert_details(alert)
         ransomware_alerts.append(alert_details)
 
-    readable_output = tableToMarkdown('Cohesity Helios Ransomware Alerts',
-                                      ransomware_alerts,
-                                      ["alert_id", "alert_description", "alert_cause", "anomalous_object_env",
-                                          "anomalous_object_name", "anomaly_strength"],
-                                      headerTransform=string_to_table_header)
+    readable_output = tableToMarkdown(
+        "Cohesity Helios Ransomware Alerts",
+        ransomware_alerts,
+        ["alert_id", "severity", "cluster_name", "entity_id", "alert_description", "alert_cause"],
+        headerTransform=string_to_table_header,
+    )
     return CommandResults(
         readable_output=readable_output,
-        outputs_prefix='CohesityHelios.RansomwareAlert',
-        outputs_key_field='alert_id',
+        raw_response=resp,
+        outputs_prefix="CohesityHelios.RansomwareAlert",
+        outputs_key_field="alert_id",
         outputs=ransomware_alerts,
     )
 
 
-def ignore_ransomware_anomaly_command(client: Client, args: Dict[str, Any]) -> str:
-    """Ignore detected anomalous object on Helios.
+def ignore_ransomware_anomaly_command(client: Client, args: dict[str, Any]) -> str:
+    """Ignore detected anomalous object on Helios."""
+    alert_id = args.get("alert_id", "")
+    if not alert_id:
+        raise ValueError("CohesityHelios error: alert_id is required to ignore an anomalous object.")
 
-        :type client: ``Client``
-        :param Client:  cohesity helios client to use.
+    try:
+        client.suppress_ransomware_alert_by_id(alert_id)
+    except DemistoException as e:
+        raise DemistoException(f"Failed to suppress alert {alert_id}: {e}") from e
 
-        :type args: ``Dict[str, Any]``
-        :param args: Dictionary with ignore anomaly parameters.
-
-        :return: success message of the ignore anomaly operation.
-        :rtype: ``str``
-    """
-    # Filter ransomware alert for given object name.
-    alert_id = ''
-    object_name = args.get('object_name')
-    demisto.debug(f"Performing ignore anomaly operation for object {object_name}.")
-    resp = client.get_ransomware_alerts()
-    for alert in resp:
-        property_dict = _get_property_dict(alert['propertyList'])
-        if property_dict.get('object', "") == object_name:
-            alert_id = alert.get('id')
-            break
-
-    if alert_id == '':
-        raise ValueError(f'CohesityHelios error: no anomalous object found by the given name: {object_name}. ')
-
-    # Suppress ransomware alert.
-    client.suppress_ransomware_alert_by_id(alert_id)
-
-    return f"Ignored object {object_name}."
+    return f"Ignored alert {alert_id}."
 
 
-def restore_latest_clean_snapshot(client: Client, args: Dict[str, Any]) -> str:
+def restore_latest_clean_snapshot(client: Client, args: dict[str, Any]) -> str:
     """Restore latest clean snapshot of given object.
 
-        :type client: ``Client``
-        :param Client:  cohesity helios client to use.
-
-        :type args: ``Dict[str, Any]``
-
-        :return: success message of the restore operation.
-        :rtype: ``str``
+    Uses the /mcm/argus/api/v1/public/incidences API to get full incidence details
+    including latestCleanSnapshotId, clusterId, entityName, etc.
+    Only alert_id is required — everything else comes from the incidence API.
     """
-    # Filter ransomware alert for given object name.
-    alert_id = ''
-    restore_properties = {}
-    object_name = args.get('object_name')
-    demisto.debug(f"Performing restore operation for object {object_name}.")
+    alert_id = args.get("alert_id", "")
+    if not alert_id:
+        raise ValueError("CohesityHelios error: alert_id is required for restore.")
 
-    resp = client.get_ransomware_alerts()
-    for alert in resp:
-        if alert['severity'] == 'kCritical' and alert['alertState'] == 'kOpen':
-            restore_properties = _get_property_dict(alert['propertyList'])
-            if restore_properties.get('object', "") == object_name:
-                alert_id = alert['id']
-                break
+    try:
+        incidence = client.get_incidence_details(alert_id)
+    except DemistoException as e:
+        raise DemistoException(f"Failed to get incidence details for alert {alert_id}: {e}") from e
+    details = incidence.get("antiRansomwareDetails") or {}
 
-    if alert_id == '':
-        raise ValueError(f"CohesityHelios error: no anomalous object found by the given name {object_name}.")
+    snapshot_id = details.get("latestCleanSnapshotId", "")
+    cluster_id = str(details.get("clusterId", ""))
+    entity_name = details.get("entityName", "")
+    entity_id = details.get("entityId", "")
+    environment = details.get("protectionEnvType", "kVMware")
 
-    # Prepare restore vm properties.
+    demisto.debug(
+        f"Incidence details: entity_name={entity_name}, entity_id={entity_id}, "
+        f"cluster_id={cluster_id}, snapshot_id={snapshot_id}, environment={environment}"
+    )
+
+    if not snapshot_id:
+        raise ValueError(
+            f"CohesityHelios error: no clean snapshot available for entity {entity_name} (id={entity_id}). Cannot restore."
+        )
+
+    if not cluster_id:
+        raise ValueError(f"CohesityHelios error: cluster_id not found in incidence details for alert_id={alert_id}.")
+
+    recovery_name = datetime.now(UTC).strftime("Recover_VM_%b_%d_%Y_%-I_%M_%p")
     request_payload = {
-        "name": "Cortex_XSOAR_triggered_restore_task_" + restore_properties["object"],
-        "type": "kRecoverVMs",
-        "vmwareParameters": {
-            "poweredOn": True,
-            "prefix": "Recover-",
-            "suffix": "-VM-" + str(get_current_usecs())
+        "name": recovery_name,
+        "snapshotEnvironment": environment,
+        "vmwareParams": {
+            "objects": [{"snapshotId": snapshot_id, "archivalTargetInfo": None}],
+            "recoveryAction": "RecoverVMs",
+            "recoverVmParams": {
+                "targetEnvironment": environment,
+                "vmwareTargetParams": {
+                    "powerOnVms": True,
+                    "attemptDifferentialRestore": False,
+                    "continueOnError": False,
+                    "overwriteExistingVm": True,
+                    "recoveryTargetConfig": {
+                        "recoverToNewSource": False,
+                    },
+                    "recoveryProcessType": "InstantRecovery",
+                },
+            },
         },
-        "objects": [
-            {
-                "jobId": int(restore_properties["jobId"]),
-                "jobRunId": int(restore_properties["jobInstanceId"]),
-                "startedTimeUsecs": int(restore_properties["jobStartTimeUsecs"]),
-                "sourceName": restore_properties["object"],
-                "protectionSourceId": int(restore_properties["entityId"])
-            }
-        ]
     }
-    cluster_id = restore_properties['cid']
 
-    # Post restore request to helios
-    client.restore_vm_object(cluster_id, request_payload)
+    try:
+        client.create_recovery(cluster_id, request_payload)
+    except DemistoException as e:
+        raise DemistoException(f"Recovery failed for {entity_name} (id={entity_id}): {e}") from e
 
-    # Resolve ransomware alert.
-    client.resolve_ransomware_alert_by_id(alert_id)
+    try:
+        client.resolve_ransomware_alert_by_id(alert_id)
+    except DemistoException as e:
+        raise DemistoException(f"Recovery succeeded but failed to resolve alert {alert_id}: {e}") from e
 
-    return f"Restored object {object_name}."
+    return f"Restored {entity_name} (id={entity_id}) from latest clean snapshot."
 
 
 def fetch_incidents_command(client: Client):
-    """ Fetches incidents since last run or past 7 days in case of first run
-        and sends them to Cortex XSOAR.
+    """Fetches incidents since last run or past 7 days in case of first run
+    and sends them to Cortex XSOAR.
 
-        :type client: ``Client``
-        :param Client:  cohesity helios client to use
+    :type client: ``Client``
+    :param Client:  cohesity helios client to use
     """
     # Get last run details.
     last_run = demisto.getLastRun()
 
     # Compute start and end time to fetch for incidents.
-    start_time_usecs = int(last_run.get('start_time')) if (
-        last_run and 'start_time' in last_run) else get_usecs_from_date_time(
-            datetime.now() - timedelta(days=7))
+    start_time_usecs = (
+        int(last_run.get("start_time"))
+        if (last_run and "start_time" in last_run)
+        else get_usecs_from_date_time(datetime.now(UTC) - timedelta(days=7))
+    )
 
     # Fetch all new incidents.
     params = demisto.params()
-    max_fetch = params.get('max_fetch')
-    max_fetch = int(params.get('max_fetch')) if (
-        max_fetch and max_fetch.isdigit()) else MAX_FETCH_DEFAULT
+    max_fetch = params.get("max_fetch")
+    max_fetch = int(params.get("max_fetch")) if (max_fetch and max_fetch.isdigit()) else MAX_FETCH_DEFAULT
 
-    ransomware_resp = client.get_ransomware_alerts(
-        start_time_usecs=start_time_usecs,
-        max_fetch=max_fetch)
+    ransomware_resp = client.get_ransomware_alerts(start_time_usecs=start_time_usecs, max_fetch=max_fetch)
     demisto.debug(f"Got {len(ransomware_resp)} alerts from {start_time_usecs}.")
 
     # Get incidents for ransomware alerts.
     incidents = []
     new_start_time_usecs = start_time_usecs
     for alert in ransomware_resp:
-        new_start_time_usecs = max(new_start_time_usecs,
-                                   alert.get("latestTimestampUsecs", 0))
+        new_start_time_usecs = max(new_start_time_usecs, alert.get("latestTimestampUsecs", 0))
         incident = create_ransomware_incident(alert)
         incidents.append(incident)
 
     # Update last run to 1 usec more than last found alert.
     new_start_time_usecs += 1
-    demisto.setLastRun({
-        'start_time': new_start_time_usecs
-    })
+    demisto.setLastRun({"start_time": new_start_time_usecs})
     demisto.debug(f"Next run start time usecs {new_start_time_usecs}.")
 
     # Send incidents to Cortex-XSOAR.
@@ -425,19 +450,19 @@ def test_module(client: Client) -> str:
     :rtype: ``str``
     """
 
-    message: str = ''
+    message: str = ""
     try:
         client.get_ransomware_alerts(start_time_usecs=1631471400000)
-        message = 'ok'
+        message = "ok"
     except DemistoException as e:
-        if 'Forbidden' in str(e) or 'Authorization' in str(e):
-            message = 'Authorization Error: make sure API Key is correctly set'
+        if "Forbidden" in str(e) or "Authorization" in str(e):
+            message = "Authorization Error: make sure API Key is correctly set"
         else:
             raise e
     return message
 
 
-''' MAIN FUNCTION '''
+""" MAIN FUNCTION """
 
 
 def main() -> None:
@@ -449,58 +474,54 @@ def main() -> None:
 
     params = demisto.params()
     # Get API key for authentication.
-    api_key = params.get('apikey')
+    api_key = params.get("apikey")
 
     # Get helios service API url.
-    base_url = params['url']
+    base_url = params["url"]
 
     # if your Client class inherits from BaseClient, SSL verification is
     # handled out of the box by it, just pass ``verify_certificate`` to
     # the Client constructor
-    verify_certificate = not params.get('insecure', False)
+    verify_certificate = not params.get("insecure", False)
 
     # if your Client class inherits from BaseClient, system proxy is handled
     # out of the box by it, just pass ``proxy`` to the Client constructor
-    proxy = params.get('proxy', False)
+    proxy = params.get("proxy", False)
 
-    demisto.debug(f'Command being called is {demisto.command()}')
+    demisto.debug(f"Command being called is {demisto.command()}")
     try:
         # Prepare client and set authentication headers.
-        headers: Dict = {
-            'apikey': api_key,
-            'Content-Type': 'application/json',
+        headers: dict = {
+            "apikey": api_key,
+            "Content-Type": "application/json",
         }
-        client = Client(
-            base_url=base_url,
-            verify=verify_certificate,
-            headers=headers,
-            proxy=proxy)
+        client = Client(base_url=base_url, verify=verify_certificate, headers=headers, proxy=proxy)
 
-        if demisto.command() == 'test-module':
+        if demisto.command() == "test-module":
             # This is the call made when pressing the integration Test button.
             result = test_module(client)
             return_results(result)
 
-        elif demisto.command() == 'cohesity-helios-get-ransomware-alerts':
+        elif demisto.command() == "cohesity-helios-get-ransomware-alerts":
             return_results(get_ransomware_alerts_command(client, demisto.args()))
 
-        elif demisto.command() == 'cohesity-helios-ignore-anomalous-object':
+        elif demisto.command() == "cohesity-helios-ignore-anomalous-object":
             return_results(ignore_ransomware_anomaly_command(client, demisto.args()))
 
-        elif demisto.command() == 'cohesity-helios-restore-latest-clean-snapshot':
+        elif demisto.command() == "cohesity-helios-restore-latest-clean-snapshot":
             return_results(restore_latest_clean_snapshot(client, demisto.args()))
 
-        elif demisto.command() == 'fetch-incidents':
+        elif demisto.command() == "fetch-incidents":
             fetch_incidents_command(client)
 
     # Log exceptions and return errors
     except Exception as e:
         demisto.error(traceback.format_exc())  # print the traceback
-        return_error(f'Failed to execute {demisto.command()} command.\nError:\n{str(e)}')
+        return_error(f"Failed to execute {demisto.command()} command.\nError:\n{e!s}")
 
 
-''' ENTRY POINT '''
+""" ENTRY POINT """
 
 
-if __name__ in ('__main__', '__builtin__', 'builtins'):
+if __name__ in ("__main__", "__builtin__", "builtins"):
     main()

@@ -96,5 +96,9 @@
     "name": "Zendesk - Incoming Mapper",
     "type": "mapping-incoming",
     "version": -1,
-    "fromVersion": "6.2.0"
+    "fromVersion": "6.2.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

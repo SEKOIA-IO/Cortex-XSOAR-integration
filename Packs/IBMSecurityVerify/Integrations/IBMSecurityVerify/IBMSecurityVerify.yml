@@ -1,5 +1,6 @@
 category: Analytics & SIEM
-sectionOrder:
+provider: IBM
+sectionorder:
 - Connect
 - Collect
 commonfields:
@@ -65,7 +66,7 @@ script:
       predefined:
       - 'Desc'
       - 'Asc'
-  dockerimage: demisto/python3:3.11.9.110419
+  dockerimage: demisto/python3:3.12.13.10116658
   isfetchevents: true
   runonce: false
   script: '-'
@@ -73,6 +74,9 @@ script:
   type: python
 marketplaces:
 - marketplacev2
+- platform
 fromversion: 8.4.0
 tests:
 - No tests (auto formatted)
+supportedModules:
+- xsiam

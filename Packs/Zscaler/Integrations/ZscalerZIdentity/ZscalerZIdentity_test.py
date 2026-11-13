@@ -1,0 +1,1633 @@
+import demistomock as demisto
+import pytest
+import json
+import time
+from pathlib import Path
+
+from ZscalerZIdentity import (
+    Client,
+    _filter_and_limit,
+    _dbot_score_for_url,
+    _is_html_content_error,
+    _sanitize_url_entry,
+    _sanitize_url_list,
+    zia_denylist_list_command,
+    zia_denylist_update_command,
+    zia_allowlist_list_command,
+    zia_allowlist_update_command,
+    zia_category_list_command,
+    zia_category_update_command,
+    zia_url_quota_get_command,
+    zia_ip_destination_group_list_command,
+    zia_ip_destination_group_update_command,
+    zia_ip_destination_group_add_command,
+    zia_ip_destination_group_delete_command,
+    zia_user_list_command,
+    zia_user_update_command,
+    zia_groups_list_command,
+    zia_departments_list_command,
+    zia_sandbox_report_get_command,
+    zia_activate_changes_command,
+    url_command,
+    ip_command,
+    domain_command,
+    SUSPICIOUS_CATEGORIES,
+    DEFAULT_BASE_URL,
+    build_api_base_url,
+)
+from CommonServerPython import DemistoException, Common, CommandResults
+
+
+# ---- Fixtures ----
+
+
+def load_json(path: str):
+    """Load a JSON file from disk and return its parsed content."""
+    full_path = Path(__file__).parent / path.lstrip("/")
+    with open(full_path) as f:
+        return json.load(f)
+
+
+def get_outputs(result: CommandResults) -> dict:
+    """Extract outputs dict from a CommandResults, asserting it is a dict."""
+    ctx = result.to_context()
+    # outputs are nested under EntryContext key
+    entry_context = ctx.get("EntryContext", {})
+    if not entry_context:
+        return {}
+    # Return the first value (the actual outputs)
+    for val in entry_context.values():
+        return val  # type: ignore[return-value]
+    return {}
+
+
+def get_outputs_list(result: CommandResults) -> list:
+    """Extract outputs as a list from a CommandResults."""
+    ctx = result.to_context()
+    entry_context = ctx.get("EntryContext", {})
+    if not entry_context:
+        return []
+    for val in entry_context.values():
+        if isinstance(val, list):
+            return val
+        return [val]
+    return []
+
+
+@pytest.fixture
+def mock_client() -> Client:
+    """Return a Client instance with mocked token retrieval."""
+    client = Client(
+        server_url="www.testdomain.zslogin.net",
+        client_id="test_client_id",
+        client_secret="test_client_secret",
+        verify=False,
+        proxy=False,
+        reliability="C - Fairly reliable",
+        auto_activate=True,
+        suspicious_categories=list(SUSPICIOUS_CATEGORIES),
+    )
+    return client
+
+
+@pytest.fixture(autouse=True)
+def mock_demisto_params(mocker):
+    """Patch demisto.params() with test instance configuration."""
+    mocker.patch.object(
+        demisto,
+        "params",
+        return_value={
+            "server_url": "www.testdomain.zslogin.net",
+            "credentials": {"identifier": "test_client_id", "password": "test_client_secret"},
+            "reliability": "C - Fairly reliable",
+            "auto_activate": True,
+            "suspicious_categories": "SUSPICIOUS_DESTINATION,SPYWARE_OR_ADWARE",
+            "insecure": True,
+            "proxy": False,
+        },
+    )
+    mocker.patch.object(demisto, "command", return_value="test-module")
+
+
+@pytest.fixture(autouse=True)
+def mock_integration_context(mocker):
+    """Mock integration context to return a valid cached token."""
+    mocker.patch(
+        "ZscalerZIdentity.get_integration_context",
+        return_value={
+            "access_token": "mock_access_token",
+            "token_expires_at": time.time() + 3600,
+        },
+    )
+    mocker.patch("ZscalerZIdentity.set_integration_context")
+
+
+# ---- Helper ----
+
+
+def _patch_api(mocker, client: Client, return_value):
+    """Patch client.api_request to return a fixed value."""
+    return mocker.patch.object(client, "api_request", return_value=return_value)
+
+
+# ---- Unit tests: helpers ----
+
+
+class TestFilterAndLimit:
+    def test_no_filter_no_query(self):
+        """
+        Given: A mixed list of URLs and IPs with no filter or query.
+        When: _filter_and_limit is called with empty filter and query strings.
+        Then: The original list is returned unchanged.
+        """
+        items = ["a.com", "1.2.3.4", "b.net"]
+        result = _filter_and_limit(items, "", "", 50, False)
+        assert result == items
+
+    def test_filter_url(self):
+        """
+        Given: A mixed list of URLs and IPs.
+        When: _filter_and_limit is called with filter='url'.
+        Then: Only URL entries (non-IP) are returned; IP addresses are excluded.
+        """
+        items = ["a.com", "1.2.3.4", "b.net"]
+        result = _filter_and_limit(items, "url", "", 50, False)
+        assert "1.2.3.4" not in result
+        assert "a.com" in result
+
+    def test_filter_ip(self):
+        """
+        Given: A mixed list of URLs and IPs.
+        When: _filter_and_limit is called with filter='ip'.
+        Then: Only IPv4 address entries are returned.
+        """
+        items = ["a.com", "1.2.3.4", "b.net"]
+        result = _filter_and_limit(items, "ip", "", 50, False)
+        assert result == ["1.2.3.4"]
+
+    def test_query_match(self):
+        """
+        Given: A list of domain strings.
+        When: _filter_and_limit is called with a regex query matching only one entry.
+        Then: Only the matching entry is returned.
+        """
+        items = ["malicious.com", "safe.net", "malware.org"]
+        result = _filter_and_limit(items, "", "malicious", 50, False)
+        assert result == ["malicious.com"]
+
+    def test_limit(self):
+        """
+        Given: A list of four items and a limit of 2.
+        When: _filter_and_limit is called with all_results=False.
+        Then: Only the first two items are returned.
+        """
+        items = ["a.com", "b.com", "c.com", "d.com"]
+        result = _filter_and_limit(items, "", "", 2, False)
+        assert result == ["a.com", "b.com"]
+
+    def test_all_results_overrides_limit(self):
+        """
+        Given: A list of four items and a limit of 2.
+        When: _filter_and_limit is called with all_results=True.
+        Then: All four items are returned, ignoring the limit.
+        """
+        items = ["a.com", "b.com", "c.com", "d.com"]
+        result = _filter_and_limit(items, "", "", 2, True)
+        assert result == items
+
+
+class TestDBotScoreCalculation:
+    def test_miscellaneous_returns_none(self):
+        """
+        Given: A URL classified as MISCELLANEOUS_OR_UNKNOWN with no security alert.
+        When: _dbot_score_for_url is called.
+        Then: DBotScore.NONE is returned.
+        """
+        score = _dbot_score_for_url("MISCELLANEOUS_OR_UNKNOWN", "", list(SUSPICIOUS_CATEGORIES))
+        assert score == Common.DBotScore.NONE
+
+    def test_suspicious_category(self):
+        """
+        Given: A URL with a security alert category that is in the suspicious list.
+        When: _dbot_score_for_url is called.
+        Then: DBotScore.SUSPICIOUS is returned.
+        """
+        score = _dbot_score_for_url("MALWARE_SITE", "SUSPICIOUS_DESTINATION", list(SUSPICIOUS_CATEGORIES))
+        assert score == Common.DBotScore.SUSPICIOUS
+
+    def test_bad_category(self):
+        """
+        Given: A URL with a security alert category that is NOT in the suspicious list.
+        When: _dbot_score_for_url is called.
+        Then: DBotScore.BAD is returned.
+        """
+        score = _dbot_score_for_url("MALWARE_SITE", "MALWARE_SITE", list(SUSPICIOUS_CATEGORIES))
+        assert score == Common.DBotScore.BAD
+
+    def test_good_no_security_alert(self):
+        """
+        Given: A URL with a benign classification and no security alert.
+        When: _dbot_score_for_url is called.
+        Then: DBotScore.GOOD is returned.
+        """
+        score = _dbot_score_for_url("BUSINESS_AND_ECONOMY", "", list(SUSPICIOUS_CATEGORIES))
+        assert score == Common.DBotScore.GOOD
+
+
+# ---- Unit tests: OAuth token caching ----
+
+
+class TestTokenCaching:
+    def test_uses_cached_token(self, mock_client, mocker):
+        """
+        Given: A valid non-expired access token is cached in the integration context.
+        When: _get_access_token is called.
+        Then: The cached token is returned without making any HTTP request.
+        """
+        http_mock = mocker.patch.object(mock_client, "_http_request")
+        token = mock_client._get_access_token()
+        assert token == "mock_access_token"
+        http_mock.assert_not_called()
+
+    def test_fetches_new_token_when_expired(self, mock_client, mocker):
+        """
+        Given: An expired access token is in the integration context.
+        When: _get_access_token is called.
+        Then: A new token is fetched from ZIdentity and returned.
+        """
+        token_response = load_json("/test_data/responses/token.json")
+        mocker.patch(
+            "ZscalerZIdentity.get_integration_context",
+            return_value={
+                "access_token": "old_token",
+                "token_expires_at": time.time() - 10,  # expired
+            },
+        )
+        mocker.patch.object(
+            mock_client,
+            "_http_request",
+            return_value=token_response,
+        )
+        token = mock_client._get_access_token()
+        assert token == token_response["access_token"]
+
+    def test_raises_on_missing_token(self, mock_client, mocker):
+        """
+        Given: The integration context has an expired token and ZIdentity returns no access_token.
+        When: _get_access_token is called.
+        Then: A DemistoException is raised with a message about failing to obtain the token.
+        """
+        mocker.patch(
+            "ZscalerZIdentity.get_integration_context",
+            return_value={"token_expires_at": time.time() - 10},
+        )
+        mocker.patch.object(mock_client, "_http_request", return_value={"error": "invalid_client"})
+        with pytest.raises(DemistoException, match="Failed to obtain access token"):
+            mock_client._get_access_token()
+
+
+# ---- Unit tests: denylist ----
+
+
+class TestDenylistCommands:
+    def test_list_returns_items(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a denylist with multiple entries.
+        When: zia_denylist_list_command is called with no filters.
+        Then: The result has the correct outputs_prefix and all entries appear in the output.
+        """
+        data = load_json("/test_data/responses/denylist.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_denylist_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.DenyList"
+        assert "malicious.com" in result.readable_output
+
+    def test_list_with_filter_ip(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a denylist containing both URLs and IPs.
+        When: zia_denylist_list_command is called with filter='ip'.
+        Then: Only IP addresses appear in the output; URL entries are excluded.
+        """
+        data = load_json("/test_data/responses/denylist.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_denylist_list_command(mock_client, {"filter": "ip"})
+        assert "1.2.3.4" in result.readable_output
+        assert "malicious.com" not in result.readable_output
+
+    def test_list_with_query(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a denylist with multiple entries.
+        When: zia_denylist_list_command is called with a query matching only one entry.
+        Then: Only the matching entry appears in the output.
+        """
+        data = load_json("/test_data/responses/denylist.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_denylist_list_command(mock_client, {"query": "malicious"})
+        assert "malicious.com" in result.readable_output
+        assert "badsite.net" not in result.readable_output
+
+    def test_update_add(self, mock_client, mocker):
+        """
+        Given: A URL and action=ADD_TO_LIST are provided.
+        When: zia_denylist_update_command is called.
+        Then: The denylist is updated and a success message is returned.
+        """
+        mocker.patch.object(mock_client, "get_denylist", return_value={"blacklistUrls": []})
+        mocker.patch.object(mock_client, "api_request", return_value=None)
+        result = zia_denylist_update_command(mock_client, {"url": "evil.com", "action": "ADD_TO_LIST"})
+        assert "successfully updated" in result.readable_output
+
+    def test_update_requires_url_or_ip(self, mock_client):
+        """
+        Given: Neither url nor ip argument is provided.
+        When: zia_denylist_update_command is called.
+        Then: A DemistoException is raised indicating at least one is required.
+        """
+        with pytest.raises(DemistoException, match="At least one"):
+            zia_denylist_update_command(mock_client, {"action": "ADD_TO_LIST"})
+
+    def test_update_requires_action(self, mock_client):
+        """
+        Given: A URL is provided but the action argument is missing.
+        When: zia_denylist_update_command is called.
+        Then: A DemistoException is raised indicating action is required.
+        """
+        with pytest.raises(DemistoException, match="'action' argument is required"):
+            zia_denylist_update_command(mock_client, {"url": "evil.com"})
+
+
+# ---- Unit tests: allowlist ----
+
+
+class TestAllowlistCommands:
+    def test_list_returns_items(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns an allowlist with multiple entries.
+        When: zia_allowlist_list_command is called with no filters.
+        Then: The result has the correct outputs_prefix and all entries appear in the output.
+        """
+        data = load_json("/test_data/responses/allowlist.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_allowlist_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.AllowList"
+        assert "trusted.com" in result.readable_output
+
+    def test_update_add(self, mock_client, mocker):
+        """
+        Given: A new URL and action=ADD_TO_LIST are provided.
+        When: zia_allowlist_update_command is called.
+        Then: The allowlist is updated and a success message is returned.
+        """
+        mocker.patch.object(mock_client, "get_allowlist", return_value={"whitelistUrls": ["existing.com"]})
+        mocker.patch.object(mock_client, "api_request", return_value=None)
+        result = zia_allowlist_update_command(mock_client, {"url": "new.com", "action": "ADD_TO_LIST"})
+        assert "successfully updated" in result.readable_output
+
+    def test_update_requires_url_or_ip(self, mock_client):
+        """
+        Given: Neither url nor ip argument is provided.
+        When: zia_allowlist_update_command is called.
+        Then: A DemistoException is raised indicating at least one is required.
+        """
+        with pytest.raises(DemistoException, match="At least one of 'url' or 'ip'"):
+            zia_allowlist_update_command(mock_client, {"action": "ADD_TO_LIST"})
+
+    def test_update_add_ip(self, mock_client, mocker):
+        """
+        Given: A new IP and action=ADD_TO_LIST are provided.
+        When: zia_allowlist_update_command is called with only the ip argument.
+        Then: The allowlist is updated and a success message is returned.
+        """
+        mocker.patch.object(mock_client, "get_allowlist", return_value={"whitelistUrls": ["existing.com"]})
+        api_mock = mocker.patch.object(mock_client, "api_request", return_value=None)
+        result = zia_allowlist_update_command(mock_client, {"ip": "1.2.3.4", "action": "ADD_TO_LIST"})
+        assert "successfully updated" in result.readable_output
+        sent_data = api_mock.call_args[1].get("data") or api_mock.call_args[0][2]
+        assert "1.2.3.4" in sent_data["whitelistUrls"]
+
+    def test_update_add_deduplicates(self, mock_client, mocker):
+        """
+        Given: The allowlist already contains a URL that is being added again.
+        When: zia_allowlist_update_command is called with action=ADD_TO_LIST.
+        Then: The URL appears only once in the PUT payload sent to the API.
+        """
+        existing = {"whitelistUrls": ["existing.com"]}
+        mocker.patch.object(mock_client, "get_allowlist", return_value=existing)
+        api_mock = mocker.patch.object(mock_client, "api_request", return_value=None)
+        zia_allowlist_update_command(mock_client, {"url": "existing.com", "action": "ADD_TO_LIST"})
+        call_kwargs = api_mock.call_args
+        sent_data = call_kwargs[1].get("data") or call_kwargs[0][2]
+        assert sent_data["whitelistUrls"].count("existing.com") == 1
+
+
+# ---- Unit tests: URL categories ----
+
+
+class TestCategoryCommands:
+    def test_list_all(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a list of two URL categories.
+        When: zia_category_list_command is called with no arguments.
+        Then: The result has the correct outputs_prefix and two categories in the raw response.
+        """
+        data = load_json("/test_data/responses/url_categories.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_category_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.Category"
+        assert isinstance(result.raw_response, list)
+        assert len(result.raw_response) == 2  # type: ignore[arg-type]
+
+    def test_list_lite_with_other_params_raises(self, mock_client):
+        """
+        Given: Both lite=true and custom_only=true are provided.
+        When: zia_category_list_command is called.
+        Then: A DemistoException is raised because lite cannot be combined with other parameters.
+        """
+        with pytest.raises(DemistoException, match="cannot be used in combination"):
+            zia_category_list_command(mock_client, {"lite": "true", "custom_only": "true"})
+
+    def test_update_requires_category_id(self, mock_client):
+        """
+        Given: The category_id argument is missing.
+        When: zia_category_update_command is called.
+        Then: A DemistoException is raised indicating category_id is required.
+        """
+        with pytest.raises(DemistoException, match="'category_id' argument is required"):
+            zia_category_update_command(mock_client, {"url": "test.com", "action": "ADD_TO_LIST"})
+
+    def test_update_requires_url_or_ip(self, mock_client):
+        """
+        Given: A category_id and action are provided but neither url nor ip is given.
+        When: zia_category_update_command is called.
+        Then: A DemistoException is raised indicating at least one of url or ip is required.
+        """
+        with pytest.raises(DemistoException, match="At least one"):
+            zia_category_update_command(mock_client, {"category_id": "MUSIC", "action": "ADD_TO_LIST"})
+
+    def test_update_success(self, mock_client, mocker):
+        """
+        Given: A valid category_id, url, and action=ADD_TO_LIST are provided.
+        When: zia_category_update_command is called.
+        Then: The category is updated and a success message is returned.
+        """
+        current_cat = {
+            "id": "MUSIC",
+            "configuredName": "Music",
+            "superCategory": "ENTERTAINMENT",
+            "customCategory": False,
+            "urls": ["pandora.com"],
+            "ipRanges": [],
+        }
+        mocker.patch.object(mock_client, "api_request", side_effect=[current_cat, None])
+        result = zia_category_update_command(mock_client, {"category_id": "MUSIC", "url": "spotify.com", "action": "ADD_TO_LIST"})
+        assert "successfully updated" in result.readable_output
+
+    def test_update_does_not_mutate_payload_when_put_succeeds(self, mock_client, mocker):
+        """
+        Given: A category whose stored URLs contain an HTML entity (e.g. '&amp;')
+            AND the Zscaler API currently accepts the payload (older API version
+            or entry that happens not to trigger the new validation).
+        When: zia_category_update_command is called with ADD_TO_LIST.
+        Then: The PUT is made exactly once with the entity-encoded value sent
+            as-is - we do NOT eagerly rewrite stored data. This preserves
+            backward compatibility for customers whose updates currently work.
+        """
+        current_cat = {
+            "id": "CUSTOM_52",
+            "configuredName": "XSOAR_BLOCK_URL",
+            "superCategory": "USER_DEFINED",
+            "customCategory": True,
+            "urls": [
+                ".docs.google.com/uc?export=download&amp;id=1rurGpZk9RePT7V1iQJfK1la41MuyBTYK",
+            ],
+            "ipRanges": [],
+        }
+        api_request_mock = mocker.patch.object(mock_client, "api_request", side_effect=[current_cat, None])
+        zia_category_update_command(
+            mock_client,
+            {"category_id": "CUSTOM_52", "url": "arunkumar1.com", "action": "ADD_TO_LIST"},
+        )
+        # Exactly 2 calls: GET (fetch current) + PUT (update). No retry.
+        assert api_request_mock.call_count == 2
+        put_call = api_request_mock.call_args_list[1]
+        payload = put_call.kwargs.get("data") or put_call.args[2]
+        urls_sent = payload["urls"]
+        # Original entity-encoded value is preserved exactly - no silent mutation.
+        assert ".docs.google.com/uc?export=download&amp;id=1rurGpZk9RePT7V1iQJfK1la41MuyBTYK" in urls_sent
+        assert "arunkumar1.com" in urls_sent
+
+    def test_update_retries_with_decoded_urls_on_html_content_error(self, mock_client, mocker):
+        """
+        Given: A category whose stored URLs contain HTML-encoded entities
+            (e.g. '&amp;') and Zscaler rejects the first PUT with
+            INVALID_INPUT_ARGUMENT "URLs must not contain HTML content".
+        When: zia_category_update_command is called with ADD_TO_LIST.
+        Then: The command does NOT propagate the error; it retries the PUT
+            with HTML entities decoded in the URL list only. The ipRanges
+            list is sent back untouched because Zscaler's error is explicitly
+            scoped to URLs.
+        """
+        current_cat = {
+            "id": "CUSTOM_52",
+            "configuredName": "XSOAR_BLOCK_URL",
+            "superCategory": "USER_DEFINED",
+            "customCategory": True,
+            "urls": [
+                ".docs.google.com/uc?export=download&amp;id=1rurGpZk9RePT7V1iQJfK1la41MuyBTYK",
+                ".clean.example.com",
+            ],
+            "ipRanges": [],
+        }
+        html_err = DemistoException(
+            "The request failed with error 400.\nMessage: "
+            '{"code":"INVALID_INPUT_ARGUMENT","message":"URLs must not contain HTML content"}'
+        )
+        api_request_mock = mocker.patch.object(
+            mock_client,
+            "api_request",
+            side_effect=[current_cat, html_err, None],
+        )
+        zia_category_update_command(
+            mock_client,
+            {"category_id": "CUSTOM_52", "url": "arunkumar1.com", "action": "ADD_TO_LIST"},
+        )
+        # 3 calls: GET, first PUT (fails), second PUT (succeeds with decoded urls).
+        assert api_request_mock.call_count == 3
+        retry_call = api_request_mock.call_args_list[2]
+        retry_payload = retry_call.kwargs.get("data") or retry_call.args[2]
+        urls_sent = retry_payload["urls"]
+        assert ".docs.google.com/uc?export=download&id=1rurGpZk9RePT7V1iQJfK1la41MuyBTYK" in urls_sent
+        assert all("&amp;" not in u for u in urls_sent)
+        assert "arunkumar1.com" in urls_sent
+
+    def test_update_does_not_retry_on_unrelated_400(self, mock_client, mocker):
+        """
+        Given: Zscaler rejects the PUT with a 400 that is NOT the HTML-content
+            validation error (e.g. quota exceeded).
+        When: zia_category_update_command is called.
+        Then: The original exception is re-raised and the retry path is NOT
+            triggered. This guarantees the retry-on-error logic is strictly
+            additive.
+        """
+        current_cat = {
+            "id": "MUSIC",
+            "configuredName": "Music",
+            "superCategory": "ENTERTAINMENT",
+            "customCategory": False,
+            "urls": [],
+            "ipRanges": [],
+        }
+        unrelated_err = DemistoException(
+            'The request failed with error 400.\nMessage: {"code":"QUOTA_EXCEEDED","message":"URL quota exceeded"}'
+        )
+        api_request_mock = mocker.patch.object(
+            mock_client,
+            "api_request",
+            side_effect=[current_cat, unrelated_err],
+        )
+        with pytest.raises(DemistoException, match="QUOTA_EXCEEDED"):
+            zia_category_update_command(
+                mock_client,
+                {"category_id": "MUSIC", "url": "spotify.com", "action": "ADD_TO_LIST"},
+            )
+        # Only 2 calls: GET + 1 failed PUT. No retry.
+        assert api_request_mock.call_count == 2
+
+    def test_update_preserves_existing_category_fields(self, mock_client, mocker):
+        """
+        Given: A category in Zscaler that already has dbCategorizedUrls, keywords,
+            keywordsRetainingParentCategory, ipRangesRetainingParentCategory, and description.
+        When: zia_category_update_command is called with only url and action=ADD_TO_LIST.
+        Then: The PUT payload preserves all existing fields from the GET response
+            instead of omitting and wiping them.
+        """
+        current_cat = {
+            "id": "CUSTOM_36",
+            "configuredName": "XSOAR_BLOCK_URL",
+            "superCategory": "USER_DEFINED",
+            "customCategory": True,
+            "urls": ["existing.com"],
+            "ipRanges": ["1.2.3.4/32"],
+            "dbCategorizedUrls": [".wgfnv.es", "api.connect-webex.com"],
+            "keywords": ["kw1"],
+            "keywordsRetainingParentCategory": ["parent_kw1"],
+            "ipRangesRetainingParentCategory": ["10.0.0.1/32"],
+            "description": "Production Block Category",
+        }
+        api_request_mock = mocker.patch.object(mock_client, "api_request", side_effect=[current_cat, None])
+        zia_category_update_command(
+            mock_client,
+            {"category_id": "CUSTOM_36", "url": "block.shark.com", "action": "ADD_TO_LIST"},
+        )
+        put_call = api_request_mock.call_args_list[1]
+        payload = put_call.kwargs.get("data") or put_call.args[2]
+        assert payload["urls"] == ["existing.com", "block.shark.com"]
+        assert payload["ipRanges"] == ["1.2.3.4/32"]
+        assert payload["dbCategorizedUrls"] == [".wgfnv.es", "api.connect-webex.com"]
+        assert payload["keywords"] == ["kw1"]
+        assert payload["keywordsRetainingParentCategory"] == ["parent_kw1"]
+        assert payload["ipRangesRetainingParentCategory"] == ["10.0.0.1/32"]
+        assert payload["description"] == "Production Block Category"
+
+    @pytest.mark.parametrize(
+        "action,expected_db_urls,expected_keywords",
+        [
+            ("ADD_TO_LIST", ["retain1.com", "retain2.com", "retain3.com"], ["kw1", "kw2"]),
+            ("REMOVE_FROM_LIST", ["retain1.com"], ["kw1"]),
+            ("OVERWRITE", ["retain2.com", "retain3.com"], ["kw2"]),
+        ],
+    )
+    def test_update_merges_optional_list_fields_by_action(self, mock_client, mocker, action, expected_db_urls, expected_keywords):
+        """
+        Given: A category with existing dbCategorizedUrls and keywords.
+        When: zia_category_update_command is called with db_categorized_urls and keywords
+            for ADD_TO_LIST, REMOVE_FROM_LIST, or OVERWRITE.
+        Then: The action is applied to dbCategorizedUrls and keywords consistently.
+        """
+        current_cat = {
+            "id": "CUSTOM_36",
+            "configuredName": "XSOAR_BLOCK_URL",
+            "superCategory": "USER_DEFINED",
+            "customCategory": True,
+            "urls": ["existing.com"],
+            "ipRanges": [],
+            "dbCategorizedUrls": ["retain1.com", "retain2.com"],
+            "keywords": ["kw1", "kw2"],
+        }
+        api_request_mock = mocker.patch.object(mock_client, "api_request", side_effect=[current_cat, None])
+        zia_category_update_command(
+            mock_client,
+            {
+                "category_id": "CUSTOM_36",
+                "url": "existing.com",
+                "db_categorized_urls": "retain2.com,retain3.com",
+                "keywords": "kw2",
+                "action": action,
+            },
+        )
+        put_call = api_request_mock.call_args_list[1]
+        payload = put_call.kwargs.get("data") or put_call.args[2]
+        assert payload["dbCategorizedUrls"] == expected_db_urls
+        assert payload["keywords"] == expected_keywords
+
+    def test_update_with_only_db_categorized_urls_succeeds(self, mock_client, mocker):
+        """
+        Given: A category with existing urls and dbCategorizedUrls.
+        When: zia_category_update_command is called with db_categorized_urls only (no url or ip).
+        Then: The command succeeds, preserves urls, and updates dbCategorizedUrls.
+        """
+        current_cat = {
+            "id": "CUSTOM_36",
+            "configuredName": "XSOAR_BLOCK_URL",
+            "superCategory": "USER_DEFINED",
+            "customCategory": True,
+            "urls": ["existing.com"],
+            "ipRanges": [],
+            "dbCategorizedUrls": ["retain1.com"],
+        }
+        api_request_mock = mocker.patch.object(mock_client, "api_request", side_effect=[current_cat, None])
+        result = zia_category_update_command(
+            mock_client,
+            {
+                "category_id": "CUSTOM_36",
+                "db_categorized_urls": "block.shark.com",
+                "action": "ADD_TO_LIST",
+            },
+        )
+        assert "successfully updated" in result.readable_output
+        put_call = api_request_mock.call_args_list[1]
+        payload = put_call.kwargs.get("data") or put_call.args[2]
+        assert payload["urls"] == ["existing.com"]
+        assert payload["dbCategorizedUrls"] == ["retain1.com", "block.shark.com"]
+
+    def test_update_retries_and_sanitizes_db_categorized_urls_and_double_encoded_entities(self, mock_client, mocker):
+        """
+        Given: A category whose urls and dbCategorizedUrls contain single and double
+            HTML-encoded entities, and Zscaler rejects the first PUT with
+            INVALID_INPUT_ARGUMENT "URLs must not contain HTML content".
+        When: zia_category_update_command is called.
+        Then: The retry decodes HTML entities in both urls and dbCategorizedUrls.
+        """
+        current_cat = {
+            "id": "CUSTOM_52",
+            "configuredName": "XSOAR_BLOCK_URL",
+            "superCategory": "USER_DEFINED",
+            "customCategory": True,
+            "urls": [".docs.google.com/uc?export=download&amp;amp;amp;id=1"],
+            "ipRanges": [],
+            "dbCategorizedUrls": [".drive.google.com/uc?export=download&amp;id=2"],
+        }
+        html_err = DemistoException(
+            "The request failed with error 400.\nMessage: "
+            '{"code":"INVALID_INPUT_ARGUMENT","message":"URLs must not contain HTML content"}'
+        )
+        api_request_mock = mocker.patch.object(
+            mock_client,
+            "api_request",
+            side_effect=[current_cat, html_err, None],
+        )
+        zia_category_update_command(
+            mock_client,
+            {"category_id": "CUSTOM_52", "url": "arunkumar1.com", "action": "ADD_TO_LIST"},
+        )
+        assert api_request_mock.call_count == 3
+        retry_call = api_request_mock.call_args_list[2]
+        retry_payload = retry_call.kwargs.get("data") or retry_call.args[2]
+        assert retry_payload["urls"] == [
+            ".docs.google.com/uc?export=download&id=1",
+            "arunkumar1.com",
+        ]
+        assert retry_payload["dbCategorizedUrls"] == [
+            ".drive.google.com/uc?export=download&id=2",
+        ]
+
+    def test_update_invalid_action_raises(self, mock_client):
+        """
+        Given: An unsupported action value.
+        When: zia_category_update_command is called.
+        Then: A DemistoException is raised indicating valid actions.
+        """
+        with pytest.raises(DemistoException, match="Invalid action"):
+            zia_category_update_command(
+                mock_client,
+                {"category_id": "CUSTOM_52", "url": "example.com", "action": "INVALID"},
+            )
+
+
+class TestUrlSanitization:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            # Plain URL - unchanged.
+            ("example.com", "example.com"),
+            # Named entity (&amp;).
+            (
+                ".docs.google.com/uc?export=download&amp;id=abc",
+                ".docs.google.com/uc?export=download&id=abc",
+            ),
+            # Numeric entity decodes to the same character.
+            ("foo.com?q=a&#38;b", "foo.com?q=a&b"),
+            # Multiple entities in a single value.
+            ("a.com?x=1&amp;y=2&amp;z=3", "a.com?x=1&y=2&z=3"),
+            # Empty string.
+            ("", ""),
+        ],
+    )
+    def test_sanitize_url_entry(self, value, expected):
+        """
+        Given: Various URL inputs ranging from plain to HTML-entity-encoded.
+        When: _sanitize_url_entry is called.
+        Then: HTML entities are decoded to their literal characters; plain URLs
+            are returned unchanged.
+        """
+        assert _sanitize_url_entry(value) == expected
+
+    def test_sanitize_url_entry_non_string_returned_unchanged(self):
+        """
+        Given: A non-string value (e.g. None).
+        When: _sanitize_url_entry is called.
+        Then: The value is returned unchanged.
+        """
+        assert _sanitize_url_entry(None) is None
+        assert _sanitize_url_entry(123) == 123
+
+    def test_sanitize_url_list_handles_empty_and_none(self):
+        """
+        Given: Empty list and None inputs.
+        When: _sanitize_url_list is called.
+        Then: An empty list is returned without errors.
+        """
+        assert _sanitize_url_list(None) == []
+        assert _sanitize_url_list([]) == []
+
+    def test_sanitize_url_list_applies_to_each_entry(self):
+        """
+        Given: A list containing mixed clean and HTML-encoded entries.
+        When: _sanitize_url_list is called.
+        Then: Each entry is sanitized and order is preserved (no deduplication).
+        """
+        values = [
+            "clean.com",
+            "a.com?x=1&amp;y=2",
+            "clean.com",  # duplicate preserved
+        ]
+        assert _sanitize_url_list(values) == [
+            "clean.com",
+            "a.com?x=1&y=2",
+            "clean.com",
+        ]
+
+    @pytest.mark.parametrize(
+        "message,expected",
+        [
+            # Exact Zscaler error.
+            (
+                "The request failed with error 400.\nMessage: "
+                '{"code":"INVALID_INPUT_ARGUMENT","message":"URLs must not contain HTML content"}',
+                True,
+            ),
+            # Both markers present even without surrounding context.
+            (
+                '{"code":"INVALID_INPUT_ARGUMENT","message":"URLs must not contain HTML content"}',
+                True,
+            ),
+            # Different INVALID_INPUT_ARGUMENT - must NOT match.
+            (
+                '{"code":"INVALID_INPUT_ARGUMENT","message":"Invalid category id"}',
+                False,
+            ),
+            # Different error code but same message - must NOT match.
+            (
+                '{"code":"QUOTA_EXCEEDED","message":"URLs must not contain HTML content"}',
+                False,
+            ),
+            # Unrelated 400.
+            (
+                '{"code":"QUOTA_EXCEEDED","message":"URL quota exceeded"}',
+                False,
+            ),
+            # Empty / generic errors.
+            ("", False),
+            ("Some random error", False),
+        ],
+    )
+    def test_is_html_content_error(self, message, expected):
+        """
+        Given: Various exception messages (some matching Zscaler's HTML-content
+            error signature, some not).
+        When: _is_html_content_error is called.
+        Then: Only exceptions whose message contains BOTH the
+            INVALID_INPUT_ARGUMENT code and the "URLs must not contain HTML
+            content" message are recognized. This guarantees the retry path
+            never activates for unrelated 400s.
+        """
+        assert _is_html_content_error(DemistoException(message)) is expected
+
+
+# ---- Unit tests: URL quota ----
+
+
+class TestUrlQuotaCommand:
+    def test_returns_quota(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns URL quota information.
+        When: zia_url_quota_get_command is called.
+        Then: The result has the correct outputs_prefix, raw_response matches the API data,
+            and the human-readable output contains the provisioned URL count.
+        """
+        data = load_json("/test_data/responses/url_quota.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_url_quota_get_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.UrlQuota"
+        assert result.raw_response == data  # type: ignore[comparison-overlap]
+        assert "Unique Urls Provisioned" in result.readable_output
+        assert "25000" in result.readable_output
+
+
+# ---- Unit tests: IP destination groups ----
+
+
+class TestIPDestinationGroupCommands:
+    def test_list_all(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a list of two IP destination groups.
+        When: zia_ip_destination_group_list_command is called with no arguments.
+        Then: The result has the correct outputs_prefix and two groups in the raw response.
+        """
+        data = load_json("/test_data/responses/ip_destination_groups.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_ip_destination_group_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.IPDestinationGroup"
+        assert isinstance(result.raw_response, list)
+        assert len(result.raw_response) == 2  # type: ignore[arg-type]
+
+    def test_list_category_type_without_lite_raises(self, mock_client):
+        """
+        Given: category_type is provided but lite is not set to True.
+        When: zia_ip_destination_group_list_command is called.
+        Then: A DemistoException is raised indicating category_type requires lite=True.
+        """
+        with pytest.raises(DemistoException, match="only works with the 'lite' argument"):
+            zia_ip_destination_group_list_command(mock_client, {"category_type": "DSTN_IP"})
+
+    def test_update_requires_group_id(self, mock_client):
+        """
+        Given: The group_id argument is missing.
+        When: zia_ip_destination_group_update_command is called.
+        Then: A DemistoException is raised indicating group_id is required.
+        """
+        with pytest.raises(DemistoException, match="'group_id' argument is required"):
+            zia_ip_destination_group_update_command(mock_client, {})
+
+    def test_update_success(self, mock_client, mocker):
+        """
+        Given: A valid group_id and a new group_name are provided.
+        When: zia_ip_destination_group_update_command is called.
+        Then: The group is updated, the success message appears in the output,
+            and the raw_response matches the updated group data.
+        """
+        existing = {
+            "id": 1001,
+            "name": "Test Group",
+            "type": "DSTN_IP",
+            "addresses": ["10.0.0.1"],
+            "description": "desc",
+            "ipCategories": [],
+            "countries": [],
+        }
+        updated = {**existing, "name": "Updated Group"}
+        mocker.patch.object(mock_client, "list_ip_destination_groups", return_value=existing)
+        mocker.patch.object(mock_client, "update_ip_destination_group", return_value=updated)
+        result = zia_ip_destination_group_update_command(
+            mock_client, {"group_id": "1001", "group_name": "Updated Group", "action": "OVERWRITE"}
+        )
+        assert "successfully edited" in result.readable_output
+        assert result.raw_response == updated  # type: ignore[comparison-overlap]
+
+    def test_update_action_add_to_list(self, mock_client, mocker):
+        """
+        Given: A valid group_id, address list, and action=ADD_TO_LIST are provided.
+        When: zia_ip_destination_group_update_command is called.
+        Then: The new address is appended to the existing addresses list.
+        """
+        existing = {
+            "id": 1001,
+            "name": "Test Group",
+            "type": "DSTN_IP",
+            "addresses": ["10.0.0.1"],
+            "description": "desc",
+            "ipCategories": [],
+            "countries": [],
+        }
+        updated = {**existing, "addresses": ["10.0.0.1", "10.0.0.2"]}
+        mocker.patch.object(mock_client, "list_ip_destination_groups", return_value=existing)
+        mock_update = mocker.patch.object(mock_client, "update_ip_destination_group", return_value=updated)
+        zia_ip_destination_group_update_command(mock_client, {"group_id": "1001", "address": "10.0.0.2", "action": "ADD_TO_LIST"})
+        call_payload = mock_update.call_args[0][1]
+        assert call_payload["addresses"] == ["10.0.0.1", "10.0.0.2"]
+
+    def test_update_action_add_to_list_no_duplicates(self, mock_client, mocker):
+        """
+        Given: A valid group_id, an address already in the list, and action=ADD_TO_LIST.
+        When: zia_ip_destination_group_update_command is called.
+        Then: The existing address is not duplicated in the resulting list.
+        """
+        existing = {
+            "id": 1001,
+            "name": "Test Group",
+            "type": "DSTN_IP",
+            "addresses": ["10.0.0.1"],
+            "description": "desc",
+            "ipCategories": [],
+            "countries": [],
+        }
+        mocker.patch.object(mock_client, "list_ip_destination_groups", return_value=existing)
+        mock_update = mocker.patch.object(mock_client, "update_ip_destination_group", return_value=existing)
+        zia_ip_destination_group_update_command(mock_client, {"group_id": "1001", "address": "10.0.0.1", "action": "ADD_TO_LIST"})
+        call_payload = mock_update.call_args[0][1]
+        assert call_payload["addresses"] == ["10.0.0.1"]
+
+    def test_update_action_remove_from_list(self, mock_client, mocker):
+        """
+        Given: A valid group_id, an address to remove, and action=REMOVE_FROM_LIST.
+        When: zia_ip_destination_group_update_command is called.
+        Then: The specified address is removed from the addresses list.
+        """
+        existing = {
+            "id": 1001,
+            "name": "Test Group",
+            "type": "DSTN_IP",
+            "addresses": ["10.0.0.1", "10.0.0.2"],
+            "description": "desc",
+            "ipCategories": [],
+            "countries": [],
+        }
+        updated = {**existing, "addresses": ["10.0.0.1"]}
+        mocker.patch.object(mock_client, "list_ip_destination_groups", return_value=existing)
+        mock_update = mocker.patch.object(mock_client, "update_ip_destination_group", return_value=updated)
+        zia_ip_destination_group_update_command(
+            mock_client, {"group_id": "1001", "address": "10.0.0.2", "action": "REMOVE_FROM_LIST"}
+        )
+        call_payload = mock_update.call_args[0][1]
+        assert call_payload["addresses"] == ["10.0.0.1"]
+
+    def test_update_action_overwrite(self, mock_client, mocker):
+        """
+        Given: A valid group_id, a new address list, and action=OVERWRITE.
+        When: zia_ip_destination_group_update_command is called.
+        Then: The addresses list is fully replaced with the provided addresses.
+        """
+        existing = {
+            "id": 1001,
+            "name": "Test Group",
+            "type": "DSTN_IP",
+            "addresses": ["10.0.0.1", "10.0.0.2"],
+            "description": "desc",
+            "ipCategories": [],
+            "countries": [],
+        }
+        updated = {**existing, "addresses": ["192.168.1.1"]}
+        mocker.patch.object(mock_client, "list_ip_destination_groups", return_value=existing)
+        mock_update = mocker.patch.object(mock_client, "update_ip_destination_group", return_value=updated)
+        zia_ip_destination_group_update_command(
+            mock_client, {"group_id": "1001", "address": "192.168.1.1", "action": "OVERWRITE"}
+        )
+        call_payload = mock_update.call_args[0][1]
+        assert call_payload["addresses"] == ["192.168.1.1"]
+
+    def test_add_success(self, mock_client, mocker):
+        """
+        Given: Valid group_name, group_type, and address arguments are provided.
+        When: zia_ip_destination_group_add_command is called.
+        Then: A new group is created, the success message appears in the output,
+            and the raw_response matches the created group data.
+        """
+        new_group = {
+            "id": 1003,
+            "name": "New Group",
+            "type": "DSTN_IP",
+            "addresses": ["192.168.0.1"],
+            "description": "",
+            "ipCategories": [],
+            "countries": [],
+        }
+        mocker.patch.object(mock_client, "add_ip_destination_group", return_value=new_group)
+        result = zia_ip_destination_group_add_command(
+            mock_client, {"group_name": "New Group", "group_type": "DSTN_IP", "address": "192.168.0.1"}
+        )
+        assert "successfully added" in result.readable_output
+        assert result.raw_response == new_group  # type: ignore[comparison-overlap]
+
+    def test_delete_requires_group_id(self, mock_client):
+        """
+        Given: The group_id argument is missing.
+        When: zia_ip_destination_group_delete_command is called.
+        Then: A DemistoException is raised indicating group_id is required.
+        """
+        with pytest.raises(DemistoException, match="'group_id' argument is required"):
+            zia_ip_destination_group_delete_command(mock_client, {})
+
+    def test_delete_success(self, mock_client, mocker):
+        """
+        Given: A valid group_id is provided.
+        When: zia_ip_destination_group_delete_command is called.
+        Then: The group is deleted and a success message is returned.
+        """
+        mocker.patch.object(mock_client, "delete_ip_destination_group", return_value=None)
+        result = zia_ip_destination_group_delete_command(mock_client, {"group_id": "1001"})
+        assert "successfully deleted" in result.readable_output
+
+
+# ---- Unit tests: users ----
+
+
+class TestUserCommands:
+    def test_list_all(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a list of two users.
+        When: zia_user_list_command is called with no arguments.
+        Then: The result has the correct outputs_prefix, two users in the raw response,
+            and the first user's name appears in the human-readable output.
+        """
+        data = load_json("/test_data/responses/users.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_user_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.User"
+        assert isinstance(result.raw_response, list)
+        assert len(result.raw_response) == 2  # type: ignore[arg-type]
+        assert "John Doe" in result.readable_output
+
+    def test_update_requires_user_id(self, mock_client):
+        """
+        Given: The user_id argument is missing.
+        When: zia_user_update_command is called.
+        Then: A DemistoException is raised indicating user_id is required.
+        """
+        with pytest.raises(DemistoException, match="'user_id' argument is required"):
+            zia_user_update_command(mock_client, {})
+
+    def test_update_success(self, mock_client, mocker):
+        """
+        Given: A valid user_id and a new comments value are provided.
+        When: zia_user_update_command is called.
+        Then: The user is updated, the success heading appears in the output,
+            and the raw_response matches the updated user data.
+        """
+        existing = {"id": 1, "name": "John Doe", "email": "john@example.com", "comments": ""}
+        updated = {**existing, "comments": "Updated comment"}
+        mocker.patch.object(mock_client, "get_users", return_value=existing)
+        mocker.patch.object(mock_client, "update_user", return_value=updated)
+        result = zia_user_update_command(mock_client, {"user_id": "1", "comments": "Updated comment"})
+        assert "ZIA User Updated" in result.readable_output
+        assert result.raw_response == updated  # type: ignore[comparison-overlap]
+
+    def test_update_with_json_user(self, mock_client, mocker):
+        """
+        Given: A valid user_id and a full JSON user object are provided.
+        When: zia_user_update_command is called.
+        Then: The JSON object is used as the base payload and the user is updated accordingly.
+        """
+        existing = {"id": 1, "name": "John Doe", "email": "john@example.com"}
+        updated = {"id": 1, "name": "New Name", "email": "john@example.com"}
+        mocker.patch.object(mock_client, "get_users", return_value=existing)
+        mocker.patch.object(mock_client, "update_user", return_value=updated)
+        result = zia_user_update_command(
+            mock_client, {"user_id": "1", "user": '{"id": 1, "name": "New Name", "email": "john@example.com"}'}
+        )
+        assert result.raw_response == updated  # type: ignore[comparison-overlap]
+
+    def test_update_invalid_json_raises(self, mock_client, mocker):
+        """
+        Given: A user_id is provided and the 'user' argument contains invalid JSON.
+        When: zia_user_update_command is called.
+        Then: A DemistoException is raised indicating the JSON is invalid.
+        """
+        mocker.patch.object(mock_client, "get_users", return_value={"id": 1})
+        with pytest.raises(DemistoException, match="Invalid JSON"):
+            zia_user_update_command(mock_client, {"user_id": "1", "user": "not-json"})
+
+
+# ---- Unit tests: groups ----
+
+
+class TestGroupsCommand:
+    def test_list_groups(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a list of two user groups.
+        When: zia_groups_list_command is called with no arguments.
+        Then: The result has the correct outputs_prefix, two groups in the raw response,
+            and the first group's name appears in the human-readable output.
+        """
+        data = load_json("/test_data/responses/groups.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_groups_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.Groups"
+        assert isinstance(result.raw_response, list)
+        assert len(result.raw_response) == 2  # type: ignore[arg-type]
+        assert "Engineering" in result.readable_output
+
+
+# ---- Unit tests: departments ----
+
+
+class TestDepartmentsCommand:
+    def test_list_departments(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a list of two departments.
+        When: zia_departments_list_command is called with no arguments.
+        Then: The result has the correct outputs_prefix, two departments in the raw response,
+            and the first department's name appears in the human-readable output.
+        """
+        data = load_json("/test_data/responses/departments.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_departments_list_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.Department"
+        assert isinstance(result.raw_response, list)
+        assert len(result.raw_response) == 2  # type: ignore[arg-type]
+        assert "IT" in result.readable_output
+
+
+# ---- Unit tests: sandbox report ----
+
+
+class TestSandboxReportCommand:
+    def test_malicious_report(self, mock_client, mocker):
+        """
+        Given: The ZIA Sandbox API returns a report classifying the file as MALICIOUS.
+        When: zia_sandbox_report_get_command is called with a valid MD5 hash.
+        Then: The result has the correct outputs_prefix, a non-None indicator,
+            a BAD DBotScore, and "Malicious" appears in the human-readable output.
+        """
+        data = load_json("/test_data/responses/sandbox_report.json")
+        _patch_api(mocker, mock_client, data)
+        result = zia_sandbox_report_get_command(
+            mock_client, {"md5": "abc123def456abc123def456abc123de", "report_type": "summary"}
+        )
+        assert result.outputs_prefix == "ZIA.SandboxReport"
+        assert result.indicator is not None
+        # Access dbot_score via to_context() to avoid Pylance issues with base Indicator type
+        ctx = result.to_context()
+        dbot_entries = ctx.get("EntryContext", {}).get("DBotScore(val.Indicator && val.Indicator == obj.Indicator)", [])
+        if isinstance(dbot_entries, list) and dbot_entries:
+            assert dbot_entries[0].get("Score") == Common.DBotScore.BAD
+        assert "3" in result.readable_output  # "3" is the severity level for "Malicious" in XSOAR
+
+    def test_requires_md5(self, mock_client):
+        """
+        Given: The md5 argument is missing.
+        When: zia_sandbox_report_get_command is called.
+        Then: A DemistoException is raised indicating md5 is required.
+        """
+        with pytest.raises(DemistoException, match="'md5' argument is required"):
+            zia_sandbox_report_get_command(mock_client, {})
+
+
+# ---- Unit tests: activate changes ----
+
+
+class TestActivateChangesCommand:
+    def test_activate(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns an activation status of ACTIVE.
+        When: zia_activate_changes_command is called.
+        Then: The result has the correct outputs_prefix, the raw_response matches the API data,
+            and "ACTIVE" appears in the human-readable output.
+        """
+        _patch_api(mocker, mock_client, {"status": "ACTIVE"})
+        result = zia_activate_changes_command(mock_client, {})
+        assert result.outputs_prefix == "ZIA.ActivationStatus"
+        assert result.raw_response == {"status": "ACTIVE"}  # type: ignore[comparison-overlap]
+        assert "ACTIVE" in result.readable_output
+
+
+# ---- Unit tests: URL/IP/Domain lookup commands ----
+
+
+class TestLookupCommands:
+    def test_url_command_bad(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a classification with a non-suspicious security alert for a URL.
+        When: url_command is called with two URLs.
+        Then: Two results are returned and the malicious URL has a BAD DBotScore.
+        """
+        data = load_json("/test_data/responses/url_lookup.json")
+        mocker.patch.object(mock_client, "url_lookup", return_value=data)
+        results = url_command(mock_client, {"url": "malicious-site.com,safe-site.com"})
+        assert len(results) == 2
+        bad_result = next(r for r in results if "malicious-site.com" in r.readable_output)
+        # Verify via to_context that DBotScore is BAD
+        ctx = bad_result.to_context()
+        dbot_key = next((k for k in ctx.get("EntryContext", {}) if "DBotScore" in k), None)
+        assert dbot_key is not None
+        dbot_val = ctx["EntryContext"][dbot_key]
+        score = dbot_val.get("Score") if isinstance(dbot_val, dict) else dbot_val[0].get("Score")
+        assert score == Common.DBotScore.BAD
+
+    def test_url_command_good(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a benign classification with no security alert for a URL.
+        When: url_command is called with two URLs.
+        Then: The benign URL has a GOOD DBotScore.
+        """
+        data = load_json("/test_data/responses/url_lookup.json")
+        mocker.patch.object(mock_client, "url_lookup", return_value=data)
+        results = url_command(mock_client, {"url": "malicious-site.com,safe-site.com"})
+        good_result = next(r for r in results if "safe-site.com" in r.readable_output)
+        ctx = good_result.to_context()
+        dbot_key = next((k for k in ctx.get("EntryContext", {}) if "DBotScore" in k), None)
+        assert dbot_key is not None
+        dbot_val = ctx["EntryContext"][dbot_key]
+        score = dbot_val.get("Score") if isinstance(dbot_val, dict) else dbot_val[0].get("Score")
+        assert score == Common.DBotScore.GOOD
+
+    def test_ip_command(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a benign classification for an IP address.
+        When: ip_command is called with a single IP.
+        Then: One result is returned and the IP address appears in the human-readable output.
+        """
+        data = [{"url": "8.8.8.8", "urlClassifications": ["DNS"], "urlClassificationsWithSecurityAlert": []}]
+        mocker.patch.object(mock_client, "url_lookup", return_value=data)
+        results = ip_command(mock_client, {"ip": "8.8.8.8"})
+        assert len(results) == 1
+        assert "8.8.8.8" in results[0].readable_output
+
+    def test_domain_command(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a benign classification for a domain.
+        When: domain_command is called with a single domain.
+        Then: One result is returned and the domain appears in the human-readable output.
+        """
+        data = [{"url": "example.com", "urlClassifications": ["BUSINESS_AND_ECONOMY"], "urlClassificationsWithSecurityAlert": []}]
+        mocker.patch.object(mock_client, "url_lookup", return_value=data)
+        results = domain_command(mock_client, {"domain": "example.com"})
+        assert len(results) == 1
+        assert "example.com" in results[0].readable_output
+
+    def test_url_command_suspicious(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns a security alert category that is in the suspicious list.
+        When: url_command is called with the URL.
+        Then: The result has a SUSPICIOUS DBotScore.
+        """
+        data = [
+            {
+                "url": "spyware-site.com",
+                "urlClassifications": ["SPYWARE_OR_ADWARE"],
+                "urlClassificationsWithSecurityAlert": ["SPYWARE_OR_ADWARE"],
+            }
+        ]
+        mocker.patch.object(mock_client, "url_lookup", return_value=data)
+        results = url_command(mock_client, {"url": "spyware-site.com"})
+        ctx = results[0].to_context()
+        dbot_key = next((k for k in ctx.get("EntryContext", {}) if "DBotScore" in k), None)
+        assert dbot_key is not None
+        dbot_val = ctx["EntryContext"][dbot_key]
+        score = dbot_val.get("Score") if isinstance(dbot_val, dict) else dbot_val[0].get("Score")
+        assert score == Common.DBotScore.SUSPICIOUS
+
+    def test_url_command_empty_response(self, mock_client, mocker):
+        """
+        Given: The ZIA API returns an empty list for the URL lookup.
+        When: url_command is called.
+        Then: A single result with "No results found" in the readable output is returned.
+        """
+        mocker.patch.object(mock_client, "url_lookup", return_value=[])
+        results = url_command(mock_client, {"url": "test.com"})
+        assert len(results) == 1
+        assert "No results found" in results[0].readable_output
+
+
+# ---- Unit tests: client allowlist update logic ----
+
+
+class TestClientAllowlistUpdate:
+    def test_add_to_list(self, mock_client, mocker):
+        """
+        Given: The current allowlist contains "a.com" and "b.com" is being added.
+        When: update_allowlist is called with action=ADD_TO_LIST.
+        Then: Both "a.com" and "b.com" are present in the PUT payload sent to the API.
+        """
+        mocker.patch.object(mock_client, "get_allowlist", return_value={"whitelistUrls": ["a.com"]})
+        api_mock = mocker.patch.object(mock_client, "api_request", return_value=None)
+        mock_client.update_allowlist(["b.com"], "ADD_TO_LIST")
+        sent = api_mock.call_args[1]["data"]
+        assert "a.com" in sent["whitelistUrls"]
+        assert "b.com" in sent["whitelistUrls"]
+
+    def test_remove_from_list(self, mock_client, mocker):
+        """
+        Given: The current allowlist contains "a.com" and "b.com", and "a.com" is being removed.
+        When: update_allowlist is called with action=REMOVE_FROM_LIST.
+        Then: "a.com" is absent and "b.com" is present in the PUT payload sent to the API.
+        """
+        mocker.patch.object(mock_client, "get_allowlist", return_value={"whitelistUrls": ["a.com", "b.com"]})
+        api_mock = mocker.patch.object(mock_client, "api_request", return_value=None)
+        mock_client.update_allowlist(["a.com"], "REMOVE_FROM_LIST")
+        sent = api_mock.call_args[1]["data"]
+        assert "a.com" not in sent["whitelistUrls"]
+        assert "b.com" in sent["whitelistUrls"]
+
+    def test_overwrite(self, mock_client, mocker):
+        """
+        Given: The current allowlist contains "a.com" and "b.com", and OVERWRITE with "c.com" is requested.
+        When: update_allowlist is called with action=OVERWRITE.
+        Then: Only "c.com" is present in the PUT payload sent to the API.
+        """
+        mocker.patch.object(mock_client, "get_allowlist", return_value={"whitelistUrls": ["a.com", "b.com"]})
+        api_mock = mocker.patch.object(mock_client, "api_request", return_value=None)
+        mock_client.update_allowlist(["c.com"], "OVERWRITE")
+        sent = api_mock.call_args[1]["data"]
+        assert sent["whitelistUrls"] == ["c.com"]
+
+
+# ---- Unit tests: 401 retry logic ----
+
+
+def _make_401_exception() -> DemistoException:
+    """Build a DemistoException whose .res.status_code is 401, matching the
+    production error-handler output."""
+    exc = DemistoException("Authentication/Authorization error (401): Unauthorized.")
+    mock_res = type("MockResponse", (), {"status_code": 401})()
+    exc.res = mock_res
+    return exc
+
+
+def _make_500_exception() -> DemistoException:
+    """Build a DemistoException whose .res.status_code is 500."""
+    exc = DemistoException("The request failed with status code 500.")
+    mock_res = type("MockResponse", (), {"status_code": 500})()
+    exc.res = mock_res
+    return exc
+
+
+class TestApiRequest401Retry:
+    def test_401_clears_token_and_retries(self, mock_client, mocker):
+        """
+        Given: The first API call raises a DemistoException with res.status_code == 401
+               (simulating a stale cached token due to clock drift).
+        When: api_request is called.
+        Then: The cached token is cleared from integration context, a new token
+              is fetched, and the request is retried exactly once, returning the
+              successful response from the retry.
+        """
+        success_response = {"data": "ok"}
+
+        mock_do_http = mocker.patch.object(
+            mock_client,
+            "_do_http_request",
+            side_effect=[
+                _make_401_exception(),
+                success_response,
+            ],
+        )
+        mock_set_ctx = mocker.patch("ZscalerZIdentity.set_integration_context")
+
+        result = mock_client.api_request("GET", "/some/endpoint")
+
+        assert result == success_response
+        assert mock_do_http.call_count == 2
+        # Verify the cached token was cleared from integration context
+        cleared_ctx = mock_set_ctx.call_args[0][0]
+        assert "access_token" not in cleared_ctx
+        assert "token_expires_at" not in cleared_ctx
+
+    def test_non_401_exception_is_reraised(self, mock_client, mocker):
+        """
+        Given: The API call raises a DemistoException with res.status_code == 500
+               (not a 401 auth error).
+        When: api_request is called.
+        Then: The exception is re-raised without retrying and without clearing
+              the integration context.
+        """
+        mocker.patch.object(
+            mock_client,
+            "_do_http_request",
+            side_effect=_make_500_exception(),
+        )
+        mock_set_ctx = mocker.patch("ZscalerZIdentity.set_integration_context")
+
+        with pytest.raises(DemistoException, match="500"):
+            mock_client.api_request("GET", "/some/endpoint")
+
+        mock_set_ctx.assert_not_called()
+
+    def test_401_retry_also_fails_raises_exception(self, mock_client, mocker):
+        """
+        Given: Both the initial request and the retry after token refresh raise
+               a DemistoException with res.status_code == 401.
+        When: api_request is called.
+        Then: The exception from the retry is propagated to the caller.
+        """
+        mocker.patch.object(
+            mock_client,
+            "_do_http_request",
+            side_effect=[
+                _make_401_exception(),
+                _make_401_exception(),
+            ],
+        )
+        mocker.patch("ZscalerZIdentity.set_integration_context")
+
+        with pytest.raises(DemistoException, match="401"):
+            mock_client.api_request("GET", "/some/endpoint")
+
+    def test_successful_request_does_not_clear_token(self, mock_client, mocker):
+        """
+        Given: The API call succeeds on the first attempt (no 401).
+        When: api_request is called.
+        Then: The integration context is never modified (token is not cleared).
+        """
+        success_response = {"data": "success"}
+        mocker.patch.object(mock_client, "_do_http_request", return_value=success_response)
+        mock_set_ctx = mocker.patch("ZscalerZIdentity.set_integration_context")
+
+        result = mock_client.api_request("GET", "/some/endpoint")
+
+        assert result == success_response
+        mock_set_ctx.assert_not_called()
+
+    def test_exception_without_res_attribute_is_reraised(self, mock_client, mocker):
+        """
+        Given: The API call raises a DemistoException that has no .res attribute
+               (e.g. a network-level error before any HTTP response).
+        When: api_request is called.
+        Then: The exception is re-raised without retrying and without clearing
+              the integration context.
+        """
+        exc = DemistoException("Connection error: no response received.")
+        # No .res attribute set — simulates a network-level failure
+        mocker.patch.object(mock_client, "_do_http_request", side_effect=exc)
+        mock_set_ctx = mocker.patch("ZscalerZIdentity.set_integration_context")
+
+        with pytest.raises(DemistoException, match="Connection error"):
+            mock_client.api_request("GET", "/some/endpoint")
+
+        mock_set_ctx.assert_not_called()
+
+
+class TestErrorHandler:
+    """Covers the authentication branch of Client._error_handler, which must attach the
+    originating response to the raised DemistoException so that api_request's 401 retry
+    logic can detect it."""
+
+    @staticmethod
+    def _mock_response(status_code: int, text: str = "Unauthorized"):
+        """Build a minimal stand-in for a requests.Response as consumed by _error_handler."""
+        return type("MockResponse", (), {"status_code": status_code, "text": text})()
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_auth_error_attaches_response_to_exception(self, mock_client, status_code):
+        """
+        Given: The API returns an authentication/authorization failure (401 or 403).
+        When: _error_handler is called with that response.
+        Then: The raised DemistoException carries the originating response as .res,
+              so callers can inspect the status code.
+        """
+        res = self._mock_response(status_code)
+
+        with pytest.raises(DemistoException) as exc_info:
+            mock_client._error_handler(res)
+
+        assert exc_info.value.res is res
+
+    def test_401_from_error_handler_triggers_token_refresh_and_retry(self, mock_client, mocker):
+        """
+        Given: A 401 exception produced by the real _error_handler rather than a
+               hand-built one.
+        When: api_request receives it from the underlying request.
+        Then: The retry logic recognizes the 401, clears the cached token and retries,
+              proving the contract between _error_handler and api_request holds.
+        """
+        with pytest.raises(DemistoException) as exc_info:
+            mock_client._error_handler(self._mock_response(401))
+
+        success_response = {"data": "ok"}
+        mock_do_http = mocker.patch.object(
+            mock_client,
+            "_do_http_request",
+            side_effect=[exc_info.value, success_response],
+        )
+        mock_set_ctx = mocker.patch("ZscalerZIdentity.set_integration_context")
+
+        result = mock_client.api_request("GET", "/some/endpoint")
+
+        assert result == success_response
+        assert mock_do_http.call_count == 2
+        cleared_ctx = mock_set_ctx.call_args[0][0]
+        assert "access_token" not in cleared_ctx
+        assert "token_expires_at" not in cleared_ctx
+
+
+# ---- Unit tests: configurable base URL (XSUP-79151) ----
+
+
+class TestBuildApiBaseUrl:
+    def test_empty_value_falls_back_to_default(self):
+        """
+        Given: No base URL configured (empty string).
+        When: build_api_base_url is called.
+        Then: The previous hardcoded base URL is returned.
+        """
+        assert build_api_base_url("") == "https://api.zsapi.net/zia/api/v1"
+
+    def test_full_base_url_is_kept(self):
+        """
+        Given: A full base URL that already ends with /zia/api/v1.
+        When: build_api_base_url is called.
+        Then: It is returned as is.
+        """
+        assert build_api_base_url("https://api.example.com/zia/api/v1") == "https://api.example.com/zia/api/v1"
+
+    def test_host_only_gets_zia_path_appended(self):
+        """
+        Given: Only a host, without the /zia/api/v1 path.
+        When: build_api_base_url is called.
+        Then: The ZIA API path is appended.
+        """
+        assert build_api_base_url("https://api.example.com") == "https://api.example.com/zia/api/v1"
+
+    def test_trailing_slash_and_whitespace_are_stripped(self):
+        """
+        Given: A base URL with surrounding whitespace and a trailing slash.
+        When: build_api_base_url is called.
+        Then: The result contains no trailing slash or whitespace.
+        """
+        assert build_api_base_url("  https://api.example.com/zia/api/v1/  ") == "https://api.example.com/zia/api/v1"
+
+    def test_missing_scheme_defaults_to_https(self):
+        """
+        Given: A base URL without a scheme.
+        When: build_api_base_url is called.
+        Then: https:// is prepended.
+        """
+        assert build_api_base_url("api.example.com/zia/api/v1") == "https://api.example.com/zia/api/v1"
+
+
+class TestClientBaseUrl:
+    def test_client_defaults_to_previous_base_url(self, mock_client):
+        """
+        Given: A Client created without a base_url argument.
+        When: Its base URL is inspected.
+        Then: The previous hardcoded base URL is used, preserving existing behavior.
+        """
+        assert mock_client._base_url == DEFAULT_BASE_URL
+
+    def test_client_uses_configured_base_url(self):
+        """
+        Given: A Client created with a custom base URL.
+        When: Its base URL is inspected.
+        Then: The custom base URL is used instead of the default.
+        """
+        client = Client(
+            server_url="www.testdomain.zslogin.net",
+            client_id="test_client_id",
+            client_secret="test_client_secret",
+            verify=False,
+            proxy=False,
+            reliability="C - Fairly reliable",
+            auto_activate=True,
+            suspicious_categories=list(SUSPICIOUS_CATEGORIES),
+            base_url="https://api.example.com/zia/api/v1",
+        )
+        assert client._base_url == "https://api.example.com/zia/api/v1"

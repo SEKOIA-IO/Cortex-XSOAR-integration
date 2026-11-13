@@ -1,6 +1,10 @@
 ## Palo Alto Networks Cortex XDR - IR
 [Cortex XDR](https://www.paloaltonetworks.com/cortex/cortex-xdr) is the world's first detection and response app that natively integrates network, endpoint, and cloud data to stop sophisticated attacks.
 
+<~PLATFORM>
+**Note:** On the Cortex Platform, this integration is used to connect to a *different* Cortex XDR/XSIAM tenant. Configuring the **Server URL** parameter with the URL of the tenant this integration instance is running on is not supported - the integration will fail to run. For actions on the local tenant, use the built-in Cortex Platform commands instead.
+</~PLATFORM>
+
 ### Generate an API Key and API Key ID
 1. In your Cortex XDR platform, go to **Settings** > **Configurations** > **Integrations** >**API key** page..
 2. Click the **+New Key** button in the top right corner.
@@ -21,5 +25,7 @@
 **Close-reason default mapping XSOAR -> XDR**: _Other=Other, Duplicate=Duplicate Incident, False Positive=False Positive, Resolved=True Positive_
 
 **Close-reason default mapping XDR -> XSOAR**: _Known Issue=Other, Duplicate Incident=Duplicate, False Positive=False Positive, True Positive=Resolved, Other=Other, Auto=Resolved_
+
+**Close Mirrored Cortex XDR Incident**: In case this checkbox is not selected but **Close all related alerts in XDR** is selected, the incident will be closed automatically,
 
 [View Integration Documentation](https://xsoar.pan.dev/docs/reference/integrations/cortex-xdr---ir)

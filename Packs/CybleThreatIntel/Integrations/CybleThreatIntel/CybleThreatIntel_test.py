@@ -1,347 +1,372 @@
-from datetime import datetime, timedelta, timezone
-import json
 import pytest
+from unittest.mock import patch, MagicMock, Mock
+from datetime import datetime, timedelta
 
-input_value = json.load(open("test_data/input.json", "r"))
-params = input_value['params']
-args = input_value['args']
-args2 = input_value['args2']
-DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S+00:00"
+from CybleThreatIntel import (
+    Client,
+    calculate_verdict,
+    get_time_range,
+    epoch_to_iso,
+    fmt_date,
+    cyble_ioc_lookup_command,
+    fetch_indicators_command,
+    VerdictEnum,
+    get_execution_timeout_seconds,
+    should_stop_before_next_page,
+    parse_resume_state,
+    save_fetch_checkpoint,
+    save_chunk_completed_checkpoint,
+    map_cyble_ioc_type,
+    build_indicator_from_ioc,
+    get_current_utc_time,
+    DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+)
 
 
-def load_json_file(filename):
-    """
-    Loads the json content and return the json object
-    :param filename:
-    :return:
-    """
-    content = None
-    with open("test_data/{0}".format(filename), 'r') as f:
-        content = json.load(f)
-    return content
+def _make_client(params=None):
+    """Build a Client without performing real HTTP setup side effects beyond BaseClient init."""
+    return Client(params or {"base_url": "https://example.com", "credentials": {"password": "token"}})
 
 
-def test_get_recursively():
-    from CybleThreatIntel import Client
+# -------------------------------------------------------------------
+#   HTTP POST – SUCCESS
+# -------------------------------------------------------------------
+def test_http_post_success():
+    client = _make_client()
+    client._http_request = MagicMock(return_value={"ok": True})
+
+    r = client.http_post("/y/iocs", {"x": 1})
+
+    assert r == {"ok": True}
+    client._http_request.assert_called_once()
+    kwargs = client._http_request.call_args.kwargs
+    assert kwargs["method"] == "POST"
+    assert kwargs["url_suffix"] == "/y/iocs"
+    assert kwargs["retries"] == 5
+
+
+# -------------------------------------------------------------------
+#   HTTP POST – FAILURE
+# -------------------------------------------------------------------
+def test_http_post_failure():
+    client = _make_client()
+    client._http_request = MagicMock(side_effect=Exception("Server Error"))
+
+    with pytest.raises(Exception):
+        client.http_post("/y/iocs", {})
+
+
+# -------------------------------------------------------------------
+#   DATE RANGE LOGIC
+# -------------------------------------------------------------------
+def test_get_time_range_without_last_run():
+    now = get_current_utc_time()
+    gte, lte = get_time_range(5, {})
+
+    g = datetime.fromisoformat(gte)
+    assert (now - g).total_seconds() <= 5 * 3600 + 5  # small tolerance
+
+
+def test_get_time_range_with_last_run():
+    now = get_current_utc_time().isoformat()
+    gte, lte = get_time_range(6, {"last_fetch": now})
+
+    assert gte == now
+
+
+# -------------------------------------------------------------------
+#   EPOCH TO ISO
+# -------------------------------------------------------------------
+def test_epoch_to_iso():
+    ts = 1700000000
+    result = epoch_to_iso(ts)
+    assert result.endswith("Z")
+
+
+# -------------------------------------------------------------------
+#   VERDICT MATRIX
+# -------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "risk,conf,expected",
+    [
+        (10, "Low", VerdictEnum.UNKNOWN.value),
+        (10, "Medium", VerdictEnum.SUSPICIOUS.value),
+        (10, "High", VerdictEnum.NOT_MALICIOUS.value),
+        (30, "Low", VerdictEnum.UNKNOWN.value),
+        (30, "Medium", VerdictEnum.SUSPICIOUS.value),
+        (70, "High", VerdictEnum.MALICIOUS.value),
+        (80, "Low", VerdictEnum.SUSPICIOUS.value),
+        (80, "High", VerdictEnum.MALICIOUS.value),
+    ],
+)
+def test_calculate_verdict_values(risk, conf, expected):
+    assert calculate_verdict(risk, conf) == expected
+
+
+# -------------------------------------------------------------------
+#   IOC LOOKUP COMMAND – NO RESULTS
+# -------------------------------------------------------------------
+@patch("CybleThreatIntel.Client.ioc_lookup")
+def test_ioc_lookup_no_results(mock_lookup):
+    mock_lookup.return_value = {"data": {"iocs": []}}
+
+    c = _make_client({"base_url": "https://example.com", "credentials": {"password": "a"}})
+    result = cyble_ioc_lookup_command(c, {"ioc": "1.1.1.1"})
+
+    assert "No results found" in result.readable_output
+
+
+# -------------------------------------------------------------------
+#   IOC LOOKUP – WITH RESULTS
+# -------------------------------------------------------------------
+@patch("CybleThreatIntel.Client.ioc_lookup")
+def test_ioc_lookup_success(mock_lookup):
+    mock_lookup.return_value = {"data": {"iocs": [{"ioc": "SAMPLE_IOC", "ioc_type": "custom", "first_seen": 1700000000}]}}
+
+    c = _make_client({"base_url": "https://example.com", "credentials": {"password": "a"}})
+    result = cyble_ioc_lookup_command(c, {"ioc": "SAMPLE_IOC"})
+
+    assert result.outputs["IOC"] == "SAMPLE_IOC"
+
+
+# -------------------------------------------------------------------
+#   FETCH INDICATORS – RETRY FAILURE
+# -------------------------------------------------------------------
+@patch("CybleThreatIntel.demisto")
+def test_fetch_indicators_retry_fail(mock_demisto):
+    mock_demisto.args.return_value = {}
+    mock_demisto.getLastRun.return_value = {}
+
+    client = _make_client({"base_url": "https://example.com", "credentials": {"password": "a"}})
+    client.fetch_iocs = MagicMock(side_effect=Exception("fail"))
+
+    params = {"initial_interval": 1, "limit": 50}
+
+    count = fetch_indicators_command(client, params)
+
+    assert count == 0
+
+
+def test_calculate_verdict_invalid_inputs():
+    assert calculate_verdict("bad", "weird") == "Unknown"
+    assert calculate_verdict(-10, "low") == "Unknown"
+    assert calculate_verdict(200, "high") == "Malicious"
+
+
+def test_ioc_lookup_missing_argument():
+    client = Mock()
+
+    with pytest.raises(ValueError) as e:
+        cyble_ioc_lookup_command(client, {})
+    assert "Missing required argument: ioc" in str(e.value)
+
+
+def test_client_init_empty():
+    params = {}
     client = Client(params)
-
-    mock_response_1 = load_json_file("test.json")
-    val = Client.get_recursively(client, mock_response_1[0][0]['indicators'][0], "value")
-    assert isinstance(val, list)
-    assert 'URL Watchlist' in val
-    assert 'http://kbjunktest.com/path' in val
+    assert client.base_url == ""
+    assert client.access_token == ""
+    assert client.headers["Authorization"] == "Bearer "
 
 
-def test_build_indicators():
-    from CybleThreatIntel import Client
-    client = Client(params)
+def test_client_http_post_failure():
+    client = _make_client({"base_url": "https://example.com", "credentials": {"password": "token"}})
+    client._http_request = MagicMock(side_effect=Exception("HTTP error"))
 
-    mock_response_1 = load_json_file("test.json")
-    mock_response_2 = load_json_file("results.json")
-    val = Client.build_indicators(client, args, mock_response_1[0])
-    assert isinstance(val, list)
-    assert mock_response_2 == val
+    with pytest.raises(Exception) as e:
+        client.http_post("/endpoint", {"key": "value"})
+    assert "HTTP error" in str(e.value)
 
 
-def test_get_parse_to_json():
-    from CybleThreatIntel import Client
-    client = Client(params)
-
-    mock_response_1 = str(open("test_data/data.xml", "r").read())
-    mock_response_3 = load_json_file("data.json")
-    val = Client.parse_to_json(client, mock_response_1)
-    assert isinstance(val, dict)
-    assert mock_response_3 == val
+def test_epoch_to_iso_invalid():
+    assert epoch_to_iso("invalid") is None
 
 
-def test_get_taxii(mocker):
-    from CybleThreatIntel import Client
-    client = Client(params)
-
-    mock_response_1 = str(open("test_data/data.xml", "r").read())
-    mock_response_3 = load_json_file("data.json")
-    mocker.patch.object(client, 'fetch', return_value=[mock_response_1])
-    val, time = Client.get_taxii(client, args)
-    assert isinstance(val, list)
-    assert isinstance(time, str)
-    assert mock_response_3 == val[0]
+def test_fmt_date_none_and_invalid():
+    assert fmt_date(None) == "None"
+    assert "invalid" in fmt_date("invalid")
 
 
-def test_get_taxii_invalid(mocker, capfd):
-    from CybleThreatIntel import Client
-    client = Client(params)
-
-    mock_response_1 = str(open("test_data/data_err.xml", "r").read())
-    mocker.patch.object(client, 'fetch', return_value=[mock_response_1])
-    with capfd.disabled():
-        try:
-            val, time = Client.get_taxii(client, args2)
-        except Exception as e:
-            error_val = e.args[0]
-
-    assert "Last fetch time retrieval failed." in error_val
+def test_client_init_edge_case():
+    # edge case: empty credentials password and trailing slash in URL
+    client = Client({"base_url": "https://api.example.com/", "credentials": {"password": ""}})
+    assert client.base_url == "https://api.example.com"
+    assert client.access_token == ""
 
 
-def test_get_taxii_failure(mocker):
-    from CybleThreatIntel import Client
-    client = Client(params)
-
-    mocker.patch.object(client, 'fetch', return_value=[])
-    val, time = Client.get_taxii(client, args)
-    assert isinstance(val, list)
-    assert [] == val
+def test_epoch_to_iso_invalid_timestamp():
+    # invalid timestamp should return None
+    assert epoch_to_iso("not_a_timestamp") is None
 
 
-def test_get_taxii_error(mocker, capfd):
-    from CybleThreatIntel import Client
-    client = Client(params)
-
-    mock_response_1 = """
-                <stix:STIX_Package id="example:Package-19548504-7169-4b2e-9b54-0fa1c3d931f8" version="1.2">
-                </stix:STIX_Package>
-                """
-    mocker.patch.object(client, 'fetch', return_value=[mock_response_1])
-    with capfd.disabled():
-        try:
-            val, time = Client.get_taxii(client, args)
-        except Exception as e:
-            error_val = e.args[0]
-
-    assert "Namespace prefix stix on STIX_Package is not defined" in error_val
+def test_calculate_verdict_edge_cases():
+    # risk_score None, confidence_rating None
+    assert calculate_verdict(None, None) == "Unknown"
+    # extreme low/high values beyond 0-100
+    assert calculate_verdict(-50, "Low") == "Unknown"
+    assert calculate_verdict(150, "High") == "Malicious"
 
 
-def test_get_services(mocker):
-    from CybleThreatIntel import Client
-    client = Client(params)
-
-    mocker.patch.object(client, 'client', return_value=[])
-    val = Client.get_services(client)
-    assert isinstance(val, list)
-    assert val == []
+def test_get_time_range_first_run_with_last_fetch():
+    last_run = {"last_fetch": "2025-12-01T00:00:00"}
+    gte, lte = get_time_range(5, last_run)
+    assert gte.startswith("2025-12-01T00:00:00")
 
 
-def test_module(mocker):
-    """
-    Test the basic test command for Cyble Threat Intel
-    :return:
-    """
-    # import requests_mock
-    from CybleThreatIntel import Client, get_test_response
-    client = Client(params)
-
-    mock_response_1 = load_json_file("test.json")
-    mocker.patch.object(client, 'get_taxii', return_value=mock_response_1)
-    response = get_test_response(client, {})
-
-    assert isinstance(response, str)
-    assert response == 'ok'
+def test_get_execution_timeout_seconds_from_calling_context():
+    with patch("CybleThreatIntel.demisto") as mock_demisto:
+        mock_demisto.callingContext = {"context": {"TimeoutDuration": 900_000_000_000}}
+        assert get_execution_timeout_seconds() == 900.0
 
 
-def test_module_failure(mocker):
-    """
-    Test the basic test command for Cyble Threat Intel
-    :return:
-    """
-    # import requests_mock
-    from CybleThreatIntel import Client, get_test_response
-    client = Client(params)
-
-    mocker.patch.object(client, 'get_taxii', return_value=[])
-    response = get_test_response(client, {})
-
-    assert isinstance(response, str)
-    assert response == 'Unable to Contact Feed Service, Please Check the parameters.'
+def test_get_execution_timeout_seconds_default():
+    with patch("CybleThreatIntel.demisto") as mock_demisto:
+        mock_demisto.callingContext = {"context": {}}
+        assert get_execution_timeout_seconds() == float(DEFAULT_EXECUTION_TIMEOUT_SECONDS)
 
 
-def test_module_error(mocker):
-    """
-    Test the basic test command for Cyble Threat Intel
-    :return:
-    """
-    from CybleThreatIntel import Client, get_test_response
-    client = Client(params)
-    mocker.patch.object(client, 'get_taxii', return_value={})
-    response = get_test_response(client, {})
-
-    assert isinstance(response, str)
-    assert response == 'Unable to Contact Feed Service, Please Check the parameters.'
+def test_should_stop_before_next_page_first_page():
+    execution_start = get_current_utc_time()
+    assert should_stop_before_next_page(0, 0, execution_start) is False
 
 
-def test_cyble_fetch_taxii(mocker):
-    from CybleThreatIntel import Client, cyble_fetch_taxii
-    client = Client(params)
+def test_should_stop_before_next_page_low_remaining_budget():
+    execution_start = get_current_utc_time() - timedelta(seconds=170)
+    with patch("CybleThreatIntel.get_execution_timeout_seconds", return_value=180.0), patch("CybleThreatIntel.demisto"):
+        assert should_stop_before_next_page(1, 20.0, execution_start) is True
 
-    mock_response_1 = load_json_file("test.json")
-    mock_response_2 = load_json_file("results.json")
-    mocker.patch.object(client, 'get_taxii', return_value=mock_response_1)
-    mocker.patch.object(client, 'build_indicators', return_value=mock_response_2)
-    response = cyble_fetch_taxii(client, args).outputs
 
-    assert response[0]['rawJSON'] == mock_response_1[0][0]
+def test_should_stop_before_next_page_enough_budget():
+    execution_start = get_current_utc_time() - timedelta(seconds=30)
+    with patch("CybleThreatIntel.get_execution_timeout_seconds", return_value=900.0), patch("CybleThreatIntel.demisto"):
+        assert should_stop_before_next_page(1, 20.0, execution_start) is False
+
+
+def test_parse_resume_state():
+    assert parse_resume_state({}) == (1, None)
+    assert parse_resume_state({"page": "1"}) == (1, None)
+    assert parse_resume_state({"page": "3", "chunk_lte": "2025-12-01T01:00:00"}) == (3, "2025-12-01T01:00:00")
+
+
+@patch("CybleThreatIntel.demisto.setLastRun")
+def test_save_fetch_checkpoint(mock_set_last_run):
+    save_fetch_checkpoint("2025-12-01T00:00:00", 4, "2025-12-01T01:00:00")
+    mock_set_last_run.assert_called_once_with(
+        {
+            "last_fetch": "2025-12-01T00:00:00",
+            "page": "4",
+            "chunk_lte": "2025-12-01T01:00:00",
+        }
+    )
+
+
+@patch("CybleThreatIntel.demisto.setLastRun")
+def test_save_chunk_completed_checkpoint(mock_set_last_run):
+    save_chunk_completed_checkpoint("2025-12-01T01:00:00")
+    mock_set_last_run.assert_called_once_with({"last_fetch": "2025-12-01T01:00:00"})
+
+
+@patch("CybleThreatIntel.demisto.createIndicators")
+@patch("CybleThreatIntel.demisto.setLastRun")
+@patch("CybleThreatIntel.demisto")
+def test_fetch_indicators_saves_checkpoint_per_page(mock_demisto, mock_set_last_run, mock_create_indicators):
+    mock_demisto.args.return_value = {}
+    mock_demisto.getLastRun.return_value = {}
+
+    with patch("CybleThreatIntel.get_execution_timeout_seconds", return_value=900.0):
+        client = _make_client({"base_url": "https://example.com", "credentials": {"password": "a"}})
+        client.fetch_iocs = MagicMock(
+            side_effect=[
+                {"success": True, "data": {"iocs": [{"ioc": "1.1.1.1", "ioc_type": "IPv4"}]}},
+                {"success": True, "data": {"iocs": []}},
+            ]
+        )
+
+        count = fetch_indicators_command(client, {"initial_interval": 1, "limit": 100})
+
+    assert count == 1
+    assert mock_create_indicators.call_count == 1
+    submitted = mock_create_indicators.call_args[0][0]
+    assert submitted[0]["type"] == "IP"
+    assert submitted[0]["value"] == "1.1.1.1"
+    checkpoint_calls = [call for call in mock_set_last_run.call_args_list if call.args[0].get("page") == "2"]
+    assert checkpoint_calls
+    completed_calls = [call for call in mock_set_last_run.call_args_list if "page" not in call.args[0]]
+    assert completed_calls
 
 
 @pytest.mark.parametrize(
-    "begin", [
-        "2022-06-73 00:00:00",
-        "2022-46-13 00:00:00",
-        "2022-06-13 88:00:00",
-        "2022-06-13 00:67:00",
-        "2022-06-13 00:00:67"
-    ]
+    "raw_type,value,expected",
+    [
+        ("IPv4", "1.1.1.1", "IP"),
+        ("ip", "1.1.1.1", "IP"),
+        ("IPv6", "2001:db8::1", "IPv6"),
+        ("Domain", "example.com", "Domain"),
+        ("URL", "https://example.com", "URL"),
+        ("FileHash-MD5", "d41d8cd98f00b204e9800998ecf8427e", "File"),
+        ("FileHash-SHA256", "a" * 64, "File"),
+        ("Email", "user@example.com", "Email"),
+        ("Wallet-Address", "0xabc", None),
+        ("", "8.8.8.8", "IP"),  # fall back to value detection
+    ],
 )
-def test_cyble_fetch_taxii_error(mocker, begin):
-    from CybleThreatIntel import Client, cyble_fetch_taxii
-    client = Client(params)
+def test_map_cyble_ioc_type(raw_type, value, expected):
+    assert map_cyble_ioc_type(raw_type, value) == expected
 
-    args = {
-        "limit": 5,
-        "begin": begin,
-        "end": "2022-06-13 00:00:00",
-        "collection": "phishing_url"
+
+def test_build_indicator_from_ioc_skips_empty_and_unknown():
+    assert build_indicator_from_ioc({"ioc": "", "ioc_type": "IPv4"}) is None
+    assert build_indicator_from_ioc({"ioc": "x", "ioc_type": "Wallet-Address"}) is None
+    indicator = build_indicator_from_ioc({"ioc": "example.com", "ioc_type": "Domain", "risk_score": 80})
+    assert indicator is not None
+    assert indicator["type"] == "Domain"
+    assert indicator["value"] == "example.com"
+
+
+@patch("CybleThreatIntel.demisto.createIndicators")
+@patch("CybleThreatIntel.demisto.setLastRun")
+@patch("CybleThreatIntel.demisto")
+def test_fetch_indicators_exits_before_timeout(mock_demisto, mock_set_last_run, mock_create_indicators):
+    mock_demisto.args.return_value = {}
+    mock_demisto.getLastRun.return_value = {}
+
+    with (
+        patch("CybleThreatIntel.get_execution_timeout_seconds", return_value=180.0),
+        patch("CybleThreatIntel.should_stop_before_next_page", side_effect=[False, True]),
+    ):
+        client = _make_client({"base_url": "https://example.com", "credentials": {"password": "a"}})
+        client.fetch_iocs = MagicMock(return_value={"success": True, "data": {"iocs": [{"ioc": "1.1.1.1", "ioc_type": "ip"}]}})
+
+        count = fetch_indicators_command(client, {"initial_interval": 1, "limit": 100})
+
+    assert count == 1
+    assert client.fetch_iocs.call_count == 1
+    assert mock_create_indicators.call_count == 1
+
+
+@patch("CybleThreatIntel.demisto.createIndicators")
+@patch("CybleThreatIntel.demisto.setLastRun")
+@patch("CybleThreatIntel.demisto")
+def test_fetch_stops_at_per_fetch_cap(mock_demisto, mock_set_last_run, mock_create_indicators):
+    """Non-TIM: only one page of 100 should be submitted; page must not keep advancing."""
+    mock_demisto.args.return_value = {}
+    mock_demisto.getLastRun.return_value = {}
+
+    page_payload = {
+        "success": True,
+        "data": {"iocs": [{"ioc": f"1.1.1.{i}", "ioc_type": "IPv4"} for i in range(100)]},
     }
+    with (
+        patch("CybleThreatIntel.get_execution_timeout_seconds", return_value=900.0),
+        patch("CybleThreatIntel.should_stop_before_next_page", return_value=False),
+    ):
+        client = _make_client({"base_url": "https://example.com", "credentials": {"password": "a"}})
+        client.fetch_iocs = MagicMock(return_value=page_payload)
 
-    mock_response_1 = load_json_file("test.json")
-    mock_response_2 = load_json_file("results.json")
-    mocker.patch.object(client, 'get_taxii', return_value=mock_response_1)
-    mocker.patch.object(client, 'build_indicators', return_value=mock_response_2)
-    error_val = None
-    try:
-        cyble_fetch_taxii(client, args).outputs
-    except Exception as e:
-        error_val = e.args[0]
+        count = fetch_indicators_command(client, {"initial_interval": 1, "limit": 100, "max_indicators_per_fetch": 100})
 
-    assert "Invalid date format received" in error_val
-
-
-def test_fetch_indicators(mocker):
-    from CybleThreatIntel import Client, fetch_indicators
-    client = Client(params)
-
-    mock_response_1 = load_json_file("test.json")
-    mock_response_2 = load_json_file("results.json")
-    mocker.patch.object(client, 'get_taxii', return_value=mock_response_1)
-    mocker.patch.object(client, 'build_indicators', return_value=mock_response_2)
-    raw_response = fetch_indicators(client)
-
-    assert raw_response == mock_response_2
-
-
-def test_limit_validate_input(capfd):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": -5,
-        "begin": "2022-06-11 00:00:00",
-        "end": "2022-06-13 00:00:00",
-        "collection": "phishing_url"
-    }
-    with capfd.disabled():
-        with pytest.raises(ValueError, match=f"Limit should be positive, limit: {args.get('limit', 0)}"):
-            validate_input(args=args)
-
-
-def test_sdate_validate_input(capfd):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": 5,
-        "begin": "2022-06-73 00:00:00",
-        "end": "2022-06-13 00:00:00",
-        "collection": "phishing_url"
-    }
-
-    with capfd.disabled():
-        with pytest.raises(ValueError,
-                           match="Invalid date format received"):
-            validate_input(args=args)
-
-
-def test_edate_validate_input(capfd):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": 5,
-        "begin": "2022-06-13 00:00:00",
-        "end": "2022-06-73 00:00:00",
-        "collection": "phishing_url"
-    }
-
-    with capfd.disabled():
-        with pytest.raises(ValueError,
-                           match="Invalid date format received"):
-            validate_input(args=args)
-
-
-@pytest.mark.parametrize(
-    "limit", [1, 10, 174, 1060]
-)
-def test_date_validate_input(capfd, limit):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": limit,
-        "begin": str(datetime.now(timezone.utc).strftime(DATETIME_FORMAT)),
-        "end": str((datetime.now(timezone.utc) - timedelta(days=1)).strftime(DATETIME_FORMAT)),
-        "collection": "phishing_url"
-    }
-
-    with capfd.disabled():
-        with pytest.raises(ValueError,
-                           match="Start date cannot be after end date"):
-            validate_input(args=args)
-
-
-def test_idate_validate_input(capfd):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": 5,
-        "begin": str(datetime.now(timezone.utc).strftime(DATETIME_FORMAT)),
-        "end": str((datetime.now(timezone.utc) + timedelta(days=1)).strftime(DATETIME_FORMAT)),
-        "collection": "phishing_url"
-    }
-
-    with capfd.disabled():
-        with pytest.raises(ValueError, match="End date must be a date before or equal to current"):
-            validate_input(args=args)
-
-
-def test_end_date_validate_input(capfd):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": 5,
-        "begin": str((datetime.now(timezone.utc) + timedelta(days=1)).strftime(DATETIME_FORMAT)),
-        "end": str(datetime.now(timezone.utc).strftime(DATETIME_FORMAT)),
-        "collection": "phishing_url"
-    }
-
-    with capfd.disabled():
-        with pytest.raises(ValueError, match="Start date must be a date before or equal to current"):
-            validate_input(args=args)
-
-
-def test_collection_validate_input(capfd):
-    from CybleThreatIntel import validate_input
-
-    args = {
-        "limit": 5,
-        "begin": str((datetime.now(timezone.utc) - timedelta(days=1)).strftime(DATETIME_FORMAT)),
-        "end": str(datetime.now(timezone.utc).strftime(DATETIME_FORMAT)),
-        "collection": ""
-    }
-
-    with capfd.disabled():
-        with pytest.raises(ValueError, match="Collection Name should be provided: None"):
-            validate_input(args=args)
-
-
-def test_feed_collection(mocker):
-    from CybleThreatIntel import Client, get_feed_collection
-    client = Client(params)
-
-    mock_response_1 = load_json_file("collection.json")
-    mocker.patch.object(client, 'get_services', return_value=mock_response_1)
-    response = get_feed_collection(client).outputs
-    assert isinstance(response, dict)
-    assert response == mock_response_1
+    assert count == 100
+    assert mock_create_indicators.call_count == 1
+    assert client.fetch_iocs.call_count == 1
+    # Next page checkpointed for resume
+    assert any(call.args[0].get("page") == "2" for call in mock_set_last_run.call_args_list)

@@ -1,1 +1,1 @@
-!gibtia-get-indicators collection=compromised/mule
+!gibti-get-indicators collection=ioc/common

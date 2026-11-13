@@ -1,0 +1,421 @@
+id: Sysdig Trigger System Capture
+version: -1
+name: Sysdig Trigger System Capture
+description: Enriches Sysdig runtime event incidents with agent information via API and optionally triggers a system capture on the affected host.
+tags:
+- Runtime
+- Sysdig
+starttaskid: "0"
+tasks:
+  "0":
+    id: "0"
+    taskid: 0f451a9b-0e95-4119-8818-b6b8cae67099
+    type: start
+    task:
+      id: 0f451a9b-0e95-4119-8818-b6b8cae67099
+      version: -1
+      name: ""
+      iscommand: false
+      brand: ""
+      description: ''
+    nexttasks:
+      '#none#':
+      - "9"
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -10,
+          "y": -450
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "1":
+    id: "1"
+    taskid: 358fe5fe-ccab-40e2-8001-7c6c05544a69
+    type: condition
+    task:
+      id: 358fe5fe-ccab-40e2-8001-7c6c05544a69
+      version: -1
+      name: Should we trigger a system capture?
+      description: |-
+        Manual decision to trigger or skip the system capture.
+      type: condition
+      iscommand: false
+      brand: ""
+    nexttasks:
+      '#default#':
+      - "4"
+      "yes":
+      - "2"
+    separatecontext: false
+    sla:
+      minutes: 30
+      hours: 0
+      days: 0
+      weeks: 0
+    slareminder:
+      minutes: 15
+      hours: 0
+      days: 0
+      weeks: 0
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -200,
+          "y": 100
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "2":
+    id: "2"
+    taskid: c801bdb3-ada0-4277-8558-51883aac8111
+    type: regular
+    task:
+      id: c801bdb3-ada0-4277-8558-51883aac8111
+      version: -1
+      name: Create system capture
+      description: Command to trigger a system capture, it will record all system calls at the host level.
+      script: SysdigResponseActions|||create-system-capture
+      type: regular
+      iscommand: true
+      brand: SysdigResponseActions
+    nexttasks:
+      '#none#':
+      - "7"
+    scriptarguments:
+      agent_id:
+        simple: ${Sysdig.Agent.agentId}
+      capture_name:
+        simple: xsoar-capture-${incident.id}
+      container_id:
+        simple: ${incident.sysdigcontainerid}
+      customer_id:
+        simple: ${Sysdig.Agent.customerId}
+      host_name:
+        simple: ${Sysdig.Agent.hostName}
+      machine_id:
+        simple: ${incident.macaddress}
+      scan_duration:
+        simple: "15"
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -320,
+          "y": 260
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "3":
+    id: "3"
+    taskid: 2fc220ea-08a9-479b-9664-4a17d54b06b5
+    type: regular
+    task:
+      id: 2fc220ea-08a9-479b-9664-4a17d54b06b5
+      version: -1
+      name: Save Capture
+      description: Command to download a system capture based on the capture ID.
+      script: SysdigResponseActions|||get-capture-file
+      type: regular
+      iscommand: true
+      brand: SysdigResponseActions
+    nexttasks:
+      '#none#':
+      - "4"
+    scriptarguments:
+      capture_id:
+        simple: ${create_system_capture.Output.capture.id}
+      retry-count:
+        simple: "2"
+      retry-interval:
+        simple: "60"
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -490,
+          "y": 520
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "4":
+    id: "4"
+    taskid: 4eceb9f5-3d25-4771-9c3e-fe18bd8705d6
+    type: title
+    task:
+      id: 4eceb9f5-3d25-4771-9c3e-fe18bd8705d6
+      version: -1
+      name: Done
+      description: 'Playbook completed'
+      type: title
+      iscommand: false
+      brand: ""
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": 20,
+          "y": 680
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "5":
+    id: "5"
+    taskid: 05365e6b-d46d-46f2-ab1f-00481dda4cd0
+    type: condition
+    task:
+      id: 05365e6b-d46d-46f2-ab1f-00481dda4cd0
+      version: -1
+      name: Check Sysdig fields
+      description: Validates the MAC address is present (minimum required field to resolve agent info via API).
+      type: condition
+      iscommand: false
+      brand: ""
+    nexttasks:
+      '#default#':
+      - "6"
+      "yes":
+      - "8"
+    separatecontext: false
+    conditions:
+    - label: "yes"
+      condition:
+      - - operator: isNotEmpty
+          left:
+            value:
+              simple: incident.macaddress
+            iscontext: true
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -10,
+          "y": -220
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "6":
+    id: "6"
+    taskid: e0b9d9c3-484f-4641-8178-6a554d95305b
+    type: regular
+    task:
+      id: e0b9d9c3-484f-4641-8178-6a554d95305b
+      version: -1
+      name: Error Checking Incident Fields
+      description: Prints an error entry with a given message.
+      scriptName: PrintErrorEntry
+      type: regular
+      iscommand: false
+      brand: ""
+    nexttasks:
+      '#none#':
+      - "4"
+    scriptarguments:
+      message:
+        simple: |-
+          Required incident fields to trigger a system capture are not present. MAC Address is required to resolve agent info.
+          * Event MAC Address: ${incident.macaddress}
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": 220,
+          "y": -60
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "7":
+    id: "7"
+    taskid: 1ff599e5-37a2-4efe-9b76-98cd7ed956a5
+    type: condition
+    task:
+      id: 1ff599e5-37a2-4efe-9b76-98cd7ed956a5
+      version: -1
+      name: Save Capture?
+      description: Do you want to save the capture .scap file for later analysis?
+      type: condition
+      iscommand: false
+      brand: ""
+    nexttasks:
+      '#default#':
+      - "4"
+      "Yes":
+      - "3"
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -320,
+          "y": 370
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "8":
+    id: "8"
+    taskid: a3c1f2d4-7e89-4b56-9c12-d4e5f6a7b8c9
+    type: regular
+    task:
+      id: a3c1f2d4-7e89-4b56-9c12-d4e5f6a7b8c9
+      version: -1
+      name: Get Sysdig Agent Info
+      description: Resolves host MAC address to agent ID, customer ID, and hostname via Sysdig API (cached).
+      script: SysdigResponseActions|||sysdig-agent-info-get
+      type: regular
+      iscommand: true
+      brand: SysdigResponseActions
+    nexttasks:
+      '#none#':
+      - "1"
+    scriptarguments:
+      machine_id:
+        simple: ${incident.macaddress}
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -200,
+          "y": -60
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+  "9":
+    id: "9"
+    taskid: b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e
+    type: condition
+    task:
+      id: b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e
+      version: -1
+      name: Is Sysdig Response Actions enabled?
+      description: Checks if the SysdigResponseActions integration is available.
+      scriptName: IsIntegrationAvailable
+      type: condition
+      iscommand: false
+      brand: ""
+    nexttasks:
+      "yes":
+      - "5"
+      "no":
+      - "4"
+    scriptarguments:
+      brandname:
+        simple: SysdigResponseActions
+    separatecontext: false
+    continueonerrortype: ""
+    view: |-
+      {
+        "position": {
+          "x": -10,
+          "y": -320
+        }
+      }
+    note: false
+    timertriggers: []
+    ignoreworker: false
+    skipunavailable: false
+    quietmode: 0
+    isoversize: false
+    isautoswitchedtoquietmode: false
+view: |-
+  {
+    "linkLabelsPosition": {
+      "1_2_yes": 0.44,
+      "1_4_#default#": 0.37,
+      "7_4_#default#": 0.48
+    },
+    "paper": {
+      "dimensions": {
+        "height": 1090,
+        "width": 1090,
+        "x": -490,
+        "y": -350
+      }
+    }
+  }
+inputs: []
+inputSections:
+- inputs: []
+  name: General (Inputs group)
+  description: Generic group for inputs
+outputSections:
+- outputs: []
+  name: General (Outputs group)
+  description: Generic group for outputs
+outputs: []
+tests:
+- No tests (auto formatted)
+fromversion: 6.10.0
+supportedModules: 
+- cloud_posture
+- cloud
+- cloud_runtime_security
+- edr
+- asm
+- xsiam
+- exposure_management
+- agentix
+
+# IsIntegrationAvailable *not* on supportedModules: [cloud_appsec, tim, email_security, xti]
+# PrintErrorEntry *not* on supportedModules: [cloud_appsec, tim, email_security, xti]

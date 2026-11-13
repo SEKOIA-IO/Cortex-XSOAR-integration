@@ -176,6 +176,45 @@ class fetch_incidents:
     ]
 
 
+class fetch_incidents_lookback_first_run:
+    """First run with lookback enabled - no last_run state exists."""
+    last_run: dict = {}
+    params = {
+        "first_fetch": "2022-02-22 00:00:00",
+        "max_fetch": "10",
+        "region": "region",
+        "look_back": "10",
+    }
+    api_response = [
+        {"id": "100", "date_submitted": "2022-02-22 00:01:00 UTC"},
+        {"id": "101", "date_submitted": "2022-02-22 00:02:00 UTC"},
+    ]
+
+
+class fetch_incidents_lookback_subsequent_run:
+    """Subsequent run with lookback - last_run has time and found_incident_ids."""
+    last_run = {
+        "time": "2022-02-22 00:02:00",
+        "limit": 10,
+        "found_incident_ids": {
+            "Takedown-100": 1645488060,
+            "Takedown-101": 1645488120,
+        },
+    }
+    params = {
+        "first_fetch": "2022-02-22 00:00:00",
+        "max_fetch": "10",
+        "region": "region",
+        "look_back": "10",
+    }
+    api_response = [
+        {"id": "100", "date_submitted": "2022-02-22 00:01:00 UTC"},
+        {"id": "101", "date_submitted": "2022-02-22 00:02:00 UTC"},
+        {"id": "102", "date_submitted": "2022-02-22 00:03:00 UTC"},
+        {"id": "99", "date_submitted": "2022-02-22 00:01:30 UTC"},
+    ]
+
+
 class takedown_list:
     args = {
         "all_results": "false",
@@ -692,9 +731,7 @@ class submission_list:
                     "uuid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 },
             ],
-            "Netcraft(true)": {
-                "SubmissionNextToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
+            "Netcraft(true)": {"SubmissionNextToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
         },
         outputs_key_field="uuid",
         outputs_prefix="Netcraft.Submission",
@@ -718,9 +755,7 @@ class submission_list_with_uuid:
         "ignore_404": True,
     }
     api_response = {
-        "classification_log": [
-            {"date": 1000000000, "from_state": "no threats", "to_state": "malicious"}
-        ],
+        "classification_log": [{"date": 1000000000, "from_state": "no threats", "to_state": "malicious"}],
         "date": 1000000000,
         "files": "https://report.netcraft.com/api/v3/submission/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files",
         "has_cryptocurrency_addresses": "1",
@@ -887,9 +922,7 @@ class mail_screenshot_get_404(mail_screenshot_get):
 class submission_mail_get:
     args = {"submission_uuid": "submission_uuid"}
     api_response = {
-        "classification_log": [
-            {"date": 1000000000, "from_state": "processing", "to_state": "no threats"}
-        ],
+        "classification_log": [{"date": 1000000000, "from_state": "processing", "to_state": "no threats"}],
         "from": ["user@example.com"],
         "hash": "string",
         "reply_to": ["user@example.com"],
@@ -1081,9 +1114,7 @@ class submission_url_list:
                 "incident_report_url": "https://incident.netcraft.com/aaaaaaaaaaaa/",
                 "ip": "127.0.0.1",
                 "reason": "This site impersonates an official brand website.",
-                "screenshots": [
-                    {"hash": "XswLgTyECQur1DxIisHiwmk6pScJ6rDl", "type": "gif"}
-                ],
+                "screenshots": [{"hash": "XswLgTyECQur1DxIisHiwmk6pScJ6rDl", "type": "gif"}],
                 "source": "mail",
                 "sources": [
                     {
@@ -1137,9 +1168,7 @@ class submission_url_list:
                 "incident_report_url": "https://incident.netcraft.com/aaaaaaaaaaaa/",
                 "ip": "127.0.0.1",
                 "reason": "This site impersonates an official brand website.",
-                "screenshots": [
-                    {"hash": "XswLgTyECQur1DxIisHiwmk6pScJ6rDl", "type": "gif"}
-                ],
+                "screenshots": [{"hash": "XswLgTyECQur1DxIisHiwmk6pScJ6rDl", "type": "gif"}],
                 "source": "mail",
                 "sources": [
                     {

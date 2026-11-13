@@ -1,5 +1,6 @@
 category: Network Security
-sectionOrder:
+provider: Zero Networks
+sectionorder:
 - Connect
 - Collect
 commonfields:
@@ -88,10 +89,13 @@ script:
   script: '-'
   type: python
   subtype: python3
-  dockerimage: demisto/python3:3.11.9.107902
+  dockerimage: demisto/python3:3.12.13.10116658
   isfetchevents: true
 fromversion: 6.10.0
 tests:
 - No tests (auto formatted)
 marketplaces:
 - marketplacev2
+- platform
+supportedModules:
+- xsiam

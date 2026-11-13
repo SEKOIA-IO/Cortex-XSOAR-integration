@@ -1,26 +1,19 @@
 
-## Configure Taegis XDR on Cortex XSOAR
+## Configure Taegis XDR in Cortex
 
-1. Navigate to **Settings** > **Integrations** > **Servers & Services**.
-2. Search for Taegis XDR
-3. Click **Add instance** to create and configure a new integration instance.
-
-    | **Parameter** | **Description** | **Required** |
-    | --- | --- | --- |
-    | Taegis Environment | The environment to utilize | True |
-    | Client ID | Client ID as described in the [Taegis Documentation](https://docs.ctpx.secureworks.com/apis/api_authenticate/) | True |
-    | Client Secret | Client Secret as described in the [Taegis Documentation](https://docs.ctpx.secureworks.com/apis/api_authenticate/) | True |
-    | Use system proxy settings | Defines whether the system proxy is used or not | False |
-    | Fetch Incident Type | The type of incident to fetch from Taegis (Alerts or Investigations) | True |
-    | Include Assets in Fetch | When using the Investigations fetch type, should assets be included? This can cause API failures or latency and should only be enabled if necessary | False |
-
-4. Click **Test** to validate the URLs, token, and connection.
-
+| **Parameter** | **Description** | **Required** |
+| --- | --- | --- |
+| Taegis Environment | The environment to utilize | True |
+| Client ID | Client ID as described in the [Taegis Documentation](https://docs.ctpx.secureworks.com/apis/api_authenticate/) | True |
+| Client Secret | Client Secret as described in the [Taegis Documentation](https://docs.ctpx.secureworks.com/apis/api_authenticate/) | True |
+| Use system proxy settings | Defines whether the system proxy is used or not | False |
+| Fetch Incident Type | The type of incident to fetch from Taegis (Alerts or Investigations) | True |
+| Include Assets in Fetch | When using the Investigations fetch type, should assets be included? This can cause API failures or latency and should only be enabled if necessary | False |
 
 ## Commands
-You can execute these commands from the Cortex XSOAR CLI, as part of an automation, or in a playbook.
-After you successfully execute a command, a DBot message appears in the War Room with the command details.
 
+You can execute these commands from the CLI, as part of an automation, or in a playbook.
+After you successfully execute a command, a DBot message appears in the War Room with the command details.
 
 ### taegis-add-evidence-to-investigation
 
@@ -57,7 +50,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-archive-investigation
 
 #### Base Command
@@ -87,7 +79,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
     }
 }
 ```
-
 
 ### taegis-create-comment
 
@@ -119,7 +110,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
     }
 }
 ```
-
 
 ### taegis-create-investigation
 
@@ -160,7 +150,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-create-sharelink
 
 #### Base Command
@@ -193,10 +182,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-execute-playbook
 
 #### Base Command
+
 `!taegis-execute-playbook`
 
 #### Inputs
@@ -220,7 +209,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
     "id": "UGxheWJvb2tFeGVjdXRpb246NGYwZDZiNGQtNWNiZS00NDkxLTg3YzYtMDZkNjkxYzMwMTg4"
 }
 ```
-
 
 ### taegis-fetch-alerts
 
@@ -262,7 +250,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
     }
 }
 ```
-
 
 ### taegis-fetch-assets
 
@@ -333,7 +320,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-fetch-comment
 
 #### Base Command
@@ -375,7 +361,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
     }
 }
 ```
-
 
 ### taegis-fetch-comments
 
@@ -439,10 +424,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-fetch-endpoint
 
 #### Base Command
+
 `!taegis-fetch-endpoint`
 
 #### Inputs
@@ -482,10 +467,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-fetch-investigation
 
 #### Base Command
+
 `!taegis-fetch-investigation`
 
 #### Inputs
@@ -529,10 +514,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-fetch-investigation-alerts
 
 #### Base Command
+
 `!taegis-fetch-investigation-alerts`
 
 #### Inputs
@@ -566,10 +551,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-fetch-playbook-execution
 
 #### Base Command
+
 `!taegis-fetch-playbook-execution`
 
 #### Inputs
@@ -612,10 +597,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-fetch-users
 
 #### Base Command
+
 `!taegis-fetch-users`
 
 #### Inputs
@@ -652,7 +637,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-isolate-asset
 
 #### Base Command
@@ -684,6 +668,104 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
+### taegis-fetch-events
+
+> **Beta Command:** This is a beta command, which lets you implement and test pre-release software. Since the command is beta, it might contain bugs. Updates to the command during the beta phase might include non-backward compatible features. We appreciate your feedback on the quality and usability of the command to help us identify issues, fix them, and continually improve.
+
+#### Base Command
+
+`taegis-fetch-events`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| ids | A comma-separated list of event IDs to return. | False |
+| cql_query | The Taegis CQL query string to use for searching events (e.g. `FROM process EARLIEST=-1d \| head 10`). If not defined, defaults to `FROM * EARLIEST=-1m \| head 50`. | False |
+| limit | The maximum number of events to return. For standard CQL searches, the limit is passed as a GraphQL variable. For user-provided queries, embed the limit directly in the CQL string (e.g., `\| head 100`). Default is 50. | False |
+| offset | The number of events to skip before returning results. Default is 0. | False |
+| next | The pagination cursor token returned from a previous `taegis-fetch-events` call. Use this to retrieve the next page of results. | False |
+| fields | The fields to return from the query. | False |
+| tenant_id | The tenant to run against if using an MSP. If no tenant is provided, the tenant of the generated credentials is used. | False |
+
+#### CQL Query Time Field Reference
+
+| Scenario | Use This Field | Why? |
+| --- | --- | --- |
+| Incident Reconstruction | event_time | You need to see the exact sequence of the attacker's steps. |
+| Real-time Monitoring | EARLIEST=-1m | You want to see everything that hits the platform in the last 60 seconds. |
+| Compliance/Audit | ingest_time | You need to prove when Secureworks actually received the record. |
+| Offline Host Sync | ingest_time | You want to find data from a laptop that was just turned back on after a weekend. |
+
+#### Command example
+
+```
+!taegis-fetch-events
+!taegis-fetch-events cql_query="FROM process EARLIEST=-1d | head 10"
+!taegis-fetch-events cql_query="FROM dnsquery WHERE query_name MATCHES ('*.xyz', '*.top') EARLIEST=-24h" limit=100
+!taegis-fetch-events ids="event-12345-67890,event-12345-67891"
+!taegis-fetch-events next="eyJvZmZzZXQiOiAxMH0="
+```
+
+#### Context Example
+
+```json
+[
+    {
+        "TaegisXDR": {
+            "Events": [
+                {
+                    "id": "event-12345-67890",
+                    "metadata": {
+                        "event_type": "process",
+                        "event_time": "2024-05-20T14:30:05.123Z",
+                        "tenant_id": "999-000-111",
+                        "sensor_id": "win-endpoint-01"
+                    },
+                    "parent_process_id": "456",
+                    "image_path": "C:\\Windows\\System32\\cmd.exe",
+                    "commandline": "cmd.exe /c \"whoami\"",
+                    "username": "admin_user",
+                    "next": "CursorToken_Batch01_Seq99"
+                },
+                {
+                    "id": "event-12345-67891",
+                    "metadata": {
+                        "event_type": "netflow",
+                        "event_time": "2024-05-20T14:30:10.456Z",
+                        "tenant_id": "999-000-111",
+                        "sensor_id": "fw-edge-02"
+                    },
+                    "source_ip": "1.1.1.1",
+                    "destination_ip": "8.8.8.8",
+                    "destination_port": 53,
+                    "protocol": "UDP",
+                    "next": "CursorToken_Batch01_Seq99"
+                }
+            ]
+        }
+    }
+]
+```
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| TaegisXDR.Events.id | String | The unique identifier of the event. |
+| TaegisXDR.Events.metadata.event_type | String | The type of event (e.g., process, netflow, dnsquery). |
+| TaegisXDR.Events.metadata.event_time | String | The timestamp when the event occurred. |
+| TaegisXDR.Events.metadata.tenant_id | String | The tenant ID associated with the event. |
+| TaegisXDR.Events.metadata.sensor_id | String | The sensor ID that generated the event. |
+| TaegisXDR.Events.parent_process_id | String | The parent process ID (process events). |
+| TaegisXDR.Events.image_path | String | The image/executable path (process events). |
+| TaegisXDR.Events.commandline | String | The command line string (process events). |
+| TaegisXDR.Events.username | String | The username associated with the event. |
+| TaegisXDR.Events.source_ip | String | The source IP address (netflow events). |
+| TaegisXDR.Events.destination_ip | String | The destination IP address (netflow events). |
+| TaegisXDR.Events.destination_port | Number | The destination port number (netflow events). |
+| TaegisXDR.Events.protocol | String | The network protocol (netflow events). |
+| TaegisXDR.Events.next | String | Pagination cursor token for retrieving the next page of results. |
 
 ### taegis-update-alert-status
 
@@ -708,7 +790,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 * TRUE_POSITIVE_MALICIOUS
 * OTHER
 
-
 #### Command Examples
 
 ```
@@ -727,7 +808,6 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
     }
 }
 ```
-
 
 ### taegis-update-comment
 
@@ -760,10 +840,10 @@ At least one of the inputs `alerts`, `events`, or `alert_query` MUST be defined
 }
 ```
 
-
 ### taegis-update-investigation
 
 #### Base Command
+
 `!taegis-update-investigation`
 
 #### Inputs
@@ -813,7 +893,6 @@ Note: At least 1 of the above inputs (in addition to id) must be defined
     }
 }
 ```
-
 
 ### taegis-unarchive-investigation
 

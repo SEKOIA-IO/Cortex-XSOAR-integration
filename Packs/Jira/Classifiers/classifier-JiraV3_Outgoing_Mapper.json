@@ -36,5 +36,9 @@
     "name": "JiraV3 Outgoing Mapper",
     "type": "mapping-outgoing",
     "version": -1,
-    "fromVersion": "6.8.0"
+    "fromVersion": "6.8.0",
+    "supportedModules": [
+        "agentix",
+        "xsiam"
+    ]
 }

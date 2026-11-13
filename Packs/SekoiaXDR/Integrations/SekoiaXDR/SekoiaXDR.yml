@@ -4,10 +4,11 @@ commonfields:
 name: Sekoia XDR
 display: Sekoia XDR
 category: Analytics & SIEM
-sectionOrder:
+provider: Sekoia
+sectionorder:
 - Connect
 - Collect
-description: "Fetch alerts and events from SEKOIA.IO XDR.\nTo use this integration, please create an API Key with the appropriate permissions."
+description: Fetch alerts and events from SEKOIA.IO XDR.\nTo use this integration, please create an API Key with the appropriate permissions.
 configuration:
 - section: Connect
   display: API key
@@ -199,6 +200,63 @@ configuration:
     When selected, it includes the kill chain information in the alert when fetched from Sekoia.
     And also If there's no max_fetch it will fetch 10 incidents by default.
 - section: Collect
+  display: Incident Mirroring Direction.
+  name: mirror_direction
+  defaultvalue: None
+  type: 15
+  required: false
+  additionalinfo: 'Choose the direction to mirror the incident: None(Disable mirroring), Incoming (from Sekoia XDR  to Cortex XSOAR) , Outgoing (from Cortex XSOAR to Sekoia XDR), or Incoming and Outgoing (from/to Cortex XSOAR and Sekoia XDR). Cortex XSOAR only parameter.'
+  options:
+  - None
+  - Incoming
+  - Outgoing
+  - Incoming and Outgoing
+  hidden:
+  - marketplacev2
+  - platform
+- section: Collect
+  advanced: true
+  display: Include events in the mirroring of the alerts.
+  name: mirror_events
+  defaultvalue: "false"
+  type: 8
+  required: false
+  additionalinfo: When selected, it includes the events in the mirrored alerts when an alert is updated in Sekoia.
+- section: Collect
+  advanced: true
+  display: Include kill chain information in the mirroring of the alerts.
+  name: mirror_kill_chain
+  defaultvalue: "false"
+  type: 8
+  required: false
+  additionalinfo: When selected, it includes the kill chain information of the alert in the mirrored alerts when an alert is updated in Sekoia.
+- section: Collect
+  advanced: true
+  display: Reopen Mirrored Cortex XSOAR Incidents (Incoming Mirroring)
+  name: reopen_incident
+  defaultvalue: "false"
+  type: 8
+  required: false
+  additionalinfo: When selected, reopening the Sekoia XDR alert will reopen the Cortex XSOAR incident.
+- section: Collect
+  advanced: true
+  display: Close Mirrored Cortex XSOAR Incidents (Incoming Mirroring)
+  name: close_incident
+  defaultvalue: "false"
+  type: 8
+  required: false
+  additionalinfo: When selected, closing the Sekoia XDR alert with a "Closed" or "Reject" status will close the Cortex XSOAR incident. Cortex XSOAR only parameter.
+  hidden:
+  - marketplacev2
+  - platform
+- section: Collect
+  display: Close notes.
+  name: close_notes
+  defaultvalue: Closed by Sekoia.
+  type: 0
+  required: true
+  additionalinfo: Change the closing notes that will be added to the tickets closed automatically by the automation.
+- section: Collect
   display: Timezone ( TZ format )
   name: timezone
   defaultvalue: Europe/Paris
@@ -382,10 +440,10 @@ script:
     arguments:
     - name: earliest_time
       required: true
-      description: "Valid formats <sign + or -><number><time unit> or ISO 8601 e.g -3d, -2w, -7d, 2023-01-15T00:00:00Z."
+      description: Valid formats <sign + or -><number><time unit> or ISO 8601 e.g -3d, -2w, -7d, 2023-01-15T00:00:00Z.
     - name: lastest_time
       required: true
-      description: "Valid formats <sign + or -><number><time unit> or ISO 8601 e.g +3d, +2w, now, 2023-01-15T00:00:00Z."
+      description: Valid formats <sign + or -><number><time unit> or ISO 8601 e.g +3d, +2w, now, 2023-01-15T00:00:00Z.
     - name: query
       defaultValue: ""
       description: 'The query to use, i.e: "alert_short_ids:ALUnyZCYZ9Ga".'
@@ -544,10 +602,10 @@ script:
     arguments:
     - name: earliest_time
       required: true
-      description: "Valid formats <sign + or -><number><time unit> or ISO 8601 e.g -3d, -2w, -7d, 2023-01-15T00:00:00Z."
+      description: Valid formats <sign + or -><number><time unit> or ISO 8601 e.g -3d, -2w, -7d, 2023-01-15T00:00:00Z.
     - name: lastest_time
       required: true
-      description: "Valid formats <sign + or -><number><time unit> or ISO 8601 e.g +3d, +2w, now, 2023-01-15T00:00:00Z."
+      description: Valid formats <sign + or -><number><time unit> or ISO 8601 e.g +3d, +2w, now, 2023-01-15T00:00:00Z.
     - name: query
       description: 'The query to use, i.e: "alert_short_ids:ALUnyZCYZ9Ga".'
       defaultValue: ""
@@ -890,13 +948,31 @@ script:
     - contextPath: SekoiaXDR.Asset.uuid
       description: The UUID of the asset.
     description: Get an asset by its UUID from Sekoia XDR.
+  - name: get-remote-data
+    arguments:
+    - name: id
+      description: The remote alert ID.
+    - name: lastUpdate
+      description: ISO format date with timezone, e.g., 2023-03-01T16:41:30.589575+02:00. The incident is only updated if it was modified after the last update time.
+      defaultValue: "0"
+    description: This command gets new information about the incidents in the remote system and updates existing incidents in Cortex XSOAR.
+  - name: get-modified-remote-data
+    arguments:
+    - name: lastUpdate
+      description: ISO format date with timezone, e.g., 2023-03-01T16:41:30.589575+02:00. The incident is only returned if it was modified after the last update time.
+      defaultValue: "0"
+    description: available from Cortex XSOAR version 6.1.0. This command queries for incidents that were modified since the last update.
+  - name: get-mapping-fields
+    arguments: []
+    description: This command pulls the remote schema for the different incident types, and their associated incident fields, from the remote system.
   - name: sekoia-xdr-list-assets
     arguments:
     - name: limit
-      description: Limit a number of items.
+      description: 'Limit a number of items.'
       defaultValue: "10"
     - name: assets_type
       description: Type of assets to list (computer, network, etc).
+    description: Command to retrieve a list of Assets from Sekoia XDR.
     outputs:
     - contextPath: SekoiaXDR.Assets.total
       description: The total number of items in the response.
@@ -948,7 +1024,6 @@ script:
       description: The name of the asset.
     - contextPath: SekoiaXDR.Assets.items.0.uuid
       description: The UUID of the asset.
-    description: Command to retrieve a list of Assets from Sekoia XDR.
   - name: sekoia-xdr-get-user
     arguments:
     - name: user_uuid
@@ -1043,7 +1118,7 @@ script:
       description: 'UUID of the asset to get, the UUID should appear with "sekoia-xdr-list-assets" if that alert have assets related, example: "d4cc3b05-a78d-4f29-b27c-c637d86fa03a".'
     - name: name
       required: true
-      description: The name of attributes.
+      description: "The name of attributes."
     - name: value
       required: true
       description: The value of attributes.
@@ -1059,12 +1134,13 @@ script:
     - name: value
       required: true
       description: The value of the key to be added.
-    description: Command to add keys to an asset in Sekoia XDR.
+    description: "Command to add keys to an asset in Sekoia XDR."
   - name: sekoia-xdr-get-kill-chain
     arguments:
     - name: kill_chain_uuid
       required: true
       description: UUID or short_id of the kill chain the UUID should appear with "sekoia-xdr-list-alerts".
+    description: Command to retrieve the definition of a Cyber Kill Chain Step.
     outputs:
     - contextPath: SekoiaXDR.KillChain.stix_name
       description: The name of the STIX object.
@@ -1078,7 +1154,6 @@ script:
       description: The short identifier of the STIX object.
     - contextPath: SekoiaXDR.KillChain.order_id
       description: The order identifier of the STIX object.
-    description: Command to retrieve the definition of a Cyber Kill Chain Step.
   - name: sekoia-xdr-remove-attribute-asset
     arguments:
     - name: asset_uuid
@@ -1104,19 +1179,165 @@ script:
       description: Method to use with the http request (GET,POST,etc).
       defaultValue: GET
     - name: url_sufix
+      required: false
+      description: |
+        The URL suffix after https://api.sekoia.io, i.e. /v1/sic/alerts/ or /v1/asset-management/assets/.
+        DEPRECATED: Use 'url_suffix' instead. This parameter is kept for backward compatibility.
+      deprecated: true
+    - name: url_suffix
       required: true
-      description: "The URL suffix after https://api.sekoia.io, i.e. /v1/sic/alerts/ or /v1/asset-management/assets/."
+      description: The URL suffix after https://api.sekoia.io, i.e. /v1/sic/alerts/ or /v1/asset-management/assets/.
     - name: parameters
       description: Query parameters, i.e. limit -> 10 , match['status_name'] -> Ongoing.
       type: keyValue
+    - name: data
+      description: Body of the request.
+      type: string
     description: Command that performs a HTTP request to Sekoia using the integration authentication configured.
-  dockerimage: demisto/python3:3.11.10.111039
+  - name: sekoia-xdr-execute-query
+    description: Command to create a query run on Sekoia XDR, after this execute "sekoia-xdr-get-query-run" to see the status of the query run and "sekoia-xdr-download-query-result" to retrieve the results.
+    arguments:
+    - name: query_definition
+      description: Query definition in JSON.
+      required: true
+      type: string
+    - name: query_parameters
+      description: Query parameters in JSON.
+      type: string
+    - name: query_uuid
+      description: Query UUID.
+      type: string
+    - name: parent_uuid
+      description: Parent UUID.
+      type: string
+    - name: parent_slug
+      description: Parent slug.
+      type: string
+    - name: parent_type
+      description: Parent type.
+      predefined:
+      - notebook
+      - query
+      - task
+      - agent_run
+      - alert
+      - case
+      type: string
+    - name: community_uuid
+      description: Community UUID.
+      type: string
+    outputs:
+    - contextPath: SekoiaXDR.QueryRun.task_id
+      description: Task UUID.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.uuid
+      description: Query Run UUID.
+      type: string
+  - name: sekoia-xdr-get-query-run
+    description: Gets the query run status.
+    arguments:
+    - name: query_run_uuid
+      description: Query run UUID.
+      required: true
+    outputs:
+    - contextPath: SekoiaXDR.QueryRun.community_uuid
+      description: Community UUID.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.created_at
+      description: Created at.
+      type: date
+    - contextPath: SekoiaXDR.QueryRun.created_by
+      description: Created by.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.created_by_type
+      description: Created by type.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.duration
+      description: Duration.
+      type: number
+    - contextPath: SekoiaXDR.QueryRun.error
+      description: Error.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.parent_slug
+      description: Parent slug.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.parent_type
+      description: Parent type.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.parent_uuid
+      description: Parent UUID.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.status
+      description: Status.
+      type: string
+    - contextPath: SekoiaXDR.QueryRun.total
+      description: Total.
+      type: number
+  - name: sekoia-xdr-download-query-result
+    arguments:
+    - name: query_run_uuid
+      description: Query run UUID.
+      required: true
+    - auto: PREDEFINED
+      name: result_format
+      description: File format for the result.
+      predefined:
+      - csv
+      - jsonl
+      required: true
+      type: string
+    description: Downloads the query result as a file.
+  - name: sekoia-xdr-run-query
+    description: "Command to run a query and get its result. This is a combination of 3 commands: sekoia-xdr-execute-query, sekoia-xdr-get-query-run and sekoia-xdr-download-query-result."
+    polling: true
+    arguments:
+    - name: query_definition
+      description: Query definition in JSON.
+      required: true
+      type: string
+    - auto: PREDEFINED
+      name: result_format
+      description: File format for the result.
+      predefined:
+      - csv
+      - jsonl
+      required: true
+      type: string
+    - name: query_parameters
+      description: Query parameters in JSON.
+      type: string
+    - name: query_uuid
+      description: Query UUID.
+      type: string
+    - name: parent_uuid
+      description: Parent UUID.
+      type: string
+    - name: parent_slug
+      description: Parent slug.
+      type: string
+    - name: parent_type
+      description: Parent type.
+      predefined:
+      - notebook
+      - query
+      - task
+      - agent_run
+      - alert
+      - case
+      type: string
+    - name: community_uuid
+      description: Community UUID.
+      type: string
+    - name: query_run_uuid
+      description: The query run UUID to retrieve query results.
+      hidden: true
+  dockerimage: demisto/python3:3.12.15.14069087
   isfetch: true
   runonce: false
   subtype: python3
   isFetchSamples: true
+  ismappable: true
+  isremotesyncin: true
 fromversion: 6.10.0
 tests:
 - No tests (auto formatted)
-defaultmapperin: Sekoia XDR - Incoming Mapper
-defaultclassifier: Sekoia XDR - Classifier

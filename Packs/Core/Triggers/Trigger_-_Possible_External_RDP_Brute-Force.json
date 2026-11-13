@@ -8,11 +8,15 @@
     "filter": {
       "AND": [
         {
-            "SEARCH_FIELD": "alert_name",
-            "SEARCH_TYPE": "CONTAINS",
-            "SEARCH_VALUE": "Possible external RDP Brute-Force"
+          "SEARCH_FIELD": "alert_name",
+          "SEARCH_TYPE": "CONTAINS",
+          "SEARCH_VALUE": "Possible external RDP Brute-Force"
         }
       ]
     }
-  }
+  },
+  "supportedModules": [
+    "xsiam",
+    "agentix"
+  ]
 }

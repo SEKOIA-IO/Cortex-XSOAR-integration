@@ -1,4 +1,8 @@
+sectionorder:
+- Connect
+- Collect
 category: Network Security
+provider: Netscout Systems
 commonfields:
   id: NetscoutArborSightline
   version: -1
@@ -8,34 +12,55 @@ configuration:
   name: incidentType
   type: 13
   required: false
+  section: Collect
+- display: Incidents Fetch Interval
+  name: incidentFetchInterval
+  defaultvalue: '1'
+  required: false
+  type: 19
+  section: Collect
+  advanced: true
 - display: Server URL (e.g., https://192.168.0.1)
   name: url
   required: true
   type: 0
+  section: Connect
 - name: User
   displaypassword: API Key
   hiddenusername: true
   type: 9
   required: false
+  section: Connect
 - display: Fetch incidents
   name: isFetch
   type: 8
   required: false
+  section: Collect
 - additionalinfo: First fetch query (<number> <time unit>, e.g., 12 hours, 7 days or ISO format 2020-01-01T10:00:00). Maximal number of past events to fetch is 10,000.
   defaultvalue: 3 days
   display: First fetch time
   name: first_fetch
   type: 0
   required: false
+  section: Collect
 - additionalinfo: Maximum number of alerts per fetch. Default is 50, maximum is 100.
   defaultvalue: '50'
   display: Fetch Limit
   name: max_fetch
   type: 0
   required: false
+  section: Collect
+- name: look_back
+  type: 0
+  required: false
+  defaultvalue: 1
+  display: Minutes to look back when fetching
+  additionalinfo: Use this parameter to determine how far back to look in the search for incidents that were created before the last run time and did not match the query when they were created.
+  section: Collect
 - additionalinfo: Alert class to filter by. Only one class can be configured at a time. If none is chosen, all classes will be fetched.
   display: Alert Class
   name: alert_class
+  section: Collect
   options:
   - bgp
   - cloudsignal
@@ -51,6 +76,7 @@ configuration:
 - additionalinfo: Alert type to filter by. Only one type can be configured at a time. If none is chosen, all types will be fetched.
   display: Alert Type
   name: alert_type
+  section: Collect
   options:
   - autoclassify_restart
   - bgp_down
@@ -92,6 +118,7 @@ configuration:
 - additionalinfo: Minimal alert importance to filter by. If none or Low is chosen, all importances will be fetched.
   display: Minimal importance to fetch
   name: importance
+  section: Collect
   options:
   - Low
   - Medium
@@ -101,6 +128,7 @@ configuration:
 - additionalinfo: Alert status to filter by. If none is chosen, all statuses will be fetched.
   display: Event Status
   name: ongoing
+  section: Collect
   options:
   - Ongoing
   - Not Ongoing
@@ -110,10 +138,14 @@ configuration:
   name: insecure
   type: 8
   required: false
+  section: Connect
+  advanced: true
 - display: Use system proxy settings
   name: proxy
   type: 8
   required: false
+  section: Connect
+  advanced: true
 description: DDoS protection and network visibility.
 display: Netscout Arbor Sightline (Peakflow)
 name: NetscoutArborSightline
@@ -285,7 +317,7 @@ script:
       description: The ID of the alert.
       type: String
     - contextPath: NASightline.Alert.importance
-      description: 'Importance of the alert. One of the following 2: high, 1: medium, 0: low'
+      description: 'Importance of the alert. One of the following 2: high, 1: medium, 0: low.'
       type: Number
     - contextPath: NASightline.Alert.ongoing
       description: Whether the alert is currently active.
@@ -300,7 +332,7 @@ script:
       description: Type of the returned object.
       type: String
     - contextPath: NASightline.Alert.classification
-      description: 'Classification of the alert. One of the following: False Positive, Flash Crowd, Network Failure, Possible Attack, Trivial, Verified Attack '
+      description: 'Classification of the alert. One of the following: False Positive, Flash Crowd, Network Failure, Possible Attack, Trivial, Verified Attack.'
       type: String
     - contextPath: NASightline.Alert.stop_time
       description: Date and time at which the alert activity was no longer detected.
@@ -542,7 +574,7 @@ script:
       description: 'The router license type: core, edge, or unset. For more information, see “Configuring Routers” in the Sightline and TMS User Guide.'
       type: String
     - contextPath: NASightline.Router.name
-      description: Router name
+      description: Router name.
       type: String
     - contextPath: NASightline.Router.snmp_authprotocol
       description: 'SNMP v3 authentication protocol. One of the following: md5, sha, sha-224, sha-256, sha-384, sha-512.'
@@ -777,7 +809,7 @@ script:
       type: String
     description: Get a list of available TMS groups.
     name: na-sightline-tms-group-list
-  dockerimage: demisto/python3:3.10.13.86272
+  dockerimage: demisto/python3:3.12.13.10116658
   isfetch: true
   runonce: false
   script: '-'

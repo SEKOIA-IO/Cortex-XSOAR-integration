@@ -24,6 +24,10 @@
 <li><strong>Default role to use</strong></li>
 <li><strong>Use system proxy settings</strong></li>
 <li><strong>Trust server certificate (insecure)</strong></li>
+<li><strong>Client ID</strong></li>
+<li><strong>Client Secret</strong></li>
+<li><strong>OAuth Token URL</strong></li>
+<li><strong>OAuth Scope</strong></li>
 <li><strong>Fetch incidents</strong></li>
 <li><strong>Fetch query to retrieve new incidents. This field is mandatory when ‘Fetches incidents’ is set to true.</strong></li>
 <li><strong>First fetch timestamp ( <time>, e.g., 12 hours, 7 days)</time></strong></li>
@@ -59,6 +63,28 @@
 <li>Follow steps 1-4 in the instructions detailed in the <a href="https://docs.snowflake.net/manuals/user-guide/python-connector-example.html#using-key-pair-authentication">Snowflake Computing documentation</a>.</li>
 <li>Follow the instructions under the section titled <strong>Configure Cortex XSOAR Credentials</strong> at this <a href="https://xsoar.pan.dev/docs/reference/articles/managing-credentials">link</a>.</li>
 <li>Use the credentials you configured. Refer to the two images at the bottom of the section titled <strong>Configure an External Credentials Vault</strong>.</li>
+</ol>
+</li>
+<li>
+<p><strong>Authentication via External OAuth</strong><br/>
+To configure External OAuth authentication, please consult the following setup guidelines: <a href="https://docs.snowflake.com/en/user-guide/oauth-ext-overview">Snowflake External OAuth Overview</a>.</p>
+<p>When using External OAuth, fill in the <strong>OAuth Client ID</strong>, <strong>OAuth Client Secret</strong>, <strong>OAuth Token URL</strong>, and optionally the <strong>OAuth Scope</strong> parameters. The <strong>Username</strong> field should still be set to the Snowflake service user that the IdP token maps to. The <strong>Password</strong> field can be left empty.</p>
+<h4>Prerequisites</h4>
+<ol>
+<li><strong>In the IdP (e.g., Okta):</strong>
+<ul>
+<li>Create an <strong>API Services application</strong> (no user redirect, machine-to-machine).</li>
+<li>Note the <strong>Client ID</strong> and <strong>Client Secret</strong>.</li>
+<li>Create / use a <strong>Custom Authorization Server</strong>.</li>
+<li>Add a custom <strong>scope</strong> named <code>session:role:&lt;SNOWFLAKE_ROLE&gt;</code> (e.g., <code>session:role:ANALYST</code>).</li>
+</ul>
+</li>
+<li><strong>In Snowflake:</strong>
+<ul>
+<li>Create an <strong>External OAuth Security Integration</strong> that trusts the IdP's issuer &amp; JWKS URL and maps the JWT <code>sub</code> claim to a Snowflake user.</li>
+<li>Create / use a service user of <code>TYPE = SERVICE</code>.</li>
+</ul>
+</li>
 </ol>
 </li>
 </ul>
@@ -193,100 +219,100 @@
 <div class="cl-preview-section">
 <pre>{
     "Snowflake": {
-        "Query": "select * from test", 
-        "Schema": "public", 
+        "Query": "select * from test",
+        "Schema": "public",
         "Result": [
             {
-                "TS": "2018-09-11 00:00:00.000000", 
-                "ID": 1, 
+                "TS": "2018-09-11 00:00:00.000000",
+                "ID": 1,
                 "NAME": "b"
-            }, 
+            },
             {
-                "TS": "2018-10-12 00:00:00.000000", 
-                "ID": 2, 
+                "TS": "2018-10-12 00:00:00.000000",
+                "ID": 2,
                 "NAME": "kuku"
-            }, 
+            },
             {
-                "TS": "2018-10-12 00:00:00.000000", 
-                "ID": 3, 
+                "TS": "2018-10-12 00:00:00.000000",
+                "ID": 3,
                 "NAME": "kiki"
-            }, 
+            },
             {
-                "TS": "2018-10-12 00:00:00.000000", 
-                "ID": 4, 
+                "TS": "2018-10-12 00:00:00.000000",
+                "ID": 4,
                 "NAME": "kaka"
-            }, 
+            },
             {
-                "TS": "2018-10-12 00:00:00.000000", 
-                "ID": 5, 
+                "TS": "2018-10-12 00:00:00.000000",
+                "ID": 5,
                 "NAME": "kuku"
-            }, 
+            },
             {
-                "TS": "2019-03-26 11:14:18.574000", 
-                "ID": 8, 
+                "TS": "2019-03-26 11:14:18.574000",
+                "ID": 8,
                 "NAME": "blah"
-            }, 
+            },
             {
-                "TS": "2019-03-26 11:16:16.773000", 
-                "ID": 8, 
+                "TS": "2019-03-26 11:16:16.773000",
+                "ID": 8,
                 "NAME": "new"
-            }, 
+            },
             {
-                "TS": "2019-03-26 11:30:42.479000", 
-                "ID": 9, 
+                "TS": "2019-03-26 11:30:42.479000",
+                "ID": 9,
                 "NAME": "nBw4QhFcGJ"
-            }, 
+            },
             {
-                "TS": "2019-03-14 00:00:00.000000", 
-                "ID": 10, 
+                "TS": "2019-03-14 00:00:00.000000",
+                "ID": 10,
                 "NAME": "UPDATing"
-            }, 
+            },
             {
-                "TS": "2019-03-19 00:00:00.000000", 
-                "ID": 11, 
+                "TS": "2019-03-19 00:00:00.000000",
+                "ID": 11,
                 "NAME": "TESTING IT OUT again"
-            }, 
+            },
             {
-                "TS": "2019-03-28 05:32:13.355000", 
-                "ID": 13, 
+                "TS": "2019-03-28 05:32:13.355000",
+                "ID": 13,
                 "NAME": "New Alert"
-            }, 
+            },
             {
-                "TS": "2019-03-28 06:09:26.153000", 
-                "ID": 14, 
+                "TS": "2019-03-28 06:09:26.153000",
+                "ID": 14,
                 "NAME": "SHOULD FETCH THIS NEW"
-            }, 
+            },
             {
-                "TS": "2019-03-28 08:46:50.311000", 
-                "ID": 15, 
+                "TS": "2019-03-28 08:46:50.311000",
+                "ID": 15,
                 "NAME": "Perth"
-            }, 
+            },
             {
-                "TS": "2019-03-28 06:19:06.271000", 
-                "ID": 16, 
+                "TS": "2019-03-28 06:19:06.271000",
+                "ID": 16,
                 "NAME": "Edinburgh"
-            }, 
+            },
             {
-                "TS": "2019-03-28 06:19:14.059000", 
-                "ID": 17, 
+                "TS": "2019-03-28 06:19:14.059000",
+                "ID": 17,
                 "NAME": "York"
-            }, 
+            },
             {
-                "TS": "2019-03-28 06:20:27.126000", 
-                "ID": 18, 
+                "TS": "2019-03-28 06:20:27.126000",
+                "ID": 18,
                 "NAME": "Persimmon"
-            }, 
+            },
             {
-                "TS": "2019-03-28 06:28:31.001000", 
-                "ID": 19, 
+                "TS": "2019-03-28 06:28:31.001000",
+                "ID": 19,
                 "NAME": "Langdon"
-            }, 
+            },
             {
-                "TS": "2019-03-28 11:53:41.416000", 
-                "ID": 20, 
+                "TS": "2019-03-28 11:53:41.416000",
+                "ID": 20,
                 "NAME": "London"
             }
-        ], 
+        ],
         "Database": "demo_db"
     }
 }

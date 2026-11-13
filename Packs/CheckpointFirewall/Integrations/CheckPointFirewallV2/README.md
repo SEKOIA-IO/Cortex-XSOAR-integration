@@ -1,22 +1,19 @@
 ## Overview
+
 ---
 
-Integration Overview Manage Check Point Firewall. Read information and to send commands to the Check Point Firewall server. 
+Integration Overview Manage Check Point Firewall. Read information and to send commands to the Check Point Firewall server.
 This integration was integrated and tested with version R80.30 of CheckPoint SmartConsole.
 
-Product Name: Check Point Firewall  
-Product Type: Network Security  
-Product Version: R80.30  
+Product Name: Check Point Firewall
+Product Type: Network Security
+Product Version: R80.30
 
-### How to configure the integration:
+### How to configure the integration
 
 In the Smart Console, enable the web api: **Management & Setting** → **Blades** → **Management API, Advanced Setting** → **All IP address**
 
-Enable sftp on your server Check Point guide to walk you through: https://supportcenter.checkpoint.com/supportcenter/portal?eventSubmit_doGoviewsolutiondetails=&solutionid=sk82281 
-
-1. Navigate to **Settings** > **Integrations** > **Servers & Services**.
-2. Search for CheckPoint_FW.
-3. Click **Add instance** to create and configure a new integration instance.
+Enable sftp on your server Check Point guide to walk you through: https://supportcenter.checkpoint.com/supportcenter/portal?eventSubmit_doGoviewsolutiondetails=&solutionid=sk82281
 
 | **Parameter** | **Description** | **Required** |
 | --- | --- | --- |
@@ -27,45 +24,50 @@ Enable sftp on your server Check Point guide to walk you through: https://suppor
 | insecure | Trust any certificate \(not secure\) | False |
 | proxy | Use system proxy settings | False |
 
-
-4. Click **Test** to validate the URLs, token, and connection.
-
-
 ## Commands
-You can execute these commands from the Cortex XSOAR CLI, as part of an automation, or in a playbook.
+
+You can execute these commands from the CLI, as part of an automation, or in a playbook.
 After you successfully execute a command, a DBot message appears in the War Room with the command details.
+
 ### checkpoint-host-list
+
 ***
 Show all host objects
-
 
 #### Base Command
 
 `checkpoint-host-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results. | Optional | 
-| offset | Number of the results to initially skip. | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. | Optional |
+| offset | The number of results to initially skip. | Optional |
+| session_id | The session ID with which to execute the command. | Optional |
+| details_level | The level of detail for the results. Possible values are "standard", "full", or "uid". | Optional |
+| domains_to_process | A comma-separated list of domains to process the commands on. Cannot be used with  details-level set to full. Must be run from the System Domain only with ignore-warnings set to true. Possible values are: "CURRENT_DOMAIN", "ALL_DOMAINS_ON_THIS_SERVER". | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Host.name | String | object name | 
-| CheckPoint.Host.uid | String | object uid | 
-| CheckPoint.Host.type | String | object type | 
-| CheckPoint.Host.ipv4 | String | IP-v4 address of a spesific host | 
-| CheckPoint.Host.ipv6 | String | IP-v4 address of a spesific host | 
-
+| CheckPoint.Host.name | String | Object name. |
+| CheckPoint.Host.uid | String | Object UID. |
+| CheckPoint.Host.type | String | Object type. |
+| CheckPoint.Host.ipv4 | String | IPv4 address of the host. |
+| CheckPoint.Host.ipv6 | String | IPv6 address of the host. |
+| CheckPoint.Host.domain-name | String | Domain name. |
+| CheckPoint.Host.domain-uid | String | Domain UID. |
+| CheckPoint.Host.domain-type | String | Domain type. |
+| CheckPoint.Host.color | String | Color of the object. |
 
 #### Command Example
+
 ```!checkpoint-host-list limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -142,7 +144,8 @@ Show all host objects
 
 #### Human Readable Output
 
->### CheckPoint data for all hosts:
+>### CheckPoint data for all hosts
+>
 >|name|uid|type|ipv4-address|ipv6-address|
 >|---|---|---|---|---|
 >| 18.88.8.7 | f083d3ce-8e95-460f-a386-0bc4eca1214a | host | 18.88.8.7 | 2001:0db8:85a3:0000:0000:8a2e:0370:7334 |
@@ -151,45 +154,55 @@ Show all host objects
 >| 200.200.200.112 | 23c4b2cf-0adc-4282-8f15-262cfec7f5f5 | host | 200.200.200.112 | 2001:0db8:85a3:0000:0000:8a2e:0370:7334 |
 >| Demisto - 2096 | cded0c90-3402-4766-ad1b-adaf972b254f | host | 192.192.10.10 |  2001:0db8:85a3:0000:0000:8a2e:0370:7334 |
 
-
 ### checkpoint-host-get
+
 ***
 get all data of a given host
-
 
 #### Base Command
 
 `checkpoint-host-get`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object unique identifier (uid) or name | Required | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| identifier | The unique identifier (UID) or name of the object to get data for. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for the results. Possible values are "standard", "full", or "uid". | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Host.name | Unknown | host name | 
-| CheckPoint.Host.uid | String | object uid | 
-| CheckPoint.Host.type | Unknown | object type | 
-| CheckPoint.Host.domain-name | String | domain name | 
-| CheckPoint.Host.domain-uid | String | domain uid | 
-| CheckPoint.Host.ipv4-address | String | IP address | 
-| CheckPoint.Host.ipv6-address | String | IP address | 
-| CheckPoint.Host.read-only | Boolean | indicates if the object is read only | 
-| CheckPoint.Host.creator | String | indicates the creator of the object | 
-| CheckPoint.Host.last-modifier | String | indicates the last user modified the object | 
-| CheckPoint.Host.groups-name | String | Group object name linked to current host object. | 
-| CheckPoint.Host.groups-uid | Unknown | Group object uid linked to current host object. | 
-
+| CheckPoint.Host.name | String | Host name. |
+| CheckPoint.Host.uid | String | Object UID. |
+| CheckPoint.Host.type | String | Object type. |
+| CheckPoint.Host.domain-name | String | Domain name. |
+| CheckPoint.Host.domain-uid | String | Domain UID. |
+| CheckPoint.Host.ipv4-address | String | Host IPv4 address. |
+| CheckPoint.Host.ipv6-address | String | IP address. |
+| CheckPoint.Host.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Host.creator | String | The creator of the object. |
+| CheckPoint.Host.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Host.groups-name | String | The name of the group object linked to the current host object. |
+| CheckPoint.Host.groups-uid | Unknown | The UID of the group object linked to the current host object. |
+| CheckPoint.Host.color | String | Color of the object. |
+| CheckPoint.Host.comments | String | Comments string. |
+| CheckPoint.Host.tags | Unknown | Collection of tag objects associated with the host. |
+| CheckPoint.Host.nat-auto-rule | Boolean | Whether NAT automatic rules are enabled. |
+| CheckPoint.Host.nat-method | String | NAT method \(hide or static\). |
+| CheckPoint.Host.nat-ipv4-address | String | NAT IPv4 address. |
+| CheckPoint.Host.nat-install-on | String | Gateway for NAT rule installation. |
+| CheckPoint.Host.nat-hide-behind | String | Hide behind method \(gateway or ip-address\). |
+| CheckPoint.Host.interfaces | Unknown | Host interfaces. |
 
 #### Command Example
+
 ```!checkpoint-host-get identifier=host_test```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -212,52 +225,75 @@ get all data of a given host
 
 #### Human Readable Output
 
->### CheckPoint data of host object host_test:
+>### CheckPoint data of host object host_test
+>
 >|name|uid|type|ipv4-address|domain-name|domain-uid|read-only|creator|last-modifier|
 >|---|---|---|---|---|---|---|---|---|
 >| host_test | 11c194c4-db5f-46de-a9e2-95b8e858b98f | host | 1.1.1.1 | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | false | adminsh | adminsh |
 
-
 ### checkpoint-host-add
+
 ***
 Add new host
-
 
 #### Base Command
 
 `checkpoint-host-add`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | name of the new host | Required | 
-| ip_address | ip address | Required | 
-| groups | group identifier. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
+| name | A comma-separated list of names for the new hosts. | Required |
+| ip_address | A comma-separated list of IP addresses for the new hosts. | Required |
+| groups | A comma-separated list of group identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
 | ignore_warnings | Whether to ignore warnings when adding a host. | Optional |
 | ignore_errors | Whether to ignore errors when adding a host. | Optional |
+| comments | Comment string. | Optional |
+| nat_auto_rule | Required only when any nat_* argument is provided; otherwise omitted. | Optional |
+| color | Object color. | Optional |
+| nat_method | NAT method. | Optional |
+| nat_ip | The IPv4 address. This parameter is not required if nat_method is set to "hide" and nat_hide_behind is set to "gateway". | Optional |
+| nat_install_on | Gateway for NAT rule. | Optional |
+| nat_hide_behind | The hide behind method. This parameter value must not be provided if nat_method is set to "static". | Optional |
+| interfaces_name | The name of the network interface. | Optional |
+| interfaces_subnet | The IPv4 subnet mask of the interface. | Optional |
+| interfaces_mask_length | The IPv4 network mask length. Required only when defining interfaces (when any interfaces_* arg is provided). | Optional |
+| tags | A comma-separated list of tags to assign. | Optional |
+
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Host.name | String | object name | 
-| CheckPoint.Host.uid | String | object uid | 
-| CheckPoint.Host.type | String | object type | 
-| CheckPoint.Host.domain-name | String | domain name | 
-| CheckPoint.Host.domain-uid | String | domain uid | 
-| CheckPoint.Host.domain-type | String | domain type | 
-| CheckPoint.Host.creator | String | indicates the creator of the object | 
-| CheckPoint.Host.last-modifier | String | indicates the last user modifies the object | 
-| CheckPoint.Host.ipv4-address | String | ip address | 
-| CheckPoint.Host.ipv6-address | String | IP address | 
-| CheckPoint.Host.read-only | String | indicates if the object is read only | 
-| CheckPoint.Host.groups | String | Collection of group identifiers | 
-
+| CheckPoint.Host.name | String | Object name. |
+| CheckPoint.Host.uid | String | Object UID. |
+| CheckPoint.Host.type | String | Object type. |
+| CheckPoint.Host.domain-name | String | Domain name. |
+| CheckPoint.Host.domain-uid | String | Domain UID. |
+| CheckPoint.Host.domain-type | String | Domain type. |
+| CheckPoint.Host.creator | String | The creator of the object. |
+| CheckPoint.Host.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Host.ipv4-address | String | Host IPv4 address. |
+| CheckPoint.Host.ipv6-address | String | Host IPv6 address. |
+| CheckPoint.Host.read-only | String | Indicates if the object is read-only. |
+| CheckPoint.Host.groups | String | Collection of group identifiers. |
+| CheckPoint.Host.color | String | Color of the object. |
+| CheckPoint.Host.comments | String | Comments string. |
+| CheckPoint.Host.tags | Unknown | Collection of tag objects associated with the host. |
+| CheckPoint.Host.nat-auto-rule | Boolean | Whether NAT automatic rules are enabled. |
+| CheckPoint.Host.nat-method | String | NAT method (hide or static). |
+| CheckPoint.Host.nat-ipv4-address | String | NAT IPv4 address. |
+| CheckPoint.Host.nat-install-on | String | Gateway for NAT rule installation. |
+| CheckPoint.Host.nat-hide-behind | String | Hide behind method (gateway or ip-address). |
+| CheckPoint.Host.interfaces | Unknown | Host interfaces. |
 
 #### Command Example
+
 ```!checkpoint-host-add name=test_host_1 ip_address=18.18.18.18 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -281,57 +317,76 @@ Add new host
 
 #### Human Readable Output
 
->### CheckPoint data for adding host:
+>### CheckPoint data for adding host
+>
 >|name|uid|type|domain-name|domain-uid|creator|last-modifier|ipv4-address|read-only|
 >|---|---|---|---|---|---|---|---|---|
 >| test_host_1 | 7290f66a-fdd4-40fb-a639-774e3f387113 | host | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | adminsh | 18.18.18.18 | true |
 
-
 ### checkpoint-host-update
+
 ***
 update host changes
-
 
 #### Base Command
 
 `checkpoint-host-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | Object unique identifier or name | Required | 
-| ip_address | IPv4 or IPv6 address. | Optional | 
-| new_name | New name of the object. | Optional | 
-| comments | Comments string. | Optional | 
-| ignore_warnings | Apply changes ignoring warnings. | Optional | 
-| ignore_errors | Apply changes ignoring errors. You won't be able to publish such a changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. | Optional | 
-| groups | Collection of group identifiers. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-| ignore_warnings | Whether to ignore warnings when adding a host. | Optional |
-| ignore_errors | Whether to ignore errors when adding a host. | Optional |
+| identifier | Object unique identifier (UID) or name. | Required |
+| ip_address | IPv4 or IPv6 address. | Optional |
+| new_name | New name of the object. | Optional |
+| comments | Comments string. | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Can be "True" or "False". Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Can be "True" or "False". Default is "False". | Optional |
+| groups | A comma-separated list of group identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| nat_auto_rule | Required only when any nat_* argument is provided; otherwise omitted. | Optional |
+| color | Object color. | Optional |
+| nat_method | NAT method. | Optional |
+| nat_ip | The IPv4 address. This parameter must not be provided if nat_method is set to "hide" and nat_hide_behind is set to "gateway". | Optional |
+| nat_install_on | The gateway for the NAT rule. | Optional |
+| nat_hide_behind | The hide behind method. This parameter must not be provided if nat_method is set to "static". | Optional |
+| interfaces_name | The name of the network interface. Required only when defining interfaces (when any interfaces_* arg is provided). | Optional |
+| interfaces_subnet | The IPv4 subnet of the interface. Required only when defining interfaces (when any interfaces_* arg is provided). | Optional |
+| interfaces_mask_length | The IPv4 network mask length. Required only when defining interfaces (when any interfaces_* arg is provided). | Optional |
+| tags | A comma-separated list of tags to assign. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Host.name | String | object name | 
-| CheckPoint.Host.uid | String | object uid | 
-| CheckPoint.Host.type | String | object type | 
-| CheckPoint.Host.domain-name | String | domain name | 
-| CheckPoint.Host.domain-uid | String | domain uid | 
-| CheckPoint.Host.domain-type | String | domain type | 
-| CheckPoint.Host.creator | String | indicates the creator of the object | 
-| CheckPoint.Host.last-modifier | String | indicates the last user modified the object | 
-| CheckPoint.Host.ipv4-address | String | IP address | 
-| CheckPoint.Host.read-only | Boolean | IP address | 
-| CheckPoint.Host.group-name | String | Group object name linked to the host. | 
-| CheckPoint.Host.group-uid | String | Group object name linked to the host | 
-
+| CheckPoint.Host.name | String | Object name. |
+| CheckPoint.Host.uid | String | Object UID. |
+| CheckPoint.Host.type | String | Object type. |
+| CheckPoint.Host.domain-name | String | Domain name. |
+| CheckPoint.Host.domain-uid | String | Domain UID. |
+| CheckPoint.Host.domain-type | String | Domain type. |
+| CheckPoint.Host.creator | String | The creator of the object. |
+| CheckPoint.Host.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Host.ipv4-address | String | Host IPv4 address. |
+| CheckPoint.Host.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Host.group-name | String | The name of the group object linked to the host. |
+| CheckPoint.Host.group-uid | String | The UID of the group object linked to the host. |
+| CheckPoint.Host.color | String | Color of the object. |
+| CheckPoint.Host.comments | String | Comments string. |
+| CheckPoint.Host.tags | Unknown | Collection of tag objects associated with the host. |
+| CheckPoint.Host.nat-auto-rule | Boolean | Whether NAT automatic rules are enabled. |
+| CheckPoint.Host.nat-method | String | NAT method \(hide or static\). |
+| CheckPoint.Host.nat-ipv4-address | String | NAT IPv4 address. |
+| CheckPoint.Host.nat-install-on | String | Gateway for NAT rule installation. |
+| CheckPoint.Host.nat-hide-behind | String | Hide behind method \(gateway or ip-address\). |
+| CheckPoint.Host.interfaces | Unknown | Host interfaces. |
 
 #### Command Example
+
 ```!checkpoint-host-update identifier=host_test session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -354,38 +409,40 @@ update host changes
 
 #### Human Readable Output
 
->### CheckPoint data for updating a host:
+>### CheckPoint data for updating a host
+>
 >|name|uid|type|domain-name|domain-uid|creator|ipv4-address|last-modifier|read-only|
 >|---|---|---|---|---|---|---|---|---|
 >| host_test | 11c194c4-db5f-46de-a9e2-95b8e858b98f | host | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | 1.1.1.1 | adminsh | false |
 
-
 ### checkpoint-host-delete
+
 ***
 delete host
-
 
 #### Base Command
 
 `checkpoint-host-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name. | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Host.message | String | operation status | 
+| CheckPoint.Host.message | String | operation status |
 
 #### Command Example
+
 ```!checkpoint-host-delete identifier=host_test session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -398,42 +455,52 @@ delete host
 
 #### Human Readable Output
 
->### CheckPoint data for deleting host_test:
+>### CheckPoint data for deleting host_test
+>
 >|message|
 >|---|
 >| OK |
 
-
 ### checkpoint-group-list
+
 ***
 Show a list of all groups
-
 
 #### Base Command
 
 `checkpoint-group-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results. | Optional | 
-| offset | Number of the results to initially skip. | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for the results. | Optional |
+| domains_to_process | A comma-separated list of domains to process the commands on. | Optional |
+| filter | Search expression to filter objects by. The provided text should be exactly the same as it would be given in SmartConsole Object Explorer. The logical operators in the expression ('AND', 'OR') should be provided in capital letters. The search involves both a IP search and a textual search in name, comment, tags etc. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Group.name | String | object's name | 
-| CheckPoint.Group.uid | String | object's uid | 
-| CheckPoint.Group.type | String | Type of the object | 
-
+| CheckPoint.Group.name | String | Object name. |
+| CheckPoint.Group.uid | String | Object UID. |
+| CheckPoint.Group.type | String | Object type. |
+| CheckPoint.Group.domain-name | String | Domain name. |
+| CheckPoint.Group.domain-uid | String | Domain UID. |
+| CheckPoint.Group.domain-type | String | Domain type. |
+| CheckPoint.Group.color | String | Color of the object. |
+| CheckPoint.Group.comments | String | Comments string. |
+| CheckPoint.Group.tags | Unknown | Collection of tag objects associated with the group. |
 
 #### Command Example
+
 ```!checkpoint-group-list limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -505,7 +572,8 @@ Show a list of all groups
 
 #### Human Readable Output
 
->### CheckPoint data for all groups:
+>### CheckPoint data for all groups
+>
 >|name|uid|type|
 >|---|---|---|
 >| bensar | fe26adc1-c0e1-4424-9a9e-f74f511a7f28 | group |
@@ -514,52 +582,54 @@ Show a list of all groups
 >| group_test | 35a46b01-47f5-496f-9329-d55c7d2ab083 | group |
 >| Group_test_for_demisto | 1deaead0-136c-4791-8d58-9229c143b8c5 | group |
 
-
 ### checkpoint-group-get
+
 ***
 Get all data of a given group
-
 
 #### Base Command
 
 `checkpoint-group-get`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object uid or name | Required | 
-| session_id | Execute command with a specific session ID | Optional |
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for the results. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Group.name | String | Object name. | 
-| CheckPoint.Group.uid | String | Object UID. | 
-| CheckPoint.Group.type | String | Object type. | 
-| CheckPoint.Group.domain-name | String | Domain name. | 
-| CheckPoint.Group.domain-uid | String | Domain UID. | 
-| CheckPoint.Group.domain-type | String | Domain type. | 
-| CheckPoint.Group.creator | String | The creator of the object. | 
-| CheckPoint.Group.last-modifier | String | The user that last modified the object. | 
-| CheckPoint.Group.read-only | Boolean | Indicates if the object is read-only. | 
-| CheckPoint.Group.ipv4-address | string | Group IPv4 addresses. | 
-| CheckPoint.Group.ipv6-address | string | Group IPv6 addresses. | 
-| CheckPoint.Group.groups | Unknown | Collection of group identifiers. | 
-| CheckPoint.Group.members.member-ipv4-address | string | Group members IPv4 addresses. | 
-| CheckPoint.Group.members.member-ipv6-address | string | Group members IPv6 addresses. | 
-| CheckPoint.Group.members.member-domain-name | string | Group members domain name. | 
-| CheckPoint.Group.members.member-domain-uid | string | Group members domain UID. | 
-| CheckPoint.Group.members.member-domain-type | string | Group members domain type. | 
-| CheckPoint.Group.members.member-name | string | Group member name. | 
-| CheckPoint.Group.members.member-uid | string | Group member UID. | 
-| CheckPoint.Group.members.member-type | string | Group member type. | 
+| CheckPoint.Group.name | String | Object name. |
+| CheckPoint.Group.uid | String | Object UID. |
+| CheckPoint.Group.type | String | Object type. |
+| CheckPoint.Group.domain-name | String | Domain name. |
+| CheckPoint.Group.domain-uid | String | Domain UID. |
+| CheckPoint.Group.domain-type | String | Domain type. |
+| CheckPoint.Group.creator | String | The creator of the object. |
+| CheckPoint.Group.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Group.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Group.ipv4-address | string | Group IPv4 addresses. |
+| CheckPoint.Group.ipv6-address | string | Group IPv6 addresses. |
+| CheckPoint.Group.groups | Unknown | Collection of group identifiers. |
+| CheckPoint.Group.members.member-ipv4-address | string | Group members IPv4 addresses. |
+| CheckPoint.Group.members.member-ipv6-address | string | Group members IPv6 addresses. |
+| CheckPoint.Group.members.member-domain-name | string | Group members domain name. |
+| CheckPoint.Group.members.member-domain-uid | string | Group members domain UID. |
+| CheckPoint.Group.members.member-domain-type | string | Group members domain type. |
+| CheckPoint.Group.members.member-name | string | Group member name. |
+| CheckPoint.Group.members.member-uid | string | Group member UID. |
+| CheckPoint.Group.members.member-type | string | Group member type. |
 
 #### Command Example
+
 ```!checkpoint-group-get identifier=group_test```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -582,48 +652,58 @@ Get all data of a given group
 
 #### Human Readable Output
 
->### CheckPoint for group_test group:
+>### CheckPoint for group_test group
+>
 >|name|uid|type|domain-name|domain-uid|read-only|creator|last-modifier|
 >|---|---|---|---|---|---|---|---|
 >| group_test | 35a46b01-47f5-496f-9329-d55c7d2ab083 | group | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | false | adminsh | adminsh |
 
-
 ### checkpoint-group-add
+
 ***
 add a group
-
 
 #### Base Command
 
 `checkpoint-group-add`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | Object name. Must be unique in the domain. | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| name | A comma-separated list of object names. Must be unique in the domain. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
+| members | A comma-separated list of group identifiers (names or UIDs). | Optional |
+| comments | The comment string. | Optional |
+| color | Possible values: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default: black. | Optional |
+| tags | A comma-separated list of tags to assign. | Optional |
+| ignore_warnings | Apply changes, ignoring warnings. | Optional |
+| ignore_errors | Apply changes, ignoring errors. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Group.name | String | object's name | 
-| CheckPoint.Group.uid | String | object uid | 
-| CheckPoint.Group.type | Unknown | object type | 
-| CheckPoint.Group.domain-name | String | domain name | 
-| CheckPoint.Group.domain-uid | String | domain uid | 
-| CheckPoint.Group.domain-type | String | domain type | 
-| CheckPoint.Group.creator | String | Indicates the object creator | 
-| CheckPoint.Group.last-modifier | String | Indicates the last user modified the object | 
-| CheckPoint.Group.read-only | Boolean | Indicates whether the object is read-only | 
-| CheckPoint.Group.groups-name | Unknown | groups name | 
-
+| CheckPoint.Group.name | String | Object name. |
+| CheckPoint.Group.uid | String | Object UID. |
+| CheckPoint.Group.type | Unknown | Object type. |
+| CheckPoint.Group.domain-name | String | Domain name. |
+| CheckPoint.Group.domain-uid | String | Domain UID. |
+| CheckPoint.Group.domain-type | String | Domain type. |
+| CheckPoint.Group.creator | String | The creator of the object. |
+| CheckPoint.Group.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Group.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Group.groups-name | Unknown | Groups name. |
+| CheckPoint.Group.color | String | Color of the object. |
+| CheckPoint.Group.comments | String | Comments string. |
+| CheckPoint.Group.tags | Unknown | Collection of tag objects associated with the group. |
 
 #### Command Example
+
 ```!checkpoint-group-add name=test_group_1 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -643,52 +723,62 @@ add a group
 
 #### Human Readable Output
 
->### CheckPoint data for adding Group:
+>### CheckPoint data for adding Group
+>
 >|creator|domain-name|domain-uid|last-modifier|name|type|uid|
 >|---|---|---|---|---|---|---|
 >| adminsh | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | test_group_1 | group | 11e751da-a0e7-499a-bcde-5bc638c73fb5 |
 
-
 ### checkpoint-group-update
+
 ***
 update group object
-
 
 #### Base Command
 
 `checkpoint-group-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name. | Required | 
-| new_name | New name of the group object | Optional | 
-| comments | Comments string. | Optional | 
-| ignore_warnings | Apply changes ignoring warnings. | Optional | 
-| ignore_errors | Apply changes ignoring errors. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-| members | Collection of Network objects identified by the name or UID. | Optional | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| new_name | New name of the object. | Optional |
+| comments | The update comments. | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Can be "True" or "False". Default is "True". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Can be "True" or "False". Default is "False".
+Note: you won't be able to publish such these changes.
+If the ignore-warnings flag was omitted, warnings will also be ignored. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| members | A comma-separated list of network objects identified by the name or UID. | Optional |
+| action | The action that should be taken towards the values. | Optional |
+| color | Possible values: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default: black. | Optional |
+| tags | A comma-separated list of updated tags. | Optional |
+| details_level | The level of detail for the results. Possible values are "standard", "full", or "uid". | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Group.name | String | object name | 
-| CheckPoint.Group.uid | String | object uid | 
-| CheckPoint.Group.type | String | object type | 
-| CheckPoint.Group.domain-name | String | domain name | 
-| CheckPoint.Group.domain-uid | String | domain uid | 
-| CheckPoint.Group.domain-type | String | domain type | 
-| CheckPoint.Group.creator | String | Indicates the creator of the object | 
-| CheckPoint.Group.last-modifier | String | Indicates the lasr user modified the object | 
-| CheckPoint.Group.read-only | Boolean | Indicates if the object is read only | 
-
+| CheckPoint.Group.name | String | Object name. |
+| CheckPoint.Group.uid | String | Object UID. |
+| CheckPoint.Group.type | String | Object type. |
+| CheckPoint.Group.domain-name | String | Domain name. |
+| CheckPoint.Group.domain-uid | String | Domain UID. |
+| CheckPoint.Group.domain-type | String | Domain type. |
+| CheckPoint.Group.creator | String | The creator of the object. |
+| CheckPoint.Group.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Group.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Group.color | String | Color of the object. |
+| CheckPoint.Group.comments | String | Comments string. |
+| CheckPoint.Group.tags | Unknown | Collection of tag objects associated with the group. |
 
 #### Command Example
+
 ```!checkpoint-group-update identifier=group_test session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -709,39 +799,40 @@ update group object
 
 #### Human Readable Output
 
->### CheckPoint data for updating a group:
+>### CheckPoint data for updating a group
+>
 >|name|uid|type|domain-name|domain-uid|creator|last-modifier|read-only|
 >|---|---|---|---|---|---|---|---|
 >| group_test | 35a46b01-47f5-496f-9329-d55c7d2ab083 | group | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | adminsh | false |
 
-
 ### checkpoint-group-delete
+
 ***
 delete a group object
-
 
 #### Base Command
 
 `checkpoint-group-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object name or uid | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Group.message | String | Operation massege | 
-
+| CheckPoint.Group.message | String | Operation massege |
 
 #### Command Example
+
 ```!checkpoint-group-delete identifier=group_test session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -754,42 +845,48 @@ delete a group object
 
 #### Human Readable Output
 
->### CheckPoint data for deleting group_test:
+>### CheckPoint data for deleting group_test
+>
 >|message|
 >|---|
 >| OK |
 
-
 ### checkpoint-address-range-list
+
 ***
 List all address range objects
-
 
 #### Base Command
 
 `checkpoint-address-range-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results. | Optional | 
-| offset | Number of the results to initially skip. | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for the results. Possible values are "standard", "full", or "uid". | Optional |
+| domains_to_process | A comma-separated list of domains to process the commands on. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddressRange.name | String | Object's name | 
-| CheckPoint.AddressRange.uid | String | Object's uid | 
-| CheckPoint.AddressRange.type | String | Type of the object. | 
-
+| CheckPoint.AddressRange.name | String | Object name. |
+| CheckPoint.AddressRange.uid | String | Object UID. |
+| CheckPoint.AddressRange.type | String | Object type. |
+| CheckPoint.AddressRange.domain-name | String | Domain name. |
+| CheckPoint.AddressRange.domain-uid | String | Domain UID. |
+| CheckPoint.AddressRange.domain-type | String | Domain type. |
 
 #### Command Example
+
 ```!checkpoint-address-range-list limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -861,7 +958,8 @@ List all address range objects
 
 #### Human Readable Output
 
->### CheckPoint data for all address ranges:
+>### CheckPoint data for all address ranges
+>
 >|name|uid|type|
 >|---|---|---|
 >| address_range_1 | d4543195-8744-4592-906e-1cdcd534a564 | address-range |
@@ -870,53 +968,71 @@ List all address range objects
 >| All_Internet | f90e0a2b-f166-427a-b47f-a107b6fe43b9 | address-range |
 >| LocalMachine_Loopback | 5d3b2752-4072-41e1-9aa0-488813b02a40 | address-range |
 
-
 ### checkpoint-address-range-add
+
 ***
 Add address range object
-
 
 #### Base Command
 
 `checkpoint-address-range-add`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | object name | Required | 
-| ip_address_first | First IP address in the range. | Required | 
-| ip_address_last | Last IP address in the range. | Required | 
-| set_if_exists | If another object with the same identifier already exists, it will be updated. | Optional | 
-| ignore_warnings | Apply changes ignoring warnings. | Optional | 
-| ignore_errors | Apply changes ignoring errors. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-| groups | Collection of group identifiers.  | Optional | 
-
+| name | Name for the new address range object. | Required |
+| ip_address_first | First IP address in the range. | Required |
+| ip_address_last | Last IP address in the range. | Required |
+| set_if_exists | Whether to update objects with the same identifier. Can be "true" or "false". Default is "false". | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Can be "True" or "False". Default is "True". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Can be "True" or "False". Default is "False".
+Note: you won't be able to publish such these changes.
+If the ignore-warnings flag was omitted, warnings will also be ignored. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| groups | A comma-separated list of group identifiers. | Optional |
+| comments | Comment string. | Optional |
+| color | Object color. | Optional |
+| nat_auto_rule | Required only when any nat_* argument is provided; otherwise omitted. | Optional |
+| nat_method | NAT method. | Optional |
+| nat_ip | The IPv4 address. This parameter value must not be provided if nat_method is set to "hide" and nat_hide_behind is set to "gateway". | Optional |
+| nat_install_on | The gateway for the NAT rule. | Optional |
+| nat_hide_behind | The hide behind method. This parameter value must not be provided if nat_method is set to "static". | Optional |
+| tags | A comma-separated list of tags to assign. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddressRange.name | String | object name | 
-| CheckPoint.AddressRange.uid | String | object uid | 
-| CheckPoint.AddressRange.type | String | object type | 
-| CheckPoint.AddressRange.domain-name | String | domain name | 
-| CheckPoint.AddressRange.domain-uid | String | domain uid | 
-| CheckPoint.AddressRange.domain-type | String | domain type | 
-| CheckPoint.AddressRange.ipv4-address-first | String | First IPv4 address in the range | 
-| CheckPoint.AddressRange.ipv4-address-last | String | Last IPv4 address in the range | 
-| CheckPoint.AddressRange.ipv6-address-first | String | First IPv4 address in the range | 
-| CheckPoint.AddressRange.ipv6-address-last | String | Last IPv6 address in the range | 
-| CheckPoint.AddressRange.read-only | Boolean | Indicates whether the object is read-only. | 
-| CheckPoint.AddressRange.creator | String | Indicates the creator of the object | 
-| CheckPoint.AddressRange.last-modifier | String | Indicates the last user modified the object | 
-| CheckPoint.AddressRange.groups | String | Name of the group object | 
-
+| CheckPoint.AddressRange.name | String | Object name. |
+| CheckPoint.AddressRange.uid | String | Object UID. |
+| CheckPoint.AddressRange.type | String | Object type. |
+| CheckPoint.AddressRange.domain-name | String | Domain name. |
+| CheckPoint.AddressRange.domain-uid | String | Domain UID. |
+| CheckPoint.AddressRange.domain-type | String | Domain type. |
+| CheckPoint.AddressRange.ipv4-address-first | String | First IPv4 address in the range. |
+| CheckPoint.AddressRange.ipv4-address-last | String | Last IPv4 address in the range. |
+| CheckPoint.AddressRange.ipv6-address-first | String | First IPv6 address in the range. |
+| CheckPoint.AddressRange.ipv6-address-last | String | Last IPv6 address in the range. |
+| CheckPoint.AddressRange.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.AddressRange.creator | String | The creator of the object. |
+| CheckPoint.AddressRange.last-modifier | String | Indicates the user that last modified the object. |
+| CheckPoint.AddressRange.groups | String | Name of the group object. |
+| CheckPoint.AddressRange.color | String | Color of the object. |
+| CheckPoint.AddressRange.comments | String | Comments string. |
+| CheckPoint.AddressRange.tags | Unknown | Collection of tag objects associated with the address range. |
+| CheckPoint.AddressRange.nat-auto-rule | Boolean | Whether NAT automatic rules are enabled. |
+| CheckPoint.AddressRange.nat-method | String | NAT method \(hide or static\). |
+| CheckPoint.AddressRange.nat-ipv4-address | String | NAT IPv4 address. |
+| CheckPoint.AddressRange.nat-install-on | String | Gateway for NAT rule installation. |
+| CheckPoint.AddressRange.nat-hide-behind | String | Hide behind method \(gateway or ip-address\). |
 
 #### Command Example
+
 ```!checkpoint-address-range-add name=address_range_test_2 ip_address_first=8.8.8.8 ip_address_last=9.9.9.9 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -941,57 +1057,74 @@ Add address range object
 
 #### Human Readable Output
 
->### CheckPoint data for adding an address range:
+>### CheckPoint data for adding an address range
+>
 >|name|uid|type|domain-name|domain-uid|creator|ipv4-address-first|ipv4-address-last|last-modifier|read-only|
 >|---|---|---|---|---|---|---|---|---|---|
 >| address_range_test_2 | 4fb8174d-89db-42f8-88b8-525c8fe818be | address-range | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | 8.8.8.8 | 9.9.9.9 | adminsh | true |
 
-
 ### checkpoint-address-range-update
+
 ***
 Update an address range object
-
 
 #### Base Command
 
 `checkpoint-address-range-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name. | Required | 
-| ip_address_first | First IP address in the range. IPv4 or IPv6 address. | Optional | 
-| ip_address_last | Last IP address in the range. IPv4 or IPv6 address. | Optional | 
-| new_name | New name of the object. | Optional | 
-| comments | Comments string. | Optional | 
-| ignore_warnings | Apply changes ignoring warnings. | Optional | 
-| ignore_errors | Apply changes ignoring errors. | Optional | 
-| groups | Collection of group identifiers. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Name for the new address range object. | Required |
+| ip_address_first | First IP address in the range. Can be an IPv4 or IPv6 address. | Optional |
+| ip_address_last | Last IP address in the range. Can be an IPv4 or IPv6 address. | Optional |
+| new_name | New name of the object. | Optional |
+| comments | The update comments. | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Can be "True" or "False". Default is "True". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Can be "True" or "False". Default is "False".
+Note: you won't be able to publish such these changes.
+If the ignore-warnings flag was omitted, warnings will also be ignored. | Optional |
+| groups | A comma-separated list of group identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| color | The update color. | Optional |
+| nat_method | Update NAT method. | Optional |
+| nat_ip | The updated IPv4 address. This parameter value must not be provided if nat_method is set to "hide" and nat_hide_behind is set to "gateway". | Optional |
+| nat_install_on | Update NAT gateway. | Optional |
+| nat_hide_behind | The hide behind method. This parameter value must not be provided if nat_method is set to "static". | Optional |
+| tags | A comma-separated list of updated tags. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddressRange.name | String | object name | 
-| CheckPoint.AddressRange.uid | String | object uid | 
-| CheckPoint.AddressRange.type | String | object type | 
-| CheckPoint.AddressRange.domain-name | String | domain name | 
-| CheckPoint.AddressRange.domain-uid | String | domain uid | 
-| CheckPoint.AddressRange.domain-type | String | domain type | 
-| CheckPoint.AddressRange.ipv4-address-first | String | First IPv4 address in the range | 
-| CheckPoint.AddressRange.ipv4-address-last | String | Last IPv4 address in the range | 
-| CheckPoint.AddressRange.ipv6-address-first | String | First IPv4 address in the range | 
-| CheckPoint.AddressRange.ipv6-address-last | String | Last IPv6 address in the range | 
-| CheckPoint.AddressRange.read-only | Boolean | Indicates whether the object is read-only. | 
-| CheckPoint.AddressRange.groups | String | List of all groups the address range is linked to | 
-
+| CheckPoint.AddressRange.name | String | Object name. |
+| CheckPoint.AddressRange.uid | String | Object UID. |
+| CheckPoint.AddressRange.type | String | Object type. |
+| CheckPoint.AddressRange.domain-name | String | Domain name. |
+| CheckPoint.AddressRange.domain-uid | String | Domain UID. |
+| CheckPoint.AddressRange.domain-type | String | Domain type. |
+| CheckPoint.AddressRange.ipv4-address-first | String | First IPv4 address in the range. |
+| CheckPoint.AddressRange.ipv4-address-last | String | Last IPv4 address in the range. |
+| CheckPoint.AddressRange.ipv6-address-first | String | First IPv6 address in the range. |
+| CheckPoint.AddressRange.ipv6-address-last | String | Last IPv6 address in the range. |
+| CheckPoint.AddressRange.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.AddressRange.groups | String | List of all groups the address range is linked to. |
+| CheckPoint.AddressRange.color | String | Color of the object. |
+| CheckPoint.AddressRange.comments | String | Comments string. |
+| CheckPoint.AddressRange.tags | Unknown | Collection of tag objects associated with the address range. |
+| CheckPoint.AddressRange.nat-auto-rule | Boolean | Whether NAT automatic rules are enabled. |
+| CheckPoint.AddressRange.nat-method | String | NAT method \(hide or static\). |
+| CheckPoint.AddressRange.nat-ipv4-address | String | NAT IPv4 address. |
+| CheckPoint.AddressRange.nat-install-on | String | Gateway for NAT rule installation. |
+| CheckPoint.AddressRange.nat-hide-behind | String | Hide behind method \(gateway or ip-address\). |
 
 #### Command Example
+
 ```!checkpoint-address-range-update identifier=address_range_test layer=Network session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1014,39 +1147,40 @@ Update an address range object
 
 #### Human Readable Output
 
->### CheckPoint data for updating an address range:
+>### CheckPoint data for updating an address range
+>
 >|name|uid|type|domain-name|domain-uid|creator|last-modifier|read-only|
 >|---|---|---|---|---|---|---|---|
 >| address_range_test | 26887214-d639-4acd-ab48-508d900cdfc2 | address-range | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | adminsh | false |
 
-
 ### checkpoint-address-range-delete
+
 ***
 Delete a given address range
-
 
 #### Base Command
 
 `checkpoint-address-range-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object name or uid | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Name for the new address range object. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddressRange.message | String | Operation status | 
-
+| CheckPoint.AddressRange.message | String | Operation status |
 
 #### Command Example
+
 ```!checkpoint-address-range-delete identifier=address_range_test session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1059,42 +1193,49 @@ Delete a given address range
 
 #### Human Readable Output
 
->### CheckPoint data for deleting address range:
+>### CheckPoint data for deleting address range
+>
 >|message|
 >|---|
 >| OK |
 
-
 ### checkpoint-threat-indicator-list
+
 ***
 List all threat indicators
-
 
 #### Base Command
 
 `checkpoint-threat-indicator-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results. | Optional | 
-| offset | Skip that many results before beginning to return them. | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+| domain_names | A comma-separated list of domains to process. | Optional |
+| details_level | The level of detail for the results. Possible values are "standard", "full", or "uid". | Optional |
+| filter | Search expression to filter objects by. The provided text should be exactly the same as it would be given in SmartConsole Object Explorer. The logical operators in the expression ('AND', 'OR') should be provided in capital letters. The search involves both a IP search and a textual search in name, comment, tags etc. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ThreatIndicator.name | String | object name | 
-| CheckPoint.ThreatIndicator.uid | String | object uid | 
-| CheckPoint.ThreatIndicator.type | String | object type | 
-
+| CheckPoint.ThreatIndicator.name | String | Object name. |
+| CheckPoint.ThreatIndicator.uid | String | Object UID. |
+| CheckPoint.ThreatIndicator.type | String | Object type. |
+| CheckPoint.ThreatIndicator.domain-name | String | Domain name. |
+| CheckPoint.ThreatIndicator.domain-uid | String | Domain UID. |
+| CheckPoint.ThreatIndicator.domain-type | String | Domain type. |
 
 #### Command Example
+
 ```!checkpoint-threat-indicator-list limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1166,7 +1307,8 @@ List all threat indicators
 
 #### Human Readable Output
 
->### CheckPoint data for all threat indicators:
+>### CheckPoint data for all threat indicators
+>
 >|name|uid|type|
 >|---|---|---|
 >| My_Indicator! | a40ec97c-e286-474b-bff7-b922e3b3294d | threat-indicator |
@@ -1175,42 +1317,42 @@ List all threat indicators
 >| threat_test_2 | f34c89f1-b18f-4cf2-b2bb-672462178b9d | threat-indicator |
 >| threat_test_3 | ee17772c-94aa-4e42-93e4-f0ba49de339b | threat-indicator |
 
-
 ### checkpoint-threat-indicator-get
+
 ***
 Get data for a given list indicator
-
 
 #### Base Command
 
 `checkpoint-threat-indicator-get`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object uid or name | Required | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ThreatIndicator.name | String | object name | 
-| CheckPoint.ThreatIndicator.uid | String | object uid | 
-| CheckPoint.ThreatIndicator.type | String | object type | 
-| CheckPoint.ThreatIndicator.domain-name | String | Domain name | 
-| CheckPoint.ThreatIndicator.domain-uid | String | object uid | 
-| CheckPoint.ThreatIndicator.domain-type | Unknown | domain type | 
-| CheckPoint.ThreatIndicator.creator | String | creator | 
-| CheckPoint.ThreatIndicator.last-modifier | String | Indicates the last user modified the object | 
-| CheckPoint.ThreatIndicator.read-only | Boolean | Indicates whether the object is read-only. | 
-
+| CheckPoint.ThreatIndicator.name | String | object name |
+| CheckPoint.ThreatIndicator.uid | String | object uid |
+| CheckPoint.ThreatIndicator.type | String | object type |
+| CheckPoint.ThreatIndicator.domain-name | String | Domain name |
+| CheckPoint.ThreatIndicator.domain-uid | String | object uid |
+| CheckPoint.ThreatIndicator.domain-type | Unknown | domain type |
+| CheckPoint.ThreatIndicator.creator | String | creator |
+| CheckPoint.ThreatIndicator.last-modifier | String | Indicates the last user modified the object |
+| CheckPoint.ThreatIndicator.read-only | Boolean | Indicates whether the object is read-only. |
 
 #### Command Example
+
 ```!checkpoint-threat-indicator-get identifier=threat_test_1```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1234,40 +1376,47 @@ Get data for a given list indicator
 
 #### Human Readable Output
 
->### CheckPoint data for threat_test_1 threat indicator:
+>### CheckPoint data for threat_test_1 threat indicator
+>
 >|name|uid|type|domain-name|domain-uid|read-only|creator|last-modifier|number-of-observables|
 >|---|---|---|---|---|---|---|---|---|
 >| threat_test_1 | 88e502f1-2bd5-4ad4-ba6b-dbbb2fef8260 | threat-indicator | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | false | adminsh | adminsh | 1 |
 
-
 ### checkpoint-threat-indicator-add
+
 ***
 Add a threat indicator
-
 
 #### Base Command
 
 `checkpoint-threat-indicator-add`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | threat indicator name | Required | 
-| observables | The indicator's observable or the contents of a file containing the indicator's observables. | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| name | Name for the new threat indicator. | Required |
+| observables | A comma-separated list of the indicator's observables, or the contents of a file containing the indicator's observables. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
+| action | The action for the indicator. | Optional |
+| profile_action | A comma-separated list of profiles the indicator is applied to and the specific action to be performed, in the format "Profile_Action". | Optional |
+| comments | Comment string. | Optional |
+| color | The object color. | Optional |
+| tags | A comma-separated list of tags to assign. | Optional |
+| ignore_warnings | Apply changes, ignoring warnings. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ThreatIndicator.task-id | String | Asynchronous task unique identifier. | 
-
+| CheckPoint.ThreatIndicator.task-id | String | Asynchronous task unique identifier. |
 
 #### Command Example
-```!checkpoint-threat-indicator-add name=threat_test2 observables=[] session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew ```
+
+```!checkpoint-threat-indicator-add name=threat_test2 observables=[] session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1280,47 +1429,52 @@ Add a threat indicator
 
 #### Human Readable Output
 
-
-
 ### checkpoint-threat-indicator-update
+
 ***
 Update a given indicator
-
 
 #### Base Command
 
 `checkpoint-threat-indicator-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name. | Required | 
-| action | the action to set. | Optional | 
-| new_name | New name of the object. | Optional | 
-| comments | Comments string. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| action | The action to set for the indicator. | Optional |
+| new_name | New name of the object. | Optional |
+| comments | Comments for the object. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| profile_action | A comma-separated list of profiles the indicator is applied to and the specific action to be performed, in the format "Profile_Action". | Optional |
+| color | The update color. | Optional |
+| tags | A comma-separated list of updated tags. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ThreatIndicator.name | String | object name | 
-| CheckPoint.ThreatIndicator.uid | String | object uid | 
-| CheckPoint.ThreatIndicator.type | String | object type | 
-| CheckPoint.ThreatIndicator.action | String | The indicator's action. | 
-| CheckPoint.ThreatIndicator.domain-name | String | domain name | 
-| CheckPoint.ThreatIndicator.domain-uid | String | domain uid | 
-| CheckPoint.ThreatIndicator.domain-type | String | domain type | 
-| CheckPoint.ThreatIndicator.creator | String | Indicates the creator of the object | 
-| CheckPoint.ThreatIndicator.last-modifier | String | Indicates the last user modified the object | 
-| CheckPoint.ThreatIndicator.read-only | Boolean | Indicates whether the object is read-only. | 
-
+| CheckPoint.ThreatIndicator.name | String | Object name. |
+| CheckPoint.ThreatIndicator.uid | String | Object UID. |
+| CheckPoint.ThreatIndicator.type | String | Object type. |
+| CheckPoint.ThreatIndicator.action | String | The indicator's action. |
+| CheckPoint.ThreatIndicator.domain-name | String | Domain name. |
+| CheckPoint.ThreatIndicator.domain-uid | String | Domain UID. |
+| CheckPoint.ThreatIndicator.domain-type | String | Domain type. |
+| CheckPoint.ThreatIndicator.creator | String | The creator of the object. |
+| CheckPoint.ThreatIndicator.last-modifier | String | The user that last modified the object. |
+| CheckPoint.ThreatIndicator.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.ThreatIndicator.color | String | Color of the object. |
+| CheckPoint.ThreatIndicator.tags | Unknown | Collection of tag objects associated with the indicator. |
+| CheckPoint.ThreatIndicator.profile-overrides | Unknown | A list of profiles where the default action of this indicator is overridden, along with the overriding action. |
 
 #### Command Example
+
 ```!checkpoint-threat-indicator-update identifier=threat_test_1 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1344,45 +1498,46 @@ Update a given indicator
 #### Human Readable Output
 
 >### CheckPoint data for update threat_test_1 threat indicator
+>
 >|name|uid|type|domain-name|domain-uid|creator|last-modifier|read-only|
 >|---|---|---|---|---|---|---|---|
 >| threat_test_1 | 88e502f1-2bd5-4ad4-ba6b-dbbb2fef8260 | threat-indicator | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | adminsh | false |
 
-
 ### checkpoint-address-range-get
+
 ***
 Get all date of a given address range object
-
 
 #### Base Command
 
 `checkpoint-address-range-get`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name object | Required | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddressRange.name | String | object name | 
-| CheckPoint.AddressRange.uid | String | object uid | 
-| CheckPoint.AddressRange.type | String | object type | 
-| CheckPoint.AddressRange.domain-name | String | domain name | 
-| CheckPoint.AddressRange.domain-uid | String | domain uid | 
-| CheckPoint.AddressRange.domain-type | String | domain type | 
-| CheckPoint.AddressRange.groups-name | String | Group object name linked to current host object | 
-| CheckPoint.AddressRange.groups-uid | String | Group object uid linked to current host object | 
-
+| CheckPoint.AddressRange.name | String | Object name. |
+| CheckPoint.AddressRange.uid | String | Object UID. |
+| CheckPoint.AddressRange.type | String | Object type. |
+| CheckPoint.AddressRange.domain-name | String | Domain name. |
+| CheckPoint.AddressRange.domain-uid | String | Domain UID. |
+| CheckPoint.AddressRange.domain-type | String | Domain type. |
+| CheckPoint.AddressRange.groups-name | String | The name of the group object linked to current host object. |
+| CheckPoint.AddressRange.groups-uid | String | The UID of the group object linked to current host object. |
 
 #### Command Example
+
 ```!checkpoint-address-range-get identifier=address_range_test```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1405,39 +1560,40 @@ Get all date of a given address range object
 
 #### Human Readable Output
 
->### CheckPoint data for address_range_test address range:
+>### CheckPoint data for address_range_test address range
+>
 >|name|uid|type|domain-name|domain-uid|read-only|creator|last-modifier|
 >|---|---|---|---|---|---|---|---|
 >| address_range_test | 26887214-d639-4acd-ab48-508d900cdfc2 | address-range | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | false | adminsh | adminsh |
 
-
 ### checkpoint-threat-indicator-delete
+
 ***
 delete threat indicator
-
 
 #### Base Command
 
 `checkpoint-threat-indicator-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object name or uid | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ThreatIndicator.message | String | Operation status | 
-
+| CheckPoint.ThreatIndicator.message | String | Operation status |
 
 #### Command Example
+
 ```!checkpoint-threat-indicator-delete identifier=threat_test_1 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1450,50 +1606,65 @@ delete threat indicator
 
 #### Human Readable Output
 
->### CheckPoint status for deleting threat_test_1threat indicator:
+>### CheckPoint status for deleting threat_test_1threat indicator
+>
 >|message|
 >|---|
 >| OK |
 
-
 ### checkpoint-access-rule-list
+
 ***
 Shows the entire Access Rules layer. This layer is divided into sections. An Access Rule may be within a section, or independent of a section.
-
 
 #### Base Command
 
 `checkpoint-access-rule-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object name or uid | Required | 
-| limit | The maximal number of returned results. | Optional | 
-| offset | Number of the results to initially skip. | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for the results. Possible values are "standard", "full", or "uid". | Optional |
+| show_hits | Includes hit count data in the output. | Optional |
+| filter | Search expression to filter the rulebase. | Optional |
+| order | The list of comma-separated "direction:field" pairs by which to sort results. Valid directions are ASC and DESC. For example, "ASC:type,DESC:uid". Default is "ASC:name". | Optional |
+| package | Policy package name or uid. | Optional |
+| show_as_ranges | When "true", the source, destination and services & applications parameters are displayed as ranges of IP addresses and port numbers rather than network objects. | Optional |
+| show_expiration_settings | Indicates whether to calculate and show the "expiration date settings" field in reply. | Optional |
+| use_object_dictionary | Indicates whether to use an object dictionary in the reply. | Optional |
+| hits_settings_from_date | Hits from-date. Format: YYYY-MM-DD or YYYY-mm-ddThh:mm:ss. | Optional |
+| hits_settings_target | Hits target gateway name or UID. | Optional |
+| hits_settings_to_date | Hits to-date. Format: YYYY-MM-DD or YYYY-mm-ddThh:mm:ss. | Optional |
+| dereference_group_members | Indicates whether to dereference "members" field by details level for every object in reply. | Optional |
+| show_membership | Indicates whether to calculate and show a "groups" field for every object in reply. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AccessRule.name | String | Object name. | 
-| CheckPoint.AccessRule.uid | String | Object UID. | 
-| CheckPoint.AccessRule.type | String | Object type. | 
-| CheckPoint.AccessRule.ipv4-address | String | IPv4 address of the specified object. | 
-| CheckPoint.AccessRule.ipv6-address | String | IPv6 address of the specified object. | 
-| CheckPoint.AccessRule.domain-name | String | Domain name. | 
-| CheckPoint.AccessRule.domain-uid | String | Domain UID. | 
-| CheckPoint.AccessRule.creator | String | The creator of the object. | 
-| CheckPoint.AccessRule.last-modifier | String | The user that last modified the object. | 
-| CheckPoint.AccessRule.read-only | Boolean | Indicates if the object is read-only. | 
-| CheckPoint.AccessRule.groups | Unknown | Collection of group identifiers. | 
+| CheckPoint.AccessRule.name | String | Object name. |
+| CheckPoint.AccessRule.uid | String | Object UID. |
+| CheckPoint.AccessRule.type | String | Object type. |
+| CheckPoint.AccessRule.ipv4-address | String | IPv4 address of the specified object. |
+| CheckPoint.AccessRule.ipv6-address | String | IPv6 address of the specified object. |
+| CheckPoint.AccessRule.domain-name | String | Domain name. |
+| CheckPoint.AccessRule.domain-uid | String | Domain UID. |
+| CheckPoint.AccessRule.creator | String | The creator of the object. |
+| CheckPoint.AccessRule.last-modifier | String | The user that last modified the object. |
+| CheckPoint.AccessRule.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.AccessRule.groups | Unknown | Collection of group identifiers. |
 
 #### Command Example
+
 ```!checkpoint-access-rule-list identifier=Network limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1565,7 +1736,8 @@ Shows the entire Access Rules layer. This layer is divided into sections. An Acc
 
 #### Human Readable Output
 
->### CheckPoint data for all access rule bases:
+>### CheckPoint data for all access rule bases
+>
 >|name|uid|type|
 >|---|---|---|
 >|  | 6521b7b9-d340-44ec-a104-17d5ea669bc0 | access-rule |
@@ -1574,50 +1746,148 @@ Shows the entire Access Rules layer. This layer is divided into sections. An Acc
 >| None | c44add02-0f02-4b29-8ab3-d5ac687d31f7 | access-rule |
 >| est_access_rule | e5bc5918-7155-493e-89ce-5562586d3acc | access-rule |
 
+### checkpoint-access-rule-get
 
-### checkpoint-access-rule-add
 ***
-Create new access rule
-
+Returns a single access rule by name, UID, or rule number.
 
 #### Base Command
 
-`checkpoint-access-rule-add`
+`checkpoint-access-rule-get`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| layer | Layer that the rule belongs to identified by the name or UID. | Required | 
-| position | Position in the rulebase. | Required | 
-| name | Rule name. | Optional | 
-| action | Action settings. valid values are: Accept, Drop, Apply Layer, Ask and Info. default value is Drop. | Optional | 
-| vpn | Communities or Directional. Valid values: Any, All_GwToGw. | Optional | 
-| destination | Collection of Network objects identified by the name or UID. | Optional | 
-| service | Collection of Network objects identified by the name or UID. | Optional | 
-| source | Collection of Network objects identified by the name or UID. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | The rule name or rule number. | Required |
+| layer | Layer to which the rule belongs, identified by the name or UID. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
+| package | Policy package name or uid. | Optional |
+| show_as_ranges | When "true", the source, destination and services & applications parameters are displayed as ranges of IP addresses and port numbers rather than network objects. | Optional |
+| show_expiration_settings | Indicates whether to calculate and show "expiration date settings" field in reply. | Optional |
+| show_hits | Show hitcount data. | Optional |
+| hits_settings_from_date | Hits from-date. Format: YYYY-MM-DD or YYYY-mm-ddThh:mm:ss. | Optional |
+| hits_settings_target | Hits target gateway name or UID. | Optional |
+| hits_settings_to_date | Hits to-date. Format: YYYY-MM-DD or YYYY-mm-ddThh:mm:ss. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AccessRule.name | String | object name | 
-| CheckPoint.AccessRule.uid | String | object uid | 
-| CheckPoint.AccessRule.type | String | object type | 
-| CheckPoint.AccessRule.domain-name | String | domain name | 
-| CheckPoint.AccessRule.domain-uid | String | domain uid | 
-| CheckPoint.AccessRule.domain-type | String | domain type | 
-| CheckPoint.AccessRule.enabled | Boolean | Enable/Disable the rule. | 
-| CheckPoint.AccessRule.layer | String | Layer that the rule belongs to identified by the name or UID. | 
-| CheckPoint.AccessRule.creator | String | Indicated the object creator | 
-| CheckPoint.AccessRule.last-modifier | String | Indicates the last user modofied the object | 
-
+| CheckPoint.AccessRule.name | String | Object name. |
+| CheckPoint.AccessRule.uid | String | Object UID. |
+| CheckPoint.AccessRule.type | String | Object type. |
+| CheckPoint.AccessRule.rule-number | Number | The rule number in the rulebase. |
+| CheckPoint.AccessRule.action.name | String | The action applied by the rule. |
+| CheckPoint.AccessRule.source | Unknown | Collection of source network objects. |
+| CheckPoint.AccessRule.destination | Unknown | Collection of destination network objects. |
+| CheckPoint.AccessRule.service | Unknown | Collection of service objects. |
+| CheckPoint.AccessRule.enabled | Boolean | Indicates if the rule is enabled or disabled. |
+| CheckPoint.AccessRule.layer | String | Layer to which the rule belongs. |
 
 #### Command Example
+
+```!checkpoint-access-rule-get identifier=test_access_rule layer=Network session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{
+    "CheckPoint": {
+        "AccessRule": {
+            "name": "test_access_rule",
+            "uid": "e5bc5918-7155-493e-89ce-5562586d3acc",
+            "type": "access-rule",
+            "rule-number": 3,
+            "action": {
+                "name": "Accept"
+            },
+            "source": [
+                {
+                    "name": "Any",
+                    "uid": "97aeb369-9aea-11d5-bd16-0090272ccb30"
+                }
+            ],
+            "destination": [
+                {
+                    "name": "Any",
+                    "uid": "97aeb369-9aea-11d5-bd16-0090272ccb30"
+                }
+            ],
+            "service": [
+                {
+                    "name": "Any",
+                    "uid": "97aeb369-9aea-11d5-bd16-0090272ccb30"
+                }
+            ],
+            "enabled": true,
+            "layer": "c0264a80-1832-4fce-8a90-d0849dc4ba33"
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### CheckPoint data for access rule "test_access_rule"
+>
+>|name|uid|type|rule-number|action|enabled|
+>|---|---|---|---|---|---|
+>| test_access_rule | e5bc5918-7155-493e-89ce-5562586d3acc | access-rule | 3 | Accept | true |
+
+### checkpoint-access-rule-add
+
+***
+Create new access rule
+
+#### Base Command
+
+`checkpoint-access-rule-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| layer | Layer to which to assign the rule, identified by the name or UID. Required unless entry_id is provided. | Optional |
+| position | Position in the rulebase. Can be an integer, or one of: top, above, below, bottom. When using "above" or "below", the position_rule argument is required. Required unless entry_id is provided. | Optional |
+| name | Rule name. | Optional |
+| action | Action settings. | Optional |
+| vpn | Communities or Directional. Valid values: Any or All_GwToGw. | Optional |
+| destination | A comma-separated list of destination network objects identified by the name or UID. | Optional |
+| service | A comma-separated list of service objects identified by the name or UID. | Optional |
+| source | A comma-separated list of source network objects identified by the name or UID. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| comments | Comment string. | Optional |
+| install_on | A comma-separated list of installation targets. | Optional |
+| enabled | Whether to enable/disable the rule. | Optional |
+| track_type | Track settings for the rule. Possible values: "Log", "Extended Log", "Detailed Log", "None". | Optional |
+| track_accounting | Whether to enable/disable track accounting. | Optional |
+| track_per_session | Whether to generate a log per session. | Optional |
+| position_rule | The name of the rule or section to use as a reference point. The new rule is positioned relative to this rule or section. Required when position is "above" or "below". Optional when position is "top" or "bottom". | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| entry_id | Entry ID of a file containing the request JSON. If provided, all other arguments (except session_id) are ignored and the file content is sent as-is to the API. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.AccessRule.name | String | Object name. |
+| CheckPoint.AccessRule.uid | String | Object UID. |
+| CheckPoint.AccessRule.type | String | Object type. |
+| CheckPoint.AccessRule.domain-name | String | Domain name. |
+| CheckPoint.AccessRule.domain-uid | String | Domain UID. |
+| CheckPoint.AccessRule.domain-type | String | Domain type. |
+| CheckPoint.AccessRule.enabled | Boolean | Indicates if the rule is enabled or disabled. |
+| CheckPoint.AccessRule.layer | String | Layer to which the rule was assigned, identified by the name or UID. |
+| CheckPoint.AccessRule.creator | String | The object creator. |
+| CheckPoint.AccessRule.last-modifier | String | The user that last modified the object. |
+
+#### Command Example
+
 ```!checkpoint-access-rule-add name=test_access_rule layer=Network position=top session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1639,60 +1909,74 @@ Create new access rule
 
 #### Human Readable Output
 
->### CheckPoint data for adding access rule:
+>### CheckPoint data for adding access rule
+>
 >|name|uid|type|domain-name|domain-uid|enabled|layer|creator|last-modifier|
 >|---|---|---|---|---|---|---|---|---|
 >| test_access_rule | a9f00b65-bb3b-4548-b06a-6c5672df6c8b | access-rule | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | true | c0264a80-1832-4fce-8a90-d0849dc4ba33 | adminsh | adminsh |
 
-
 ### checkpoint-access-rule-update
+
 ***
 Edit existing access rule using object name or uid.
-
 
 #### Base Command
 
 `checkpoint-access-rule-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | object name or uid, OR rule number | Required | 
-| layer | Layer that the rule belongs to identified by the name or UID. | Required | 
-| action | action to be taken on the rule | Optional | 
-| enabled | Enable/Disable the rule. | Optional | 
-| new_name | New name of the object. | Optional | 
-| new_position | New position in the rulebase. Value can be int to set specific position, ot str- 'top' or 'bottom' | Optional | 
-| ignore_warnings | Apply changes ignoring warnings. | Optional | 
-| ignore_errors | Apply changes ignoring errors | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID), rule name, or rule number. | Required |
+| layer | Layer to which the rule belongs, identified by the name or UID. | Required |
+| action | Action to be taken on the rule. | Optional |
+| enabled | If "true", the rule is enabled. Default is "true". | Optional |
+| new_name | New name of the object. | Optional |
+| new_position | New position in the rulebase. Value can be "int" to set a specific position, or str- 'top' or 'bottom'. | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Can be "True" or "False". Default is "True". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Can be "True" or "False". Default is "False".
+Note: you won't be able to publish such these changes.
+If the ignore-warnings flag was omitted, warnings will also be ignored. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| comments | Update comments. | Optional |
+| track_type | Track settings for the rule. Possible values: "Log", "Extended Log", "Detailed Log", "None". | Optional |
+| track_accounting | Whether to enable/disable track accounting. | Optional |
+| track_per_session | Whether to generate a log per session. | Optional |
+| install_on | A comma-separated list of updated targets. | Optional |
+| source_add | A comma-separated list of sources to add to the existing sources. | Optional |
+| source_remove | A comma-separated list of sources to remove from the existing sources. | Optional |
+| service_add | A comma-separated list of services to add to the existing services. | Optional |
+| service_remove | A comma-separated list of services to remove from the existing services. | Optional |
+| destination_add | A comma-separated list of destinations to add to the existing destinations. | Optional |
+| destination_remove | A comma-separated list of destinations to remove from the existing destinations. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AccessRule.name | String | object name | 
-| CheckPoint.AccessRule.uid | String | object uid | 
-| CheckPoint.AccessRule.type | String | object type | 
-| CheckPoint.AccessRule.action-name | String | action name | 
-| CheckPoint.AccessRule.action-uid | String | action uid | 
-| CheckPoint.AccessRule.action-type | Unknown | action type | 
-| CheckPoint.AccessRule.action-domain-name | String | action domain name | 
-| CheckPoint.AccessRule.content-direction | String | On which direction the file types processing is applied. | 
-| CheckPoint.AccessRule.domain-name | String | domain name | 
-| CheckPoint.AccessRule.domain-uid | String | domain uid | 
-| CheckPoint.AccessRule.domain-type | String | domain type | 
-| CheckPoint.AccessRule.enabled | Boolean | Enable/Disable the rule. | 
-| CheckPoint.AccessRule.layer | String | Layer that the rule belongs to identified by the name or UID. | 
-| CheckPoint.AccessRule.creator | String | Indicates the creator of the object | 
-| CheckPoint.AccessRule.last-modifier | String | Indicates the last user modified the object | 
-
+| CheckPoint.AccessRule.name | String | Object name. |
+| CheckPoint.AccessRule.uid | String | Object UID. |
+| CheckPoint.AccessRule.type | String | Object type. |
+| CheckPoint.AccessRule.action-name | String | Action name. |
+| CheckPoint.AccessRule.action-uid | String | Action UID. |
+| CheckPoint.AccessRule.action-type | Unknown | Action type. |
+| CheckPoint.AccessRule.action-domain-name | String | Action domain name. |
+| CheckPoint.AccessRule.content-direction | String | The direction on which the file types processing is applied. |
+| CheckPoint.AccessRule.domain-name | String | Domain name. |
+| CheckPoint.AccessRule.domain-uid | String | Domain UID. |
+| CheckPoint.AccessRule.domain-type | String | Domain type. |
+| CheckPoint.AccessRule.enabled | Boolean | Indicates if the rule is enabled or disabled. |
+| CheckPoint.AccessRule.layer | String | Layer to which the rule belongs, identified by the name or UID. |
+| CheckPoint.AccessRule.creator | String | The creator of the object. |
+| CheckPoint.AccessRule.last-modifier | String | The user that last modified the object. |
 
 #### Command Example
+
 ```!checkpoint-access-rule-update identifier=7867e584-0e68-42b4-ba18-2dd16cdbd436 layer=Network session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1717,40 +2001,41 @@ Edit existing access rule using object name or uid.
 
 #### Human Readable Output
 
->### CheckPoint data for updating an access rule:
+>### CheckPoint data for updating an access rule
+>
 >|name|uid|type|domain-name|domain-uid|action-name|action-uid|action-type|content-direction|creator|enabled|last-modifier|
 >|---|---|---|---|---|---|---|---|---|---|---|---|
 >| None | 7867e584-0e68-42b4-ba18-2dd16cdbd436 | access-rule | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | Drop | 6c488338-8eec-4103-ad21-cd461ac2c473 | RulebaseAction | any | adminsh | true | adminsh |
 
-
 ### checkpoint-access-rule-delete
+
 ***
 Delete access rule
-
 
 #### Base Command
 
 `checkpoint-access-rule-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid, name or rule-number. | Required | 
-| layer | Layer that the rule belongs to identified by the name or UID. | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID), rule name, or rule number. | Required |
+| layer | Layer to which the rule belongs, identified by the name or UID. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AccessRule.message | String | Operation status | 
-
+| CheckPoint.AccessRule.message | String | Operation status |
 
 #### Command Example
+
 ```!checkpoint-access-rule-delete identifier=7867e584-0e68-42b4-ba18-2dd16cdbd436 layer=Network session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1764,41 +2049,44 @@ Delete access rule
 #### Human Readable Output
 
 >### CheckPoint data for deleting access rule range: 7867e584-0e68-42b4-ba18-2dd16cdbd436
+>
 >|message|
 >|---|
 >| OK |
 
-
 ### checkpoint-application-site-list
+
 ***
 Retrieve all objects.
-
 
 #### Base Command
 
 `checkpoint-application-site-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results. | Optional | 
-| offset | Number of the results to initially skip | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for results. | Optional |
+| domains_to_process | A comma-separated list of domains to process. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSite.name | String | objects name | 
-| CheckPoint.ApplicationSite.uid | String | objects uid | 
-| CheckPoint.ApplicationSite.type | String | objects type | 
-
+| CheckPoint.ApplicationSite.name | String | Object names. |
+| CheckPoint.ApplicationSite.uid | String | Objects UIDs. |
+| CheckPoint.ApplicationSite.type | String | Object types. |
 
 #### Command Example
+
 ```!checkpoint-application-site-list limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1870,7 +2158,8 @@ Retrieve all objects.
 
 #### Human Readable Output
 
->### CheckPoint data for all access rule bases:
+>### CheckPoint data for all access rule bases
+>
 >|name|uid|type|
 >|---|---|---|
 >| #hashtags | 00fa9e3c-36ef-0f65-e053-08241dc22da2 | application-site |
@@ -1879,48 +2168,57 @@ Retrieve all objects.
 >| 1000keyboards | 00fa9e3d-a077-0f65-e053-08241dc22da2 | application-site |
 >| 1000memories | 00fa9e43-56d7-0f65-e053-08241dc22da2 | application-site |
 
-
 ### checkpoint-application-site-add
+
 ***
 Add application site
-
 
 #### Base Command
 
 `checkpoint-application-site-add`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | Object name. Must be unique in the domain | Required | 
-| primary_category | Each application is assigned to one primary category based on its most defining aspect | Required | 
-| identifier | can be:<br/>  url-list(str): URLs that determine this particular application.<br/>  application-signature(str): Application signature generated by Signature Tool. | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-| groups | Collection of group identifiers. | Optional | 
-
+| name | Object name. Must be unique in the domain. | Required |
+| primary_category | Each application is assigned to one primary category based on its most defining aspect. | Required |
+| identifier | A comma-separated list of identifiers. Can be:
+  url-list(str): URLs that determine this particular application.
+  application-signature(str): Application signature generated by Signature Tool. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
+| groups | A comma-separated list of group identifiers. | Optional |
+| description | Description of the application site. | Optional |
+| comments | Comment string. | Optional |
+| color | The object color. | Optional |
+| tags | A comma-separated list of tags to assign. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSite.name | String | object name | 
-| CheckPoint.ApplicationSite.uid | String | object uid | 
-| CheckPoint.ApplicationSite.type | String | object type | 
-| CheckPoint.ApplicationSite.application-id | Number | application ID | 
-| CheckPoint.ApplicationSite.description | String | A description for the application. | 
-| CheckPoint.ApplicationSite.domain-name | String | domain name | 
-| CheckPoint.ApplicationSite.domain-uid | String | domain uid | 
-| CheckPoint.ApplicationSite.domain-type | String | domain name | 
-| CheckPoint.ApplicationSite.url-list | String | URLs that determine this particular application. | 
-| CheckPoint.ApplicationSite.creator | String | Indicates the creator of the object | 
-| CheckPoint.ApplicationSite.last-modifier | String | Indicates the last user modified this object | 
-| CheckPoint.ApplicationSite.groups | Unknown | Collection of group identifiers | 
-
+| CheckPoint.ApplicationSite.name | String | Object name. |
+| CheckPoint.ApplicationSite.uid | String | Object UID. |
+| CheckPoint.ApplicationSite.type | String | Object type. |
+| CheckPoint.ApplicationSite.application-id | Number | Application ID. |
+| CheckPoint.ApplicationSite.description | String | A description of the application. |
+| CheckPoint.ApplicationSite.domain-name | String | Domain name. |
+| CheckPoint.ApplicationSite.domain-uid | String | Domain UID. |
+| CheckPoint.ApplicationSite.domain-type | String | Domain type. |
+| CheckPoint.ApplicationSite.url-list | String | URLs that determine this application. |
+| CheckPoint.ApplicationSite.creator | String | The creator of the object. |
+| CheckPoint.ApplicationSite.last-modifier | String | The user that last modified this object. |
+| CheckPoint.ApplicationSite.groups | Unknown | Collection of group identifiers. |
+| CheckPoint.ApplicationSite.color | String | Color of the object. |
+| CheckPoint.ApplicationSite.comments | String | Comments string. |
+| CheckPoint.ApplicationSite.tags | Unknown | Collection of tag objects associated with the application site. |
 
 #### Command Example
-``` !checkpoint-application-site-add name="test_application_site_1" primary_category="Test Category" identifier="qmasters.co" session_id="TEAK9kWnZ9Dhql9hYP5IR4aZEw1mrKdPjw3lRnxvp88"```
+
+```!checkpoint-application-site-add name="test_application_site_1" primary_category="Test Category" identifier="qmasters.co" session_id="TEAK9kWnZ9Dhql9hYP5IR4aZEw1mrKdPjw3lRnxvp88"```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -1940,64 +2238,70 @@ Add application site
                 ]
     }
 }
-``` 
+```
 
 #### Human Readable Output
-### CheckPoint data for adding application site:
+
+### CheckPoint data for adding application site
+
 |application-id|creator|domain-name|domain-uid|last-modifier|name|type|uid|url-list|
 |---|---|---|---|---|---|---|---|---|
 | 0 | adminsh | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | test_application_site_1 | application-site | 452f6cff-e7fb-47b8-abfe-53c668dc0038 | qmasters.co |
 
-
-
-
 ### checkpoint-application-site-update
-***
-Edit existing application using object name or uid. 
-It's impossible to set  'application-signature' when the application was initialized with 'url-list' and vice-verse.
 
+***
+Edit existing application using object name or uid.
+It's impossible to set  'application-signature' when the application was initialized with 'url-list' and vice-verse.
 
 #### Base Command
 
 `checkpoint-application-site-update`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name. | Required | 
-| description | A description for the application. | Optional | 
-| primary_category | Each application is assigned to one primary category based on its most defining aspect. | Optional | 
-| application_signature | Application signature generated by Signature Tool. | Optional | 
-| new_name | New name of the object. | Optional | 
-| urls_defined_as_regular_expression | States whether the URL is defined as a Regular Expression or not. | Optional | 
-| url_list | URLs that determine this particular application. This will replace the current url collection. | Optional | 
-| url_list_to_add | Adds to collection of values. | Optional | 
-| url_list_to_remove | Removes from collection of values. | Optional | 
-| groups | Collection of group identifiers. Can be a single group or a list of groups. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| description | A description of the application. | Optional |
+| primary_category | Each application is assigned to one primary category based on its most defining aspect. | Optional |
+| application_signature | A comma-separated list of application signatures generated by Signature Tool. | Optional |
+| new_name | New name of the object. | Optional |
+| urls_defined_as_regular_expression | If "True", the URL is defined as a Regular Expression. Default is "True". | Optional |
+| url_list | A comma-separated list of URLs that determine this particular application. This will replace the current URL collection. | Optional |
+| url_list_to_add | A comma-separated list of URLs to add to the collection. | Optional |
+| url_list_to_remove | Removes a URL from the comma-separated list of URLs. | Optional |
+| groups | A comma-separated list of groups to update membership. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+| comments | Update comments. | Optional |
+| color | Update color. | Optional |
+| tags | A comma-separated list of update tags. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSite.name | String | object name | 
-| CheckPoint.ApplicationSite.uid | String | object uid | 
-| CheckPoint.ApplicationSite.type | String | object ty\[e | 
-| CheckPoint.ApplicationSite.application-id | Number | application ID | 
-| CheckPoint.ApplicationSite.description | String | A description for the application. | 
-| CheckPoint.ApplicationSite.domain-name | String | domain name | 
-| CheckPoint.ApplicationSite.domain-uid | String | domain uid | 
-| CheckPoint.ApplicationSite.domain-type | String | domain type | 
-| CheckPoint.ApplicationSite.url-list | String | URLs that determine this particular application. | 
-| CheckPoint.ApplicationSite.groups | String | Collection of group identifiers | 
-| CheckPoint.ApplicationSite.primary-category | String | Objects primary category. | 
-
+| CheckPoint.ApplicationSite.name | String | Object name. |
+| CheckPoint.ApplicationSite.uid | String | Object UID. |
+| CheckPoint.ApplicationSite.type | String | Object type. |
+| CheckPoint.ApplicationSite.application-id | Number | Application ID. |
+| CheckPoint.ApplicationSite.description | String | A description for the application. |
+| CheckPoint.ApplicationSite.domain-name | String | Domain name. |
+| CheckPoint.ApplicationSite.domain-uid | String | Domain UID. |
+| CheckPoint.ApplicationSite.domain-type | String | Domain type. |
+| CheckPoint.ApplicationSite.url-list | String | URLs that determine this application. |
+| CheckPoint.ApplicationSite.groups | String | Collection of group identifiers. |
+| CheckPoint.ApplicationSite.primary-category | String | Objects primary category. |
+| CheckPoint.ApplicationSite.color | String | Color of the object. |
+| CheckPoint.ApplicationSite.comments | String | Comments string. |
+| CheckPoint.ApplicationSite.tags | Unknown | Collection of tag objects associated with the application site. |
 
 #### Command Example
+
 ```!checkpoint-application-site-update identifier=test_application_site session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2022,39 +2326,40 @@ It's impossible to set  'application-signature' when the application was initial
 
 #### Human Readable Output
 
->### CheckPoint data for updating an application site:
+>### CheckPoint data for updating an application site
+>
 >|name|uid|type|application-id|primary-category|url-list|domain-name|domain-uid|
 >|---|---|---|---|---|---|---|---|
 >| test_application_site | ccc788d1-b798-4e5c-8530-a6c375853730 | application-site | 1073741861 | Test Category | qmasters.co | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde |
 
-
 ### checkpoint-application-site-delete
+
 ***
 Delete existing application site object using object name or uid.
-
 
 #### Base Command
 
 `checkpoint-application-site-delete`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | uid or name object | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSite.message | String | Operation status. | 
-
+| CheckPoint.ApplicationSite.message | String | Operation status. |
 
 #### Command Example
+
 ```!checkpoint-application-site-delete identifier=test_application_site session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2068,37 +2373,38 @@ Delete existing application site object using object name or uid.
 #### Human Readable Output
 
 >### CheckPoint data for deleting application site : test_application_site
+>
 >|message|
 >|---|
 >| OK |
 
-
 ### checkpoint-publish
+
 ***
 publish changes
-
 
 #### Base Command
 
 `checkpoint-publish`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| session_id | Execute command with a specific session ID | Required | 
-
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Publish.task-id | String | Task id of the publish command. | 
-
+| CheckPoint.Publish.task-id | String | Task id of the publish command. |
 
 #### Command Example
+
 ```!checkpoint-publish session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2111,41 +2417,42 @@ publish changes
 
 #### Human Readable Output
 
->### CheckPoint data for publishing current session:
+>### CheckPoint data for publishing current session
+>
 >|task-id|
 >|---|
 >| 01234567-89ab-cdef-9338-e44df5384ac3 |
 
-
 ### checkpoint-install-policy
+
 ***
 Intsalling policy
-
 
 #### Base Command
 
 `checkpoint-install-policy`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| policy_package | The name of the Policy Package to be installed. | Required | 
-| targets | On what targets to execute this command. Targets may be identified by their name, or object unique identifier. | Required | 
-| access | Set to be true in order to install the Access Control policy. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| policy_package | The name of the Policy Package to install. | Required |
+| targets | The targets on which to execute this command. Targets can be identified by their name, or object unique identifier. | Required |
+| access | If "True", will install the Access Control policy. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.InstallPolicy.task-id | String | Operation task ID. | 
-
+| CheckPoint.InstallPolicy.task-id | String | Operation task ID. |
 
 #### Command Example
+
 ```!checkpoint-install-policy policy_package=standard targets=test-gw session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2158,73 +2465,78 @@ Intsalling policy
 
 #### Human Readable Output
 
->### CheckPoint data for installing policy:
+>### CheckPoint data for installing policy
+>
 >|task-id|
 >|---|
 >| d461078b-cc1e-41b6-869b-096438673323 |
 
-
 ### checkpoint-verify-policy
+
 ***
 Verifies the policy of the selected package.
-
 
 #### Base Command
 
 `checkpoint-verify-policy`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| policy_package | The name of the Policy Package to be installed. | Required | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| policy_package | The name of the Policy Package to verify. | Required |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.VerifyPolicy.task-id | String | Operation task ID. | 
-
+| CheckPoint.VerifyPolicy.task-id | String | Operation task ID. |
 
 #### Command Example
+
 ```!checkpoint-policy-verify policy_package=standard session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Human Readable Output
 
-
-
 ### checkpoint-show-task
+
 ***
 Show task progress and details.
-
 
 #### Base Command
 
 `checkpoint-show-task`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| task_id | Unique identifier of one or more tasks. | Required | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| task_id | Unique identifier of one or more tasks. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
+| details_level | The level of detail for some of the fields in the response. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ShowTask.task-id | String | Task ID | 
-| CheckPoint.ShowTask.task-name | String | Task name | 
-| CheckPoint.ShowTask.status | String | Task status | 
-| CheckPoint.ShowTask.progress-percentage | Unknown | Task prograss in percentage | 
-| CheckPoint.ShowTask.suppressed | Boolean | Indicates if the task is suppressed | 
-
+| CheckPoint.ShowTask.task-id | String | Task ID. |
+| CheckPoint.ShowTask.task-name | String | Task name. |
+| CheckPoint.ShowTask.status | String | Task status. |
+| CheckPoint.ShowTask.progress-percentage | Unknown | Task progress in percentage. |
+| CheckPoint.ShowTask.suppressed | Boolean | Indicates if the task is suppressed. |
+| CheckPoint.ShowTask.message | String | Operation status message returned on failure. |
+| CheckPoint.ShowTask.warnings | Unknown | Validation warnings returned on failure. |
+| CheckPoint.ShowTask.errors | Unknown | Validation errors returned on failure. |
+| CheckPoint.ShowTask.blocking-errors | Unknown | Blocking validation errors returned on failure. |
+| CheckPoint.ShowTask.code | String | Error code returned on failure. |
 
 #### Command Example
+
 ```!checkpoint-show-task task_id=01234567-89ab-cdef-997f-2e3e3b4b2541```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2241,42 +2553,43 @@ Show task progress and details.
 
 #### Human Readable Output
 
->### CheckPoint data for tasks:
+>### CheckPoint data for tasks
+>
 >|task-name|task-id|status|suppressed|progress-percentage|
 >|---|---|---|---|---|
 >| Publish operation | 01234567-89ab-cdef-997f-2e3e3b4b2541 | succeeded | false | 100 |
 
-
 ### checkpoint-login-and-get-session-id
+
 ***
 Login to CheckPoint and get the session id
-
 
 #### Base Command
 
 `checkpoint-login-and-get-session-id`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| session_timeout | Session expiration timeout in seconds. Default 600 seconds. Session timeout range is between 600 to 3600 seconds. | Optional | 
-| domain | Name of domain to log in to, for use with MDS. | Optional | 
-
+| session_timeout | Session expiration timeout in seconds. Default is 600 seconds. Session timeout range is between 600 to 3600 seconds. | Optional |
+| domain | Optional domain to start session in, for use with MDS login only. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Login.session-id | String | Session ID | 
-
+| CheckPoint.Login.session-id | String | Session ID |
 
 #### Command Example
+
 ```
 !checkpoint-login-and-get-session-id
 !checkpoint-login-and-get-session-id domain='Corp'
 ```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2289,35 +2602,374 @@ Login to CheckPoint and get the session id
 
 #### Human Readable Output
 
->### CheckPoint session data:
+>### CheckPoint session data
+>
 >|session-id|
 >|---|
 >| LoUhF29pRkJsBiIWlMdBFy1LhHWXzE0VJT_lWpz4v0k |
 
+### checkpoint-session-discard
 
-### checkpoint-logout
 ***
-Logout from a given session
-
+Discards uncommitted session changes (inverse of publish).
 
 #### Base Command
 
-`checkpoint-logout`
+`checkpoint-session-discard`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| session_id | Session ID to logout from | Required | 
+| target_session_id | The session UID to discard (sent as "uid"). If omitted, discards the current session. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
 
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.SessionDiscard.message | String | The result message. |
+
+#### Command Example
+
+```!checkpoint-session-discard session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{
+    "CheckPoint": {
+        "SessionDiscard": {
+            "message": "OK",
+            "number-of-discarded-changes": 3
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>Session discarded 3 change(s). OK
+
+### checkpoint-dns-domain-list
+
+***
+Lists DNS domain objects.
+
+#### Base Command
+
+`checkpoint-dns-domain-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| limit | The maximum number of results to return (range 1-500). Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| filter | Search expression to filter objects by. | Optional |
+| order | The list of comma-separated "direction:field" pairs by which to sort results. Valid directions are ASC and DESC. For example, "ASC:type,DESC:uid". Default is "ASC:name". | Optional |
+| show_membership | Indicates whether to calculate and show a "groups" field for every object in reply. | Optional |
+| details_level | The level of detail for results. | Optional |
+| domains_to_process | Indicates which domains to process the commands on. Cannot be used with details_level set to 'full'. Must be run from the System Domain. | Optional |
+| show_only_local_domain | Indicates whether the query should return only objects from the current local domain. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.DNSDomain.name | String | Object name. |
+| CheckPoint.DNSDomain.uid | String | Object UID. |
+| CheckPoint.DNSDomain.type | String | Object type. |
+| CheckPoint.DNSDomain.domain.name | String | The domain name. |
+
+#### Command Example
+
+```!checkpoint-dns-domain-list limit=5 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{
+    "CheckPoint": {
+        "DNSDomain": [
+            {
+                "name": ".example.com",
+                "uid": "d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f",
+                "type": "dns-domain",
+                "domain": {
+                    "name": "SMC User"
+                }
+            },
+            {
+                "name": ".test.local",
+                "uid": "1c8d2f5b-98a7-4321-bfed-9876543210ab",
+                "type": "dns-domain",
+                "domain": {
+                    "name": "SMC User"
+                }
+            }
+        ]
+    }
+}
+```
+
+#### Human Readable Output
+
+>### CheckPoint data for all DNS domains
+>
+>|name|uid|type|
+>|---|---|---|
+>| .example.com | d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f | dns-domain |
+>| .test.local | 1c8d2f5b-98a7-4321-bfed-9876543210ab | dns-domain |
+
+### checkpoint-dns-domain-get
+
+***
+Shows a single DNS domain object.
+
+#### Base Command
+
+`checkpoint-dns-domain-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object name or UID. | Required |
+| details_level | The level of detail for results. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.DNSDomain.name | String | Object name. |
+| CheckPoint.DNSDomain.uid | String | Object UID. |
+| CheckPoint.DNSDomain.type | String | Object type. |
+| CheckPoint.DNSDomain.is-sub-domain | Boolean | Indicates whether the object matches sub-domains. |
+| CheckPoint.DNSDomain.domain.name | String | The domain name. |
+
+#### Command Example
+
+```!checkpoint-dns-domain-get identifier=.example.com session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{
+    "CheckPoint": {
+        "DNSDomain": {
+            "name": ".example.com",
+            "uid": "d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f",
+            "type": "dns-domain",
+            "is-sub-domain": true,
+            "domain": {
+                "name": "SMC User"
+            }
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### CheckPoint data for DNS domain ".example.com"
+>
+>|name|uid|type|is-sub-domain|
+>|---|---|---|---|
+>| .example.com | d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f | dns-domain | true |
+
+### checkpoint-dns-domain-add
+
+***
+Creates a DNS domain object.
+
+#### Base Command
+
+`checkpoint-dns-domain-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| name | Object name. Must begin with a dot, e.g. ".example.com". | Required |
+| is_sub_domain | Indicates whether to match sub-domains too. | Required |
+| details_level | The level of detail for results. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| color | Object color. Default: black. | Optional |
+| comments | Comments string. | Optional |
+| ignore_warnings | Whether to ignore warnings. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors. Default is "False". | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.DNSDomain.name | String | Object name. |
+| CheckPoint.DNSDomain.uid | String | Object UID. |
+| CheckPoint.DNSDomain.type | String | Object type. |
+| CheckPoint.DNSDomain.is-sub-domain | Boolean | Indicates whether the object matches sub-domains. |
+| CheckPoint.DNSDomain.domain.name | String | The domain name. |
+
+#### Command Example
+
+```!checkpoint-dns-domain-add name=.example.com is_sub_domain=true comments="Created via XSOAR" color=blue session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{
+    "CheckPoint": {
+        "DNSDomain": {
+            "name": ".example.com",
+            "uid": "d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f",
+            "type": "dns-domain",
+            "is-sub-domain": true,
+            "domain": {
+                "name": "SMC User"
+            }
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### CheckPoint data for new DNS domain ".example.com"
+>
+>|name|uid|type|is-sub-domain|
+>|---|---|---|---|
+>| .example.com | d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f | dns-domain | true |
+
+### checkpoint-dns-domain-update
+
+***
+Modifies a DNS domain object.
+
+#### Base Command
+
+`checkpoint-dns-domain-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object name or UID. | Required |
+| new_name | New name of the object. | Optional |
+| is_sub_domain | Indicates whether to match sub-domains too. | Optional |
+| details_level | The level of detail for results. | Optional |
+| tags_action | The action to perform on the tags list. When the action is "add" or "remove", the tags list is wrapped as {tags_action: tags}. Otherwise, tags are sent without an action. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| color | Object color. Default: black. | Optional |
+| comments | Comments string. | Optional |
+| ignore_warnings | Whether to ignore warnings. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors. Default is "False". | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.DNSDomain.name | String | Object name. |
+| CheckPoint.DNSDomain.uid | String | Object UID. |
+| CheckPoint.DNSDomain.type | String | Object type. |
+| CheckPoint.DNSDomain.is-sub-domain | Boolean | Indicates whether the object matches sub-domains. |
+| CheckPoint.DNSDomain.domain.name | String | The domain name. |
+
+#### Command Example
+
+```!checkpoint-dns-domain-update identifier=.example.com is_sub_domain=true comments="Updated via XSOAR" color=blue session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{
+    "CheckPoint": {
+        "DNSDomain": {
+            "name": ".example.com",
+            "uid": "d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f",
+            "type": "dns-domain",
+            "is-sub-domain": true,
+            "domain": {
+                "name": "SMC User"
+            }
+        }
+    }
+}
+```
+
+#### Human Readable Output
+
+>### CheckPoint data for updated DNS domain ".example.com"
+>
+>|name|uid|type|is-sub-domain|
+>|---|---|---|---|
+>| .example.com | d4a9a5b1-1234-4abc-9876-1a2b3c4d5e6f | dns-domain | true |
+
+### checkpoint-dns-domain-delete
+
+***
+Deletes a DNS domain object.
+
+#### Base Command
+
+`checkpoint-dns-domain-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object name or UID (mapped to API name). | Required |
+| ignore_warnings | Whether to ignore warnings. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors. Default is "False". | Optional |
+| details_level | The level of detail for results. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 There is no context output for this command.
 
 #### Command Example
+
+```!checkpoint-dns-domain-delete identifier=.example.com session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
+
+#### Context Example
+
+```
+{}
+```
+
+#### Human Readable Output
+
+>DNS domain ".example.com" was deleted successfully.
+
+### checkpoint-logout
+
+***
+Logout from a given session
+
+#### Base Command
+
+`checkpoint-logout`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| session_id | Session ID to log out from. | Required |
+
+#### Context Output
+
+There is no context output for this command.
+
+#### Command Example
+
 ```!checkpoint-logout session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {}
 ```
@@ -2327,38 +2979,39 @@ There is no context output for this command.
 >OK
 
 ### checkpoint-packages-list
+
 ***
 List all packages.
-
 
 #### Base Command
 
 `checkpoint-packages-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results | Optional | 
-| offset | Number of the results to initially skip | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of the results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Packages.name | String | Name of the package | 
-| CheckPoint.Packages.uid | String | UID of the package | 
-| CheckPoint.Packages.type | String | Type of the package | 
-| CheckPoint.Packages.domain-name | String | Domain name | 
-| CheckPoint.Packages.domain-uid | String | Domain uid | 
-| CheckPoint.Packages.domain-type | String | Domain type | 
-
+| CheckPoint.Packages.name | String | Name of the package |
+| CheckPoint.Packages.uid | String | UID of the package |
+| CheckPoint.Packages.type | String | Type of the package |
+| CheckPoint.Packages.domain-name | String | Domain name |
+| CheckPoint.Packages.domain-uid | String | Domain uid |
+| CheckPoint.Packages.domain-type | String | Domain type |
 
 #### Command Example
+
 ```!checkpoint-packages-list session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2380,49 +3033,50 @@ List all packages.
 
 #### Human Readable Output
 
->### CheckPoint data for all packages:
+>### CheckPoint data for all packages
+>
 >|name|uid|type|
 >|---|---|---|
 >| BenLayer | 9daac370-ad2d-4a21-a503-a312755aceaf | package |
 >| Standard | ca4e32a8-bee0-423c-84f0-19bab6751d5e | package |
 
-
 ### checkpoint-gateways-list
+
 ***
 Retrieve all gateways and servers
-
 
 #### Base Command
 
 `checkpoint-gateways-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results | Optional | 
-| offset | Number of the results to initially skip | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of the results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Gateways.name | String | Gateway name | 
-| CheckPoint.Gateways.uid | String | Gateway uid | 
-| CheckPoint.Gateways.type | String | Gateway type | 
-| CheckPoint.Gateways.version | String | Gateway vesion | 
-| CheckPoint.Gateways.network-security-blades | String | Gateway network security blades | 
-| CheckPoint.Gateways.management-blades | String | Gateway management blades | 
-| CheckPoint.Gateways.domain-name | String | Domain name | 
-| CheckPoint.Gateways.domain-uid | String | Domain UID | 
-| CheckPoint.Gateways.domain-type | String | Doamin type | 
-
+| CheckPoint.Gateways.name | String | Gateway name |
+| CheckPoint.Gateways.uid | String | Gateway uid |
+| CheckPoint.Gateways.type | String | Gateway type |
+| CheckPoint.Gateways.version | String | Gateway vesion |
+| CheckPoint.Gateways.network-security-blades | String | Gateway network security blades |
+| CheckPoint.Gateways.management-blades | String | Gateway management blades |
+| CheckPoint.Gateways.domain-name | String | Domain name |
+| CheckPoint.Gateways.domain-uid | String | Domain UID |
+| CheckPoint.Gateways.domain-type | String | Doamin type |
 
 #### Command Example
+
 ```!checkpoint-gateways-list session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2455,46 +3109,47 @@ Retrieve all gateways and servers
 
 #### Human Readable Output
 
->### CheckPoint data for all gateways:
+>### CheckPoint data for all gateways
+>
 >|name|uid|type|version|network-security-blades|management-blades|
 >|---|---|---|---|---|---|
 >| gw-88a290 | 98bee60f-23ab-bf41-ba29-4c574b9d6f7c | CpmiHostCkp | R80.30 |  | network-policy-management: true<br/>logging-and-status: true |
 >| test-gw | 3b83b6cb-d3cb-4596-8d90-ba9735d7d53c | simple-gateway | R80.30 | firewall: true |  |
 
-
 ### checkpoint-application-site-category-list
+
 ***
 Retrieve all application site category.
-
 
 #### Base Command
 
 `checkpoint-application-site-category-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results | Optional | 
-| offset | Number of the results to initially skip | Optional | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of the results to initially skip. Default is 0. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSiteCategory.name | String | Name of the package | 
-| CheckPoint.ApplicationSiteCategory.uid | String | UID of the package | 
-| CheckPoint.ApplicationSiteCategory.type | String | Type of the package | 
-| CheckPoint.ApplicationSiteCategory.domain-name | String | Domain name | 
-| CheckPoint.ApplicationSiteCategory.domain-uid | String | Domain uid | 
-| CheckPoint.ApplicationSiteCategory.domain-type | String | Domain type | 
-
+| CheckPoint.ApplicationSiteCategory.name | String | Name of the package |
+| CheckPoint.ApplicationSiteCategory.uid | String | UID of the package |
+| CheckPoint.ApplicationSiteCategory.type | String | Type of the package |
+| CheckPoint.ApplicationSiteCategory.domain-name | String | Domain name |
+| CheckPoint.ApplicationSiteCategory.domain-uid | String | Domain uid |
+| CheckPoint.ApplicationSiteCategory.domain-type | String | Domain type |
 
 #### Command Example
+
 ```!checkpoint-application-site-category-list limit=5```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2566,7 +3221,8 @@ Retrieve all application site category.
 
 #### Human Readable Output
 
->### CheckPoint data for all application site category:
+>### CheckPoint data for all application site category
+>
 >|name|uid|type|
 >|---|---|---|
 >| 0new_app_site_category | d42e14e7-1c50-48d5-9412-2306dc8e5219 | application-site-category |
@@ -2575,44 +3231,44 @@ Retrieve all application site category.
 >| 0new_category_3 | 51ebf347-290f-4d8c-b99d-7aba73a5698c | application-site-category |
 >| 0new_category_4 | 6b996605-099c-41fa-a4c6-1733ff895bac | application-site-category |
 
-
 ### checkpoint-application-site-category-add
+
 ***
 Add new application site category
-
 
 #### Base Command
 
 `checkpoint-application-site-category-add`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | Object name or uid. Must be unique in the domain. | Required | 
-| groups | Collection of group identifiers. | Optional | 
-| session_id | Execute command with a specific session ID | Required | 
-
+| identifier | Object name or uid. Must be unique in the domain. | Required |
+| groups | Collection of group identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSiteCategory.name | String | object name | 
-| CheckPoint.ApplicationSiteCategory.uid | String | object uid | 
-| CheckPoint.ApplicationSiteCategory.type | String | object type | 
-| CheckPoint.ApplicationSiteCategory.description | String | A description for the application. | 
-| CheckPoint.ApplicationSiteCategory.domain-name | String | domain name | 
-| CheckPoint.ApplicationSiteCategory.domain-uid | String | domain uid | 
-| CheckPoint.ApplicationSiteCategory.domain-type | String | domain name | 
-| CheckPoint.ApplicationSiteCategory.creator | String | Indicates the creator of the object | 
-| CheckPoint.ApplicationSiteCategory.last-modifier | String | Indicates the last user modified this object | 
-| CheckPoint.ApplicationSiteCategory.groups | Unknown | Collection of group identifiers | 
-
+| CheckPoint.ApplicationSiteCategory.name | String | object name |
+| CheckPoint.ApplicationSiteCategory.uid | String | object uid |
+| CheckPoint.ApplicationSiteCategory.type | String | object type |
+| CheckPoint.ApplicationSiteCategory.description | String | A description for the application. |
+| CheckPoint.ApplicationSiteCategory.domain-name | String | domain name |
+| CheckPoint.ApplicationSiteCategory.domain-uid | String | domain uid |
+| CheckPoint.ApplicationSiteCategory.domain-type | String | domain name |
+| CheckPoint.ApplicationSiteCategory.creator | String | Indicates the creator of the object |
+| CheckPoint.ApplicationSiteCategory.last-modifier | String | Indicates the last user modified this object |
+| CheckPoint.ApplicationSiteCategory.groups | Unknown | Collection of group identifiers |
 
 #### Command Example
+
 ```!checkpoint-application-site-category-add identifier=application_site_category_0101 session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2636,46 +3292,47 @@ Add new application site category
 
 #### Human Readable Output
 
->### CheckPoint data for adding application site category application_site_category_0101:
+>### CheckPoint data for adding application site category application_site_category_0101
+>
 >|name|uid|type|domain-name|domain-uid|creator|last-modifier|
 >|---|---|---|---|---|---|---|
 >| application_site_category_0101 | 5fb2e946-7e9c-42db-8b0a-cf5056f427d8 | application-site-category | SMC User | 41e821a0-3720-11e3-aa6e-0800200c9fde | adminsh | adminsh |
 
-
 ### checkpoint-application-site-category-get
+
 ***
 Retrieve application site category object using object name or uid.
-
 
 #### Base Command
 
 `checkpoint-application-site-category-get`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | application site category object name or UID. | Required | 
-| session_id | Execute command with a specific session ID | Optional | 
-
+| identifier | application site category object name or UID. | Required |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ApplicationSiteCategory.name | Unknown | host name | 
-| CheckPoint.ApplicationSiteCategory.uid | String | object uid | 
-| CheckPoint.ApplicationSiteCategory.type | Unknown | object type | 
-| CheckPoint.ApplicationSiteCategory.domain-name | String | domain name | 
-| CheckPoint.ApplicationSiteCategory.domain-uid | String | domain uid | 
-| CheckPoint.ApplicationSiteCategory.read-only | Boolean | indicates if the object is read only | 
-| CheckPoint.ApplicationSiteCategory.creator | String | indicates the creator of the object | 
-| CheckPoint.ApplicationSiteCategory.last-modifier | String | indicates the last user modified the object | 
-
+| CheckPoint.ApplicationSiteCategory.name | Unknown | host name |
+| CheckPoint.ApplicationSiteCategory.uid | String | object uid |
+| CheckPoint.ApplicationSiteCategory.type | Unknown | object type |
+| CheckPoint.ApplicationSiteCategory.domain-name | String | domain name |
+| CheckPoint.ApplicationSiteCategory.domain-uid | String | domain uid |
+| CheckPoint.ApplicationSiteCategory.read-only | Boolean | indicates if the object is read only |
+| CheckPoint.ApplicationSiteCategory.creator | String | indicates the creator of the object |
+| CheckPoint.ApplicationSiteCategory.last-modifier | String | indicates the last user modified the object |
 
 #### Command Example
+
 ```!checkpoint-application-site-category-get identifier=Alcohol```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2698,52 +3355,54 @@ Retrieve application site category object using object name or uid.
 
 #### Human Readable Output
 
->### CheckPoint data for adding application site category:
+>### CheckPoint data for adding application site category
+>
 >|name|uid|type|domain-name|domain-uid|read-only|creator|last-modifier|
 >|---|---|---|---|---|---|---|---|
 >| Alcohol | 00fa9e44-409e-0f65-e053-08241dc22da2 | application-site-category | APPI Data | 8bf4ac51-2df7-40e1-9bce-bedbedbedbed | false | System | System |
 
-
 ### checkpoint-show-objects
+
 ***
 Retrieve data about objects.
-
 
 #### Base Command
 
 `checkpoint-show-objects`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| limit | The maximal number of returned results. | Optional | 
-| offset | Number of the results to initially skip. | Optional | 
-| filter_search | Search expression to filter objects by. The provided text should be exactly the same as it would be given in Smart Console. The logical operators in the expression ('AND', 'OR') should be provided in capital letters. By default, the search involves both a textual search and a IP search. To use IP search only, set the "ip-only" parameter to true. | Optional | 
-| ip_only | If using "filter", use this field to search objects by their IP address only, without involving the textual search. | Optional | 
-| object_type | he objects' type, e.g.: host, service-tcp, network, address-range. Default value is object | Optional | 
-| session_id | Execute command with a specific session ID | Optional |
-
+| limit | The maximum number of results to return. Default is 50. | Optional |
+| offset | Number of the results to initially skip. Default is 0. | Optional |
+| filter_search | Search expression to filter objects by. The provided text should be exactly the same as it would be given in Smart Console. The logical operators in the expression ('AND', 'OR') should be provided in capital letters. By default, the search involves both a textual search and a IP search. To use IP search only, set the "ip-only" parameter to true. | Optional |
+| ip_only | If using "filter", use this field to search objects by their IP address only, without involving the textual search. | Optional |
+| object_type | The object type, e.g.: host, service-tcp, network, address-range. Default value is object. | Optional |
+| session_id | Executes the command with the specified session ID. | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.Objects.name | String | Object name. | 
-| CheckPoint.Objects.uid | String | Object UID. | 
-| CheckPoint.Objects.type | String | Object type. | 
-| CheckPoint.Objects.ipv4-address | String | IPv4 address of the specified object. | 
-| CheckPoint.Objects.ipv6-address | String | IPv6 address of the specified object. | 
-| CheckPoint.Objects.domain-name | String | Domain name. | 
-| CheckPoint.Objects.domain-uid | String | Domain UID. | 
-| CheckPoint.Objects.creator | String | The creator of the object. | 
-| CheckPoint.Objects.last-modifier | String | The user that last modified the object. | 
-| CheckPoint.Objects.read-only | Boolean | Indicates if the object is read-only. | 
-| CheckPoint.Objects.groups | Unknown | Collection of group identifiers. | 
+| CheckPoint.Objects.name | String | Object name. |
+| CheckPoint.Objects.uid | String | Object UID. |
+| CheckPoint.Objects.type | String | Object type. |
+| CheckPoint.Objects.ipv4-address | String | IPv4 address of the specified object. |
+| CheckPoint.Objects.ipv6-address | String | IPv6 address of the specified object. |
+| CheckPoint.Objects.domain-name | String | Domain name. |
+| CheckPoint.Objects.domain-uid | String | Domain UID. |
+| CheckPoint.Objects.creator | String | The creator of the object. |
+| CheckPoint.Objects.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Objects.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Objects.groups | Unknown | Collection of group identifiers. |
 
 #### Command Example
+
 ```!checkpoint-show-objects limit=3 filter_search=1.2.3.4 ip_only=true```
 
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2765,27 +3424,27 @@ Retrieve data about objects.
 
 #### Human Readable Output
 
->### CheckPoint data for objects:
+>### CheckPoint data for objects
+>
 >|name|uid|type|
 >|---|---|---|
 >| All_Internet | f90e0a2b-f166-427a-b47f-a107b6fe43b9 | address-range |
 
-
 ### checkpoint-package-list
+
 ***
 Get checkpoint-packages details.
-
 
 #### Base Command
 
 `checkpoint-package-list`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| identifier | Object unique identifier or name. | Required | 
-| session_id | Execute command with a specific session ID. | Optional | 
-
+| identifier | The object unique identifier or name. | Required |
+| session_id | The session ID used to execute the command. | Optional |
 
 #### Context Output
 
@@ -2800,12 +3459,12 @@ Get checkpoint-packages details.
 | CheckPoint.Package.revision.type | String | The type of the revision. |
 | CheckPoint.Package.revision.uid | String | The UID of the revision. |
 
-
 #### Command Example
+
 ```!checkpoint-package-list identifier=Standard session_id=GFcJQ9N-Zv8eG33qc4WQ7d4zmdsNvK_l3GcnOUqo8ew```
 
-
 #### Context Example
+
 ```
 {
     "CheckPoint": {
@@ -2829,188 +3488,1241 @@ Get checkpoint-packages details.
 
 #### Human Readable Output
 
->### CheckPoint data for objects:
+>### CheckPoint data for objects
+>
 >|target-name|name|target-uid|revision
 >|---|---|---|---|
 >| Host1 | Standard | 41e821a0-3720-11e3-aa6e-0800200c9fde | "domain": {<br/>"name": "test",<br/>"domain-type": "domain",<br/>"uid": "41e821a0-3720-11e3-aa6e-0800200c9fde"<br/>},<br/>"type": "session",<br/>"uid", "41e821a0-3720-11e3-aa6e-0800200c9fde"<br/> |
+>
 ### checkpoint-add-objects-batch
+
 ***
 Creates new objects in batch. To achieve optimum performance when adding more than one object, use this API. Note: Errors and warnings are ignored when using this API, operation will apply changes while ignoring errors. It is not possible to publish changes that contain validations errors.
-
 
 #### Base Command
 
 `checkpoint-add-objects-batch`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| session_id | Executes the command with the specified session ID. | Required | 
-| object_type | Type of objects to be created. Default is host. | Required | 
-| ipaddress | ip addresses to be added. | Required | 
-| name | names of the ip objects to be added. | Required | 
-
+| session_id | Executes the command with the specified session ID. | Required |
+| object_type | Type of objects to be created. | Required |
+| ipaddress | ip addresses to be added. | Required |
+| name | names of the ip objects to be added. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddObjectBatch.task-id | string | Task id of the add-objects-batch command. | 
+| CheckPoint.AddObjectBatch.task-id | string | Task id of the add-objects-batch command. |
 
 ### checkpoint-delete-objects-batch
+
 ***
 Deletes existing objects in batch using object name or uid. To achieve optimum performance when deleting more than one object, use this API.
-
 
 #### Base Command
 
 `checkpoint-delete-objects-batch`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| session_id | Executes the command with the specified session ID. | Required | 
-| name | a comma separated list of names of the ip objects to be deleted. | Required | 
-| object_type | Type of objects to be deleted. Default is host. | Required | 
-
+| session_id | Executes the command with the specified session ID. | Required |
+| name | a comma separated list of names of the ip objects to be deleted. | Required |
+| object_type | Type of objects to be deleted. | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.DeleteObjectsBatch.task-id | string | Task id of the delete-objects-batch command. | 
+| CheckPoint.DeleteObjectsBatch.task-id | string | Task id of the delete-objects-batch command. |
 
 ### checkpoint-show-threat-protection
+
 ***
 Shows an existing threat protection using object name or uid
-
 
 #### Base Command
 
 `checkpoint-show-threat-protection`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| uid | . | Optional | 
-| name | . | Optional | 
-| showProfiles | . Possible values are: true, false. Default is false. | Optional | 
-| additionalProperties | . Possible values are: true, false. Default is false. | Optional | 
-
+| uid |  | Optional |
+| name |  | Optional |
+| showProfiles |  | Optional |
+| additionalProperties |  | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ShowThreatProtection | unknown |  | 
+| CheckPoint.ShowThreatProtection | unknown |  |
 
 ### checkpoint-show-threat-protections
+
 ***
 Shows existing threat protections using a filter
-
 
 #### Base Command
 
 `checkpoint-show-threat-protections`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| filter | . | Optional | 
-| limit | . | Optional | 
-| offset | . | Optional | 
-| order | . | Optional | 
-
+| filter |  | Optional |
+| limit |  | Optional |
+| offset |  | Optional |
+| order |  | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.ShowThreatProtections | unknown |  | 
+| CheckPoint.ShowThreatProtections | unknown |  |
 
 ### checkpoint-set-threat-protection
+
 ***
 Edit existing object using object name or uid.
-
 
 #### Base Command
 
 `checkpoint-set-threat-protection`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| uid | . | Optional | 
-| name | . | Optional | 
-| comments | . | Optional | 
-| follow_up | . Possible values are: true, false. | Optional | 
-| action | . | Optional | 
-| track | . Possible values are: None, Log, SNMP-Trap, Mail, Alert, User-Alert, User-Alert-2, User-Alert-3. | Optional | 
-| capturePackets | . | Optional | 
-| profiles | . | Optional | 
-
+| uid |  | Optional |
+| name |  | Optional |
+| comments |  | Optional |
+| follow_up |  | Optional |
+| action |  | Optional |
+| track |  | Optional |
+| capturePackets |  | Optional |
+| profiles |  | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.SetThreatProtections | unknown |  | 
+| CheckPoint.SetThreatProtections | unknown |  |
 
 ### checkpoint-add-threat-profile
+
 ***
 Add a new threat profile
-
 
 #### Base Command
 
 `checkpoint-add-threat-profile`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| name | . | Required | 
-| active_protections_performance_impact | . | Optional | 
-| active_protections_severity | . | Optional | 
-| confidence_level_high | . | Optional | 
-| confidence_level_low | . | Optional | 
-| confidence_level_medium | . | Optional | 
-| ips_settings | . | Optional | 
-| tags | . | Optional | 
-| use_indicators | . | Optional | 
-| anti_bot | . | Optional | 
-| anti_virus | . | Optional | 
-| ips | . | Optional | 
-| threat_emulation | . | Optional | 
-| exclude_protection_with_performance_impact | . | Optional | 
-| exclude_protection_with_performance_impact_mode | . Possible values are: very low, low or very low, medium or lower, high or lower. | Optional | 
-| exclude_protection_with_severity | . | Optional | 
-| exclude_protection_with_severity_mode | . Possible values are: low or above, medium or above, high or above, critical. | Optional | 
-| newly_updated_protections | . Possible values are: active, inactive, staging. | Optional | 
-
+| name |  | Required |
+| active_protections_performance_impact |  | Optional |
+| active_protections_severity |  | Optional |
+| confidence_level_high |  | Optional |
+| confidence_level_low |  | Optional |
+| confidence_level_medium |  | Optional |
+| ips_settings |  | Optional |
+| tags |  | Optional |
+| use_indicators |  | Optional |
+| anti_bot |  | Optional |
+| anti_virus |  | Optional |
+| ips |  | Optional |
+| threat_emulation |  | Optional |
+| exclude_protection_with_performance_impact |  | Optional |
+| exclude_protection_with_performance_impact_mode |  | Optional |
+| exclude_protection_with_severity |  | Optional |
+| exclude_protection_with_severity_mode |  | Optional |
+| newly_updated_protections |  | Optional |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.AddedThreatProfiles | unknown |  | 
+| CheckPoint.AddedThreatProfiles | unknown |  |
 
 ### checkpoint-delete-threat-protections
+
 ***
 Deletes threat protections.
-
 
 #### Base Command
 
 `checkpoint-delete-threat-protections`
+
 #### Input
 
 | **Argument Name** | **Description** | **Required** |
 | --- | --- | --- |
-| packageFormat | Valid response is "snort". | Required | 
-
+| packageFormat | Valid response is "snort". | Required |
 
 #### Context Output
 
 | **Path** | **Type** | **Description** |
 | --- | --- | --- |
-| CheckPoint.DeletedThreatProtections | unknown |  | 
+| CheckPoint.DeletedThreatProtections | unknown |  |
+
+### checkpoint-service-group-delete
+
+***
+Deletes the specified service group object.
+
+#### Base Command
+
+`checkpoint-service-group-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| ignore_warnings | Apply changes ignoring warnings. Possible values are: true, false. Default is false. | Optional |
+| ignore_errors | Apply changes ignoring errors. You won't be able to publish such changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. Possible values are: true, false. Default is false. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+### checkpoint-service-group-list
+
+***
+Gets a list of all service group objects.
+
+#### Base Command
+
+`checkpoint-service-group-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| filter | Search expression to filter objects by. The provided text should be exactly the same as it would be given in SmartConsole Object Explorer. The logical operators in the expression ('AND', 'OR') should be provided in capital letters. The search involves both a IP search and a textual search in name, comment, tags etc. | Optional |
+| limit | The maximum number of results to return. API default is 50. | Optional |
+| offset | Number of results to initially skip. API default is 0. | Optional |
+| order | Define the sort order using a single string made of comma-separated direction:field pairs. The direction can be ASC or DESC. Example: "ASC:type,ASC:name,DESC:uid". Automatically sorts the results by Name, in the ascending order. | Optional |
+| show_as_ranges | When true, the service group's matched content is displayed as ranges of port numbers rather than service objects. Objects that are not represented using port numbers are presented as objects. The 'members' parameter is omitted from the response and instead the 'ranges' parameter is displayed. Possible values are: true, false. Default is false. | Optional |
+| dereference_group_members | Indicates whether to dereference "members" field by details level for every object in reply. Possible values are: true, false. Default is false. | Optional |
+| show_membership | Indicates whether to calculate and show "groups" field for every object in reply. Possible values are: true, false. Default is false. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| domains_to_process | Indicates which domains to process the commands on. It cannot be used with details_level set to 'full'. Must be run from the System Domain. Possible values are: CURRENT_DOMAIN, ALL_DOMAINS_ON_THIS_SERVER. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ServiceGroup.name | String | Object name. |
+| CheckPoint.ServiceGroup.uid | String | Object unique identifier. |
+| CheckPoint.ServiceGroup.type | String | Object type. |
+| CheckPoint.ServiceGroup.domain.name | String | Domain name. |
+| CheckPoint.ServiceGroup.domain.uid | String | Domain UID. |
+| CheckPoint.ServiceGroup.domain.domain-type | String | Domain type. |
+
+### checkpoint-access-section-add
+
+***
+Adds a new access section.
+
+#### Base Command
+
+`checkpoint-access-section-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| layer | Layer that the rule belongs to identified by the name or UID. | Required |
+| position_rule | Rule name. Add rule relatively to another rule or section. | Optional |
+| position | The position of the rule. Possible values are: top, above, below, bottom. | Required |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| name | Object name. Must be unique in the domain. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+| ignore_warnings | Apply changes ignoring warnings. Possible values are: true, false. Default is false. | Optional |
+| ignore_errors | Apply changes ignoring errors. You won't be able to publish such changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. Possible values are: true, false. Default is false. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.AccessSection.name | String | Object name. |
+| CheckPoint.AccessSection.uid | String | Object unique identifier. |
+| CheckPoint.AccessSection.type | String | Object type. |
+| CheckPoint.AccessSection.domain.name | String | Domain name. |
+| CheckPoint.AccessSection.domain.uid | String | Domain UID. |
+| CheckPoint.AccessSection.domain.domain-type | String | Domain type. |
+
+### checkpoint-service-group-add
+
+***
+Adds a new service group object.
+
+#### Base Command
+
+`checkpoint-service-group-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| name | Object name. Must be unique in the domain. | Required |
+| members | Collection of Network objects identified by the name or UID. | Optional |
+| color | Color of the object. Should be one of existing colors. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| comments | Comments string. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| groups | Collection of group identifiers. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+| ignore_warnings | Apply changes ignoring warnings. Possible values are: true, false. Default is false. | Optional |
+| ignore_errors | Apply changes ignoring errors. You won't be able to publish such changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. Possible values are: true, false. Default is false. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ServiceGroup.name | String | Object name. |
+| CheckPoint.ServiceGroup.uid | String | Object unique identifier. |
+| CheckPoint.ServiceGroup.type | String | Object type. |
+| CheckPoint.ServiceGroup.domain.name | String | Domain name. |
+| CheckPoint.ServiceGroup.domain.uid | String | Domain UID. |
+| CheckPoint.ServiceGroup.domain.domain-type | String | Domain type. |
+| CheckPoint.ServiceGroup.members.name | String | Member object name. |
+| CheckPoint.ServiceGroup.members.uid | String | Member object UID. |
+| CheckPoint.ServiceGroup.members.type | String | Member object type. |
+| CheckPoint.ServiceGroup.groups.name | String | Group name. |
+| CheckPoint.ServiceGroup.groups.uid | String | Group UID. |
+| CheckPoint.ServiceGroup.tags.name | String | Tag name. |
+| CheckPoint.ServiceGroup.tags.uid | String | Tag UID. |
+
+### checkpoint-access-section-delete
+
+***
+Deletes the specified access section.
+
+#### Base Command
+
+`checkpoint-access-section-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| layer | Layer that the rule belongs to identified by the name or UID. | Required |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+### checkpoint-service-group-get
+
+***
+Shows an existing service group object using object name or uid.
+
+#### Base Command
+
+`checkpoint-service-group-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| show_as_ranges | When true, the service group's matched content is displayed as ranges of port numbers rather than service objects. Objects that are not represented using port numbers are presented as objects. The 'members' parameter is omitted from the response and instead the 'ranges' parameter is displayed. Possible values are: true, false. Default is false. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ServiceGroup.name | String | Object name. |
+| CheckPoint.ServiceGroup.uid | String | Object unique identifier. |
+| CheckPoint.ServiceGroup.type | String | Object type. |
+| CheckPoint.ServiceGroup.domain.name | String | Domain name. |
+| CheckPoint.ServiceGroup.domain.uid | String | Domain UID. |
+| CheckPoint.ServiceGroup.domain.domain-type | String | Domain type. |
+| CheckPoint.ServiceGroup.members.name | String | Member object name. |
+| CheckPoint.ServiceGroup.members.uid | String | Member object UID. |
+| CheckPoint.ServiceGroup.members.type | String | Member object type. |
+| CheckPoint.ServiceGroup.groups.name | String | Group name. |
+| CheckPoint.ServiceGroup.groups.uid | String | Group UID. |
+| CheckPoint.ServiceGroup.tags.name | String | Tag name. |
+| CheckPoint.ServiceGroup.tags.uid | String | Tag UID. |
+
+### checkpoint-service-group-update
+
+***
+Updates the specified service group object.
+
+#### Base Command
+
+`checkpoint-service-group-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| members_action | When the action is "add" or "remove", the members list is wrapped as {members_action: members}. Otherwise, members are sent without an action. Possible values are: add, remove. | Optional |
+| members | List of Network objects identified by the name or UID. | Optional |
+| new_name | New name of the object. | Optional |
+| color | Color of the object. Should be one of existing colors. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| comments | Comments string. | Optional |
+| ignore_warnings | Apply changes ignoring warnings. Possible values are: true, false. Default is false. | Optional |
+| ignore_errors | Apply changes ignoring errors. You won't be able to publish such changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. Possible values are: true, false. Default is false. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| groups_action | When the action is "add" or "remove", the groups list is wrapped as {groups_action: groups}. Otherwise, groups are sent without an action. Possible values are: add, remove. | Optional |
+| groups | List of group identifiers. | Optional |
+| tags_action | When the action is "add" or "remove", the tags list is wrapped as {tags_action: tags}. Otherwise, tags are sent without an action. Possible values are: add, remove. | Optional |
+| tags | List of tag identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ServiceGroup.name | String | Object name. |
+| CheckPoint.ServiceGroup.uid | String | Object unique identifier. |
+| CheckPoint.ServiceGroup.type | String | Object type. |
+| CheckPoint.ServiceGroup.domain.name | String | Domain name. |
+| CheckPoint.ServiceGroup.domain.uid | String | Domain UID. |
+| CheckPoint.ServiceGroup.domain.domain-type | String | Domain type. |
+| CheckPoint.ServiceGroup.members.name | String | Member object name. |
+| CheckPoint.ServiceGroup.members.uid | String | Member object UID. |
+| CheckPoint.ServiceGroup.members.type | String | Member object type. |
+| CheckPoint.ServiceGroup.groups.name | String | Group name. |
+| CheckPoint.ServiceGroup.groups.uid | String | Group UID. |
+| CheckPoint.ServiceGroup.tags.name | String | Tag name. |
+| CheckPoint.ServiceGroup.tags.uid | String | Tag UID. |
+
+### checkpoint-service-group-clone
+
+***
+Clones an existing service group object.
+
+#### Base Command
+
+`checkpoint-service-group-clone`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name of the service group to clone. | Required |
+| members_action | When the action is "add" or "remove", the members list is wrapped as {members_action: members}. Otherwise, members are sent without an action. Possible values are: add, remove. | Optional |
+| members | List of Network objects identified by the name or UID. | Optional |
+| new_name | New name of the object. | Optional |
+| color | Color of the object. Should be one of existing colors. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| comments | Comments string. | Optional |
+| ignore_warnings | Apply changes ignoring warnings. Possible values are: true, false. Default is false. | Optional |
+| ignore_errors | Apply changes ignoring errors. You won't be able to publish such changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. Possible values are: true, false. Default is false. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| groups_action | When the action is "add" or "remove", the groups list is wrapped as {groups_action: groups}. Otherwise, groups are sent without an action. Possible values are: add, remove. | Optional |
+| groups | List of group identifiers. | Optional |
+| tags_action | When the action is "add" or "remove", the tags list is wrapped as {tags_action: tags}. Otherwise, tags are sent without an action. Possible values are: add, remove. | Optional |
+| tags | List of tag identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ServiceGroup.name | String | Object name. |
+| CheckPoint.ServiceGroup.uid | String | Object unique identifier. |
+| CheckPoint.ServiceGroup.type | String | Object type. |
+| CheckPoint.ServiceGroup.domain.name | String | Domain name. |
+| CheckPoint.ServiceGroup.domain.uid | String | Domain UID. |
+| CheckPoint.ServiceGroup.domain.domain-type | String | Domain type. |
+| CheckPoint.ServiceGroup.members.name | String | Member object name. |
+| CheckPoint.ServiceGroup.members.uid | String | Member object UID. |
+| CheckPoint.ServiceGroup.members.type | String | Member object type. |
+| CheckPoint.ServiceGroup.groups.name | String | Group name. |
+| CheckPoint.ServiceGroup.groups.uid | String | Group UID. |
+| CheckPoint.ServiceGroup.tags.name | String | Tag name. |
+| CheckPoint.ServiceGroup.tags.uid | String | Tag UID. |
+
+### checkpoint-access-section-update
+
+***
+Updates the specified access section.
+
+#### Base Command
+
+`checkpoint-access-section-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| layer | Layer that the rule belongs to identified by the name or UID. | Required |
+| new_name | New name of the object. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| tags_action | When the action is "add" or "remove", the tags list is wrapped as {tags_action: tags}. Otherwise, tags are sent without an action. Possible values are: add, remove. | Optional |
+| tags | List of tag identifiers. | Optional |
+| ignore_warnings | Apply changes ignoring warnings. Possible values are: true, false. Default is false. | Optional |
+| ignore_errors | Apply changes ignoring errors. You won't be able to publish such changes.<br/>If ignore-warnings flag was omitted - warnings will also be ignored. Possible values are: true, false. Default is false. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.AccessSection.name | String | Object name. |
+| CheckPoint.AccessSection.uid | String | Object unique identifier. |
+| CheckPoint.AccessSection.type | String | Object type. |
+| CheckPoint.AccessSection.domain.name | String | Domain name. |
+| CheckPoint.AccessSection.domain.uid | String | Domain UID. |
+| CheckPoint.AccessSection.domain.domain-type | String | Domain type. |
+
+### checkpoint-access-section-get
+
+***
+Shows an existing access section using object name or uid.
+
+#### Base Command
+
+`checkpoint-access-section-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| layer | Layer that the rule belongs to identified by the name or UID. | Required |
+| identifier | Object unique identifier (UID) or name. | Required |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: uid, standard, full. Default is standard. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.AccessSection.name | String | Object name. |
+| CheckPoint.AccessSection.uid | String | Object unique identifier. |
+| CheckPoint.AccessSection.type | String | Object type. |
+| CheckPoint.AccessSection.domain.name | String | Domain name. |
+| CheckPoint.AccessSection.domain.uid | String | Domain UID. |
+| CheckPoint.AccessSection.domain.domain-type | String | Domain type. |
+
+### checkpoint-network-get
+
+***
+Gets full data for the specified network object.
+
+#### Base Command
+
+`checkpoint-network-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: standard, full, uid. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.Network.name | String | Object name. |
+| CheckPoint.Network.uid | String | Object UID. |
+| CheckPoint.Network.type | String | Object type. |
+| CheckPoint.Network.domain.name | String | Domain name. |
+| CheckPoint.Network.domain.uid | String | Domain UID. |
+| CheckPoint.Network.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Network.meta-info.creator | String | The creator of the object. |
+| CheckPoint.Network.meta-info.last-modifier | String | The user that last modified the object. |
+
+### checkpoint-network-list
+
+***
+Retrieve a list of network objects.
+
+#### Base Command
+
+`checkpoint-network-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| limit | The maximum number of results to return. Default is 50. Max is 500. | Optional |
+| offset | Number of results to initially skip. Default is 0.| Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| details_level | The level of detail for some of the fields in the response can vary from showing only the UID value of the object to a fully detailed representation of the object. Possible values are: standard, full, uid. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.Network.name | String | Object name. |
+| CheckPoint.Network.uid | String | Object UID. |
+| CheckPoint.Network.type | String | Object type. |
+
+### checkpoint-network-add
+
+***
+Create a new network object.
+
+#### Base Command
+
+`checkpoint-network-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object name. Must be unique in the domain. | Required |
+| subnet | IPv4 network address. | Required |
+| mask_length | IPv4 network mask length (e.g. 24). | Optional |
+| subnet_mask | IPv4 network mask (e.g. 255.255.255.0). | Optional |
+| comments | Comments string. | Optional |
+| color | Color of the object. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+| broadcast | Allow broadcast address inclusion. Possible values are: disallow, allow. | Optional |
+| nat_install_on | Gateway for NAT rule. | Optional |
+| nat_hide_behind | Hide behind method. This parameter is forbidden when nat_method is "static". Possible values are: gateway, ip_address. | Optional |
+| nat_settings_auto_rule | Whether to add automatic address translation rules. Possible values are: true, false. Default is false. | Optional |
+| nat_settings_ip | IPv4 address. This parameter is not required when nat_method is "hide" and nat_hide_behind is "gateway". | Optional |
+| nat_method | NAT translation method. Possible values are: hide, static. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.Network.name | String | Object name. |
+| CheckPoint.Network.uid | String | Object UID. |
+| CheckPoint.Network.type | String | Object type. |
+| CheckPoint.Network.domain.name | String | Domain name. |
+| CheckPoint.Network.domain.uid | String | Domain UID. |
+| CheckPoint.Network.domain.domain-type | String | Domain type. |
+| CheckPoint.Network.meta-info.creator | String | The creator of the object. |
+| CheckPoint.Network.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Network.read-only | Boolean | Indicates if the object is read-only. |
+
+### checkpoint-network-update
+
+***
+Update an existing network object.
+
+#### Base Command
+
+`checkpoint-network-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| new_identifier | New name of the object. | Optional |
+| subnet | IPv4 network address. | Optional |
+| subnet_mask | IPv4 network mask (e.g. 255.255.255.0). | Optional |
+| comments | Comments string. | Optional |
+| color | Color of the object. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+| broadcast | Allow broadcast address inclusion. Possible values are: disallow, allow. | Optional |
+| nat_install_on | Gateway for NAT rule. | Optional |
+| nat_hide_behind | Hide behind method. This parameter is forbidden when nat_method is "static". Possible values are: gateway, ip_address. | Optional |
+| nat_settings_auto_rule | Whether to add automatic address translation rules. Possible values are: true, false. Default is false. | Optional |
+| nat_settings_ip | IPv4 address. This parameter is not required when nat_method is "hide" and nat_hide_behind is "gateway". | Optional |
+| nat_method | NAT translation method. Possible values are: hide, static. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.Network.name | String | Object name. |
+| CheckPoint.Network.uid | String | Object UID. |
+| CheckPoint.Network.type | String | Object type. |
+| CheckPoint.Network.domain.name | String | Domain name. |
+| CheckPoint.Network.domain.uid | String | Domain UID. |
+| CheckPoint.Network.domain.domain-type | String | Domain type. |
+| CheckPoint.Network.meta-info.creator | String | The creator of the object. |
+| CheckPoint.Network.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.Network.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.Network.comments | String | Comments string. |
+
+### checkpoint-network-delete
+
+***
+Delete a network object.
+
+#### Base Command
+
+`checkpoint-network-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| ignore_warnings | Whether to ignore warnings when deleting the network object. Possible values are: true, false. Default is true. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+### checkpoint-service-get
+
+***
+Gets full data for the specified service object.
+
+#### Base Command
+
+`checkpoint-service-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| service_type | The type of service to retrieve. Possible values are: tcp, udp, icmp. | Required |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.TCPService.name | String | Object name. |
+| CheckPoint.TCPService.uid | String | Object UID. |
+| CheckPoint.TCPService.type | String | Object type. |
+| CheckPoint.TCPService.domain.name | String | Domain name. |
+| CheckPoint.TCPService.domain.uid | String | Domain UID. |
+| CheckPoint.TCPService.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.TCPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.TCPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.TCPService.port | String | The number of the port used to provide this service. |
+| CheckPoint.UDPService.name | String | Object name. |
+| CheckPoint.UDPService.uid | String | Object UID. |
+| CheckPoint.UDPService.type | String | Object type. |
+| CheckPoint.UDPService.domain.name | String | Domain name. |
+| CheckPoint.UDPService.domain.uid | String | Domain UID. |
+| CheckPoint.UDPService.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.UDPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.UDPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.UDPService.port | String | The number of the port used to provide this service. |
+| CheckPoint.ICMPService.name | String | Object name. |
+| CheckPoint.ICMPService.uid | String | Object UID. |
+| CheckPoint.ICMPService.type | String | Object type. |
+| CheckPoint.ICMPService.domain.name | String | Domain name. |
+| CheckPoint.ICMPService.domain.uid | String | Domain UID. |
+| CheckPoint.ICMPService.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.ICMPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.ICMPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.ICMPService.icmp-type | Number | ICMP type as listed in RFC 792. |
+| CheckPoint.ICMPService.icmp-code | Number | ICMP code as listed in RFC 792. |
+
+### checkpoint-service-list
+
+***
+Retrieve a list of service objects. When identifier is provided, returns a single service object.
+
+#### Base Command
+
+`checkpoint-service-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. When provided, calls the single-object endpoint instead of the list endpoint. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| service_type | The type of service to retrieve. Possible values are: tcp, udp, icmp. | Required |
+| limit | The maximum number of results to return. Default is 50. Max is 500. Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.TCPService.name | String | Object name. |
+| CheckPoint.TCPService.uid | String | Object UID. |
+| CheckPoint.TCPService.type | String | Object type. |
+| CheckPoint.TCPService.port | String | The number of the port used to provide this service. |
+| CheckPoint.TCPService.domain.name | String | Domain name. |
+| CheckPoint.TCPService.domain.uid | String | Domain UID. |
+| CheckPoint.TCPService.domain.domain-type | String | Domain type. |
+| CheckPoint.UDPService.name | String | Object name. |
+| CheckPoint.UDPService.uid | String | Object UID. |
+| CheckPoint.UDPService.type | String | Object type. |
+| CheckPoint.UDPService.port | String | The number of the port used to provide this service. |
+| CheckPoint.UDPService.domain.name | String | Domain name. |
+| CheckPoint.UDPService.domain.uid | String | Domain UID. |
+| CheckPoint.UDPService.domain.domain-type | String | Domain type. |
+| CheckPoint.ICMPService.name | String | Object name. |
+| CheckPoint.ICMPService.uid | String | Object UID. |
+| CheckPoint.ICMPService.type | String | Object type. |
+| CheckPoint.ICMPService.icmp-type | Number | ICMP type as listed in RFC 792. |
+| CheckPoint.ICMPService.icmp-code | Number | ICMP code as listed in RFC 792. |
+| CheckPoint.ICMPService.domain.name | String | Domain name. |
+| CheckPoint.ICMPService.domain.uid | String | Domain UID. |
+| CheckPoint.ICMPService.domain.domain-type | String | Domain type. |
+
+### checkpoint-tcp-service-add
+
+***
+Create a new TCP service object.
+
+#### Base Command
+
+`checkpoint-tcp-service-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | The object name. Must be unique in the domain. | Required |
+| session_id | The session ID to use when executing the command. | Optional |
+| port | The port number of the service. To specify a port range, place a hyphen between the lowest and highest port numbers (for example, 44-55). | Optional |
+| comments | A comment string. | Optional |
+| color | The color of the object. | Optional |
+| session_timeout | The time (in seconds) before the session times out. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| aggressive_aging | Aggressive aging settings as a JSON object. Example: {"enable": true, "timeout": 360, "use-default-timeout": false}. Supported keys: enable (boolean), timeout (integer), default-timeout (integer), use-default-timeout (boolean). | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Default is "False". | Optional |
+| use_default_session_timeout | Use the default virtual session timeout. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.TCPService.name | String | The object name. |
+| CheckPoint.TCPService.uid | String | The object UID. |
+| CheckPoint.TCPService.type | String | The object type. |
+| CheckPoint.TCPService.domain.name | String | The domain name. |
+| CheckPoint.TCPService.domain.uid | String | The domain UID. |
+| CheckPoint.TCPService.domain.domain-type | String | The domain type. |
+| CheckPoint.TCPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.TCPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.TCPService.read-only | Boolean | Whether the object is read-only. |
+| CheckPoint.TCPService.port | String | The port number of the service. |
+
+### checkpoint-udp-service-add
+
+***
+Create a new UDP service object.
+
+#### Base Command
+
+`checkpoint-udp-service-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | The object name. Must be unique in the domain. | Required |
+| session_id | The session ID to use when executing the command. | Optional |
+| port | The port number of the service. To specify a port range, place a hyphen between the lowest and highest port numbers (for example, 44-55). | Optional |
+| comments | A comment string. | Optional |
+| color | The color of the object. | Optional |
+| session_timeout | Time (in seconds) before the session times out. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| aggressive_aging | Aggressive aging settings as a JSON object. Example: {"enable": true, "timeout": 360, "use-default-timeout": false}. Supported keys: enable (boolean), timeout (integer), default-timeout (integer), use-default-timeout (boolean). | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Default is "False". | Optional |
+| use_default_session_timeout | Use the default virtual session timeout. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.UDPService.name | String | The object name. |
+| CheckPoint.UDPService.uid | String | The object UID. |
+| CheckPoint.UDPService.type | String | The object type. |
+| CheckPoint.UDPService.domain.name | String | The domain name. |
+| CheckPoint.UDPService.domain.uid | String | The domain UID. |
+| CheckPoint.UDPService.domain.domain-type | String | The domain type. |
+| CheckPoint.UDPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.UDPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.UDPService.read-only | Boolean | Whether the object is read-only. |
+| CheckPoint.UDPService.port | String | The port number of the service. |
+
+### checkpoint-icmp-service-add
+
+***
+Create a new ICMP service object.
+
+#### Base Command
+
+`checkpoint-icmp-service-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object name. Must be unique in the domain. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| icmp_type | ICMP type as listed in RFC 792. (default is 0). | Optional |
+| icmp_code | ICMP code as listed in RFC 792. (default is 0). | Optional |
+| comments | Comments string. | Optional |
+| color | Color of the object. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ICMPService.name | String | Object name. |
+| CheckPoint.ICMPService.uid | String | Object UID. |
+| CheckPoint.ICMPService.type | String | Object type. |
+| CheckPoint.ICMPService.domain.name | String | Domain name. |
+| CheckPoint.ICMPService.domain.uid | String | Domain UID. |
+| CheckPoint.ICMPService.domain.domain-type | String | Domain type. |
+| CheckPoint.ICMPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.ICMPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.ICMPService.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.ICMPService.icmp-type | Number | ICMP type as listed in RFC 792. |
+| CheckPoint.ICMPService.icmp-code | Number | ICMP code as listed in RFC 792. |
+
+### checkpoint-tcp-service-update
+
+***
+Update an existing TCP service object.
+
+#### Base Command
+
+`checkpoint-tcp-service-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | The object unique identifier (UID) or name. | Required |
+| session_id | The session ID to use when executing the command. | Optional |
+| new_identifier | The new name of the object. | Optional |
+| port | The port number of the service. | Optional |
+| comments | A comment string. | Optional |
+| color | The color of the object. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| session_timeout | The time (in seconds) before the session times out. | Optional |
+| aggressive_aging | Aggressive aging settings as a JSON object. Example: {"enable": true, "timeout": 360, "use-default-timeout": false}. Supported keys: enable (boolean), timeout (integer), default-timeout (integer), use-default-timeout (boolean). | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Default is "False". | Optional |
+| use_default_session_timeout | Use the default virtual session timeout. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.TCPService.name | String | The object name. |
+| CheckPoint.TCPService.uid | String | The object UID. |
+| CheckPoint.TCPService.type | String | The object type. |
+| CheckPoint.TCPService.domain.name | String | The domain name. |
+| CheckPoint.TCPService.domain.uid | String | The domain UID. |
+| CheckPoint.TCPService.domain.domain-type | String | Domain type. |
+| CheckPoint.TCPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.TCPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.TCPService.read-only | Boolean | Whether the object is read-only. |
+| CheckPoint.TCPService.comments | String | A comment string. |
+| CheckPoint.TCPService.port | String | The port number of the service. |
+
+### checkpoint-udp-service-update
+
+***
+Update an existing UDP service object.
+
+#### Base Command
+
+`checkpoint-udp-service-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | The session ID to use when executing the command. | Optional |
+| new_identifier | The new name of the object. | Optional |
+| port | The port number of the service. | Optional |
+| comments | A comment string. | Optional |
+| color | The color of the object. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| session_timeout | The time (in seconds) before the session times out. | Optional |
+| aggressive_aging | Aggressive aging settings as a JSON object. Example: {"enable": true, "timeout": 360, "use-default-timeout": false}. Supported keys: enable (boolean), timeout (integer), default-timeout (integer), use-default-timeout (boolean). | Optional |
+| ignore_warnings | Whether to ignore warnings when applying the updates. Default is "False". | Optional |
+| ignore_errors | Whether to ignore errors when applying the updates. Default is "False". | Optional |
+| use_default_session_timeout | Use the default virtual session timeout. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.UDPService.name | String | The object name. |
+| CheckPoint.UDPService.uid | String | The object UID. |
+| CheckPoint.UDPService.type | String | The object type. |
+| CheckPoint.UDPService.domain.name | String | The domain name. |
+| CheckPoint.UDPService.domain.uid | String | The domain UID. |
+| CheckPoint.UDPService.domain.domain-type | String | The domain type. |
+| CheckPoint.UDPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.UDPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.UDPService.read-only | Boolean | Whether the object is read-only. |
+| CheckPoint.UDPService.comments | String | A comment string. |
+| CheckPoint.UDPService.port | String | The port number of the service. |
+
+### checkpoint-icmp-service-update
+
+***
+Update an existing ICMP service object.
+
+#### Base Command
+
+`checkpoint-icmp-service-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| new_identifier | New name of the object. | Optional |
+| icmp_type | ICMP type as listed in RFC 792. | Optional |
+| icmp_code | ICMP code as listed in RFC 792. | Optional |
+| comments | Comments string. | Optional |
+| color | Color of the object. Possible values are: aquamarine, black, blue, crete blue, burlywood, cyan, dark green, khaki, orchid, dark orange, dark sea green, pink, turquoise, dark blue, firebrick, brown, forest green, gold, dark gold, gray, dark gray, light green, lemon chiffon, coral, sea green, sky blue, magenta, purple, slate blue, violet red, navy blue, olive, orange, red, sienna, yellow. Default is black. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.ICMPService.name | String | Object name. |
+| CheckPoint.ICMPService.uid | String | Object UID. |
+| CheckPoint.ICMPService.type | String | Object type. |
+| CheckPoint.ICMPService.domain.name | String | Domain name. |
+| CheckPoint.ICMPService.domain.uid | String | Domain UID. |
+| CheckPoint.ICMPService.domain.domain-type | String | Domain type. |
+| CheckPoint.ICMPService.meta-info.creator | String | The creator of the object. |
+| CheckPoint.ICMPService.meta-info.last-modifier | String | The user that last modified the object. |
+| CheckPoint.ICMPService.read-only | Boolean | Indicates if the object is read-only. |
+| CheckPoint.ICMPService.comments | String | Comments string. |
+| CheckPoint.ICMPService.icmp-type | Number | ICMP type as listed in RFC 792. |
+| CheckPoint.ICMPService.icmp-code | Number | ICMP code as listed in RFC 792. |
+
+### checkpoint-service-delete
+
+***
+Delete a service object.
+
+#### Base Command
+
+`checkpoint-service-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Object unique identifier (UID) or name. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+| service_type | The type of service to delete. Possible values are: tcp, udp, icmp. | Required |
+| ignore_warnings | Whether to ignore warnings when deleting the service object. Possible values are: true, false. Default is false. | Optional |
+
+#### Context Output
+
+There is no context output for this command.
+
+### checkpoint-nat-rule-get
+
+***
+Gets full data for the specified NAT rule.
+
+#### Base Command
+
+`checkpoint-nat-rule-get`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Rule name or Rule number. | Required |
+| package | Name of the package. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.NatRule.uid | String | Object unique identifier. |
+| CheckPoint.NatRule.name | String | Object name. |
+| CheckPoint.NatRule.type | String | Object type. |
+| CheckPoint.NatRule.enabled | Boolean | Whether the rule is enabled. |
+| CheckPoint.NatRule.method | String | NAT translation method. |
+| CheckPoint.NatRule.original-source.name | String | Original source object name. |
+| CheckPoint.NatRule.original-destination.name | String | Original destination object name. |
+| CheckPoint.NatRule.original-service.name | String | Original service object name. |
+| CheckPoint.NatRule.translated-source.name | String | Translated source object name. |
+| CheckPoint.NatRule.translated-destination.name | String | Translated destination object name. |
+| CheckPoint.NatRule.translated-service.name | String | Translated service object name. |
+| CheckPoint.NatRule.comments | String | Comments string. |
+| CheckPoint.NatRule.domain.name | String | Domain name. |
+| CheckPoint.NatRule.domain.uid | String | Domain UID. |
+| CheckPoint.NatRule.domain.domain-type | String | Domain type. |
+
+### checkpoint-nat-rule-list
+
+***
+Retrieve a list of NAT rules from the rulebase.
+
+#### Base Command
+
+`checkpoint-nat-rule-list`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| package | Name of the package. | Required |
+| limit | The maximum number of results to return. Default is 50. Max is 500. Default is 50. | Optional |
+| offset | Number of results to initially skip. Default is 0. | Optional |
+| filter | Search expression to filter the rulebase. The provided text should be exactly the same as it would be given in Smart Console. The logical operators in the expression (AND, OR) should be provided in capital letters. Default operator is OR. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.NatRule.uid | String | Object unique identifier. |
+| CheckPoint.NatRule.name | String | Object name. |
+
+### checkpoint-nat-rule-add
+
+***
+Add a new NAT rule.
+
+#### Base Command
+
+`checkpoint-nat-rule-add`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| package | Name of the package. | Required |
+| position | Position in the rulebase. Possible values are: top, bottom. | Required |
+| name | Rule name. | Optional |
+| original_source | Original source object. | Optional |
+| original_destination | Original destination object. | Optional |
+| original_service | Original service object. | Optional |
+| translated_source | Translated source object. | Optional |
+| translated_destination | Translated destination object. | Optional |
+| translated_service | Translated service object. | Optional |
+| install_on | Which Gateways identified by the name or UID to install the policy on. | Optional |
+| comments | Comments string. | Optional |
+| enabled | Enable/Disable the rule. Possible values are: true, false. | Optional |
+| nat_method | NAT translation method. Possible values are: static, hide, nat64, nat46, cgnat. | Optional |
+| tags | Collection of tag identifiers. | Optional |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.NatRule.uid | String | Object unique identifier. |
+| CheckPoint.NatRule.name | String | Object name. |
+| CheckPoint.NatRule.type | String | Object type. |
+| CheckPoint.NatRule.enabled | Boolean | Whether the rule is enabled. |
+| CheckPoint.NatRule.method | String | NAT translation method. |
+| CheckPoint.NatRule.original-source.name | String | Original source object name. |
+| CheckPoint.NatRule.original-destination.name | String | Original destination object name. |
+| CheckPoint.NatRule.original-service.name | String | Original service object name. |
+| CheckPoint.NatRule.translated-source.name | String | Translated source object name. |
+| CheckPoint.NatRule.translated-destination.name | String | Translated destination object name. |
+| CheckPoint.NatRule.translated-service.name | String | Translated service object name. |
+| CheckPoint.NatRule.comments | String | Comments string. |
+| CheckPoint.NatRule.domain.name | String | Domain name. |
+| CheckPoint.NatRule.domain.uid | String | Domain UID. |
+| CheckPoint.NatRule.domain.domain-type | String | Domain type. |
+
+### checkpoint-nat-rule-update
+
+***
+Update an existing NAT rule.
+
+#### Base Command
+
+`checkpoint-nat-rule-update`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | The rule name or rule number. | Required |
+| package | The name of the package. | Required |
+| original_source | The original source object. | Optional |
+| original_destination | The original destination object. | Optional |
+| translated_source | The translated source object. | Optional |
+| translated_destination | The translated destination object. | Optional |
+| original_service | The original service object. | Optional |
+| translated_service | The translated service object. | Optional |
+| comments | A comment string. | Optional |
+| enabled | Whether to enable or disable the rule. | Optional |
+| nat_method | The NAT translation method. | Optional |
+| tags | A comma-separated list of tag identifiers. | Optional |
+| session_id | The session ID to use when executing the command. | Optional |
+| new_position | New position in the rulebase. Can be an integer, or one of: top, above, below, bottom. When using "above" or "below", the new_position_rule argument is required. | Optional |
+| new_position_rule | The name of the rule or section to use as a reference point. The rule is repositioned relative to this rule or section. Required when new_position is "above" or "below". Optional when new_position is "top" or "bottom". | Optional |
+| install_on_add | A comma-separated list of gateways (name or UID) to add to the install-on collection. | Optional |
+| install_on_remove | A comma-separated list of gateways (name or UID) to remove from the install-on collection. | Optional |
+
+#### Context Output
+
+| **Path** | **Type** | **Description** |
+| --- | --- | --- |
+| CheckPoint.NatRule.uid | String | The object unique identifier. |
+| CheckPoint.NatRule.name | String | The object name. |
+| CheckPoint.NatRule.type | String | The object type. |
+| CheckPoint.NatRule.enabled | Boolean | Whether the rule is enabled. |
+| CheckPoint.NatRule.method | String | The NAT translation method. |
+| CheckPoint.NatRule.original-source.name | String | The original source object name. |
+| CheckPoint.NatRule.original-destination.name | String | The original destination object name. |
+| CheckPoint.NatRule.original-service.name | String | The original service object name. |
+| CheckPoint.NatRule.translated-source.name | String | The translated source object name. |
+| CheckPoint.NatRule.translated-destination.name | String | The translated destination object name. |
+| CheckPoint.NatRule.translated-service.name | String | The translated service object name. |
+| CheckPoint.NatRule.comments | String | A comment string. |
+| CheckPoint.NatRule.domain.name | String | The domain name. |
+| CheckPoint.NatRule.domain.uid | String | The domain UID. |
+| CheckPoint.NatRule.domain.domain-type | String | The domain type. |
+
+### checkpoint-nat-rule-delete
+
+***
+Delete a NAT rule.
+
+#### Base Command
+
+`checkpoint-nat-rule-delete`
+
+#### Input
+
+| **Argument Name** | **Description** | **Required** |
+| --- | --- | --- |
+| identifier | Rule name or Rule number. | Required |
+| package | Name of the package. | Required |
+| session_id | Executes the command with the specified session ID. Default is None. | Optional |
+
+#### Context Output
+
+There is no context output for this command.

@@ -115,6 +115,10 @@ THREAT_INTEL_TYPE_TO_DEMISTO_TYPES = {
 
 
 class Client(BaseClient):
+    def __init__(self, *args, feed_tags: Optional[list] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.feed_tags = feed_tags or []
+
     def fetch_indicators_from_stream(self, stream_id: str, newer_than: float, *, limit: Optional[int] = None) -> list:
         params = {
             "streamId": stream_id,
@@ -145,8 +149,15 @@ class Client(BaseClient):
         for indicator in indicators:
             indicator["type"] = indicator.get("indicator_type", "")
             indicator["fields"] = indicator.get("customFields", {})
+            self._add_tags(indicator)
 
         return indicators
+
+    def _add_tags(self, indicator: dict[str, Any]) -> None:
+        if not self.feed_tags:
+            return
+        fields = indicator["fields"]
+        fields["tags"] = list(set(fields.get("tags", []) + self.feed_tags))
 
 
 class STIX2Parser:
@@ -582,9 +593,7 @@ class STIX2Parser:
         Args:
             autonomous_system_obj (dict): indicator as an observable object of type autonomous-system.
         """
-        autonomous_system_indicator = STIX2Parser.parse_general_sco_indicator(
-            autonomous_system_obj, value_mapping="number"
-        )
+        autonomous_system_indicator = STIX2Parser.parse_general_sco_indicator(autonomous_system_obj, value_mapping="number")
         autonomous_system_indicator[0]["customFields"]["name"] = autonomous_system_obj.get("name")
 
         return autonomous_system_indicator
@@ -859,9 +868,7 @@ class STIX2Parser:
                         # support added for cases as 'value1','value2','value3' for 3 different indicators
                         for indicator_value in value.split(","):
                             indicator_value = indicator_value.strip("'")
-                            indicator = STIX2Parser.create_indicator(
-                                indicator_obj, type_, indicator_value.strip("'"), field_map
-                            )
+                            indicator = STIX2Parser.create_indicator(indicator_obj, type_, indicator_value.strip("'"), field_map)
                             indicators.append(indicator)
                         break
         return indicators
@@ -956,9 +963,7 @@ def test_module(client: Client, params: dict) -> str:  # pragma: no cover
         return str(e)
 
 
-def get_indicators_command(
-    client: Client, params: dict[str, str], args: dict[str, str]
-) -> CommandResults:  # pragma: no cover
+def get_indicators_command(client: Client, params: dict[str, str], args: dict[str, str]) -> CommandResults:  # pragma: no cover
     """Wrapper for retrieving indicators from the feed to the war-room.
     Args:
         client: Client object with request
@@ -999,6 +1004,7 @@ def main():  # pragma: no cover
     try:
         client = Client(
             base_url=FEEDLY_BASE_URL,
+            feed_tags=argToList(params.get("feedTags")),
             verify=not params.get("insecure", False),
             proxy=params.get("proxy", False),
             headers={"Authorization": f"Bearer {params['credentials']['password']}"},

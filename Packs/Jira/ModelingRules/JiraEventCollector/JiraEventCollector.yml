@@ -3,4 +3,6 @@ id: JiraEventCollector
 name: JiraEventCollector
 rules: ''
 schema: ''
+supportedModules:
+- xsiam
 toversion: 6.9.9

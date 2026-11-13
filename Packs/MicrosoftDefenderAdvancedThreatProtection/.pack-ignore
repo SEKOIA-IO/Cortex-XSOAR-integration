@@ -68,3 +68,26 @@ ignore=MR108
 
 [file:Microsoft365DefenderEventCollector.yml]
 ignore=MR108
+
+[file:MicrosoftAtpEndpoint.yml]
+ignore=GR109
+
+# Temporary ignore GR-107 until CIAC-12403 is resolved
+[file:playbook-MDE_-_Search_And_Block_Software.yml]
+ignore=GR107
+[file:playbook-MDE_-_Search_and_Compare_Process_Executions.yml]
+ignore=GR107
+[file:playbook-MDE_-_Host_Advanced_Hunting.yml]
+ignore=GR107
+[file:playbook-MDE_-_False_Positive_Incident_Handling.yml]
+ignore=GR107
+[file:playbook-MDE_-_True_Positive_Incident_Handling.yml]
+ignore=GR107
+[file:playbook-MDE_SIEM_ingestion_-_Get_Incident_Data.yml]
+ignore=GR107
+[file:playbook-MDE_Malware_-_Incident_Enrichment.yml]
+ignore=GR107
+[file:playbook-Microsoft_Defender_For_Endpoint_-_Unisolate_Endpoint.yml]
+ignore=GR109
+[file:playbook-Microsoft_Defender_For_Endpoint_-_Isolate_Endpoint.yml]
+ignore=GR109

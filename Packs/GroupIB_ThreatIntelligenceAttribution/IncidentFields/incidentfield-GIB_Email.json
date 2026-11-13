@@ -4,6 +4,7 @@
         "GIB Data Breach",
         "GIB Compromised Account",
         "GIB Compromised Card",
+        "GIB Compromised Masked Card",
         "GIB Brand Protection Domain"
     ],
     "caseInsensitive": false,
@@ -28,5 +29,14 @@
     "unsearchable": false,
     "useAsKpi": false,
     "version": -1,
-    "fromVersion": "6.0.0"
+    "fromVersion": "6.0.0",
+    "itemVersion": "1.4.2",
+    "openEnded": false,
+    "systemAssociatedTypes": [
+        "GIB Data Breach",
+        "GIB Compromised Account",
+        "GIB Compromised Card",
+        "GIB Compromised Masked Card",
+        "GIB Brand Protection Domain"
+    ]
 }

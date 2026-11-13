@@ -1,10 +1,10 @@
 import demistomock as demisto
-from CommonServerPython import *
+import lxml
 import pytest
 import sdv
-import lxml
+from CommonServerPython import *
 
-CIDR_INDICATORS = '''
+CIDR_INDICATORS = """
 {
    "iocs":[
       {
@@ -52,10 +52,10 @@ CIDR_INDICATORS = '''
    ],
    "total":1
 }
-'''
+"""
 
 
-EMAIL_INDICATORS = '''
+EMAIL_INDICATORS = """
 {
    "iocs":[
       {
@@ -117,9 +117,9 @@ EMAIL_INDICATORS = '''
    ],
    "total":1
 }
-'''
+"""
 
-URL_INDICATORS = '''
+URL_INDICATORS = """
 {
    "iocs":[
       {
@@ -182,9 +182,9 @@ URL_INDICATORS = '''
    ],
    "total":1
 }
-'''
+"""
 
-IP_INDICATORS = '''
+IP_INDICATORS = """
 {
    "iocs":[
       {
@@ -238,9 +238,9 @@ IP_INDICATORS = '''
       ],
    "total":1
 }
-'''
+"""
 
-DOMAIN_INDICATORS = '''
+DOMAIN_INDICATORS = """
 {
    "iocs":[
       {
@@ -305,9 +305,9 @@ DOMAIN_INDICATORS = '''
    ],
    "total":1
 }
-'''
+"""
 
-FILE_INDICATORS = '''
+FILE_INDICATORS = """
 {
    "iocs":[
       {
@@ -360,26 +360,29 @@ FILE_INDICATORS = '''
    ],
    "total":1
 }
-'''
+"""
 
-INDICATOR_QUERY = 'type:IP and sourceBrands:"Bambenek Consulting Feed"' \
-                  ' and sourcetimestamp:>"2020-02-10T11:32:32 +0000" and' \
-                  ' sourcetimestamp:<="2020-02-20T11:32:32 +0000"'
+INDICATOR_QUERY = (
+    'type:IP and sourceBrands:"Bambenek Consulting Feed"'
+    ' and sourcetimestamp:>"2020-02-10T11:32:32 +0000" and'
+    ' sourcetimestamp:<="2020-02-20T11:32:32 +0000"'
+)
 
 
 def test_find_indicators_by_time_frame(mocker):
     import datetime
+
     import pytz
     from TAXIIServer import find_indicators_by_time_frame
 
     def find_indicators(indicator_query):
         if indicator_query == INDICATOR_QUERY:
-            return 'yep'
-        return 'nope'
+            return "yep"
+        return "nope"
 
     # Set
-    mocker.patch('TAXIIServer.find_indicators_loop', side_effect=find_indicators)
-    mocker.patch.object(demisto, 'info')
+    mocker.patch("TAXIIServer.find_indicators_loop", side_effect=find_indicators)
+    mocker.patch.object(demisto, "info")
 
     begin_date = datetime.datetime(2020, 2, 10, 11, 32, 32, 644224, tzinfo=pytz.utc)
     end_date = datetime.datetime(2020, 2, 20, 11, 32, 32, 644224, tzinfo=pytz.utc)
@@ -388,30 +391,36 @@ def test_find_indicators_by_time_frame(mocker):
     result = find_indicators_by_time_frame('type:IP and sourceBrands:"Bambenek Consulting Feed"', begin_date, end_date)
 
     # Assert
-    assert result == 'yep'
+    assert result == "yep"
 
 
 def test_find_indicators_loop(mocker):
     from TAXIIServer import find_indicators_loop
 
     # Set
-    mocker.patch.object(demisto, 'searchIndicators', return_value=json.loads(IP_INDICATORS))
+    mocker.patch.object(demisto, "searchIndicators", return_value=json.loads(IP_INDICATORS))
 
     # Arrange
-    indicators = find_indicators_loop('q')
+    indicators = find_indicators_loop("q")
 
     # Assert
     assert len(indicators) == 1
-    assert indicators[0]['value'] == '52.218.100.20'
+    assert indicators[0]["value"] == "52.218.100.20"
 
 
-@pytest.mark.parametrize('indicator',
-                         [json.loads(IP_INDICATORS)['iocs'][0], json.loads(URL_INDICATORS)['iocs'][0],
-                          json.loads(EMAIL_INDICATORS)['iocs'][0], json.loads(CIDR_INDICATORS)['iocs'][0],
-                          json.loads(DOMAIN_INDICATORS)['iocs'][0],
-                          json.loads(FILE_INDICATORS)['iocs'][0]])
+@pytest.mark.parametrize(
+    "indicator",
+    [
+        json.loads(IP_INDICATORS)["iocs"][0],
+        json.loads(URL_INDICATORS)["iocs"][0],
+        json.loads(EMAIL_INDICATORS)["iocs"][0],
+        json.loads(CIDR_INDICATORS)["iocs"][0],
+        json.loads(DOMAIN_INDICATORS)["iocs"][0],
+        json.loads(FILE_INDICATORS)["iocs"][0],
+    ],
+)
 def test_validate_indicators(indicator):
-    from TAXIIServer import get_stix_indicator, NAMESPACE_URI, NAMESPACE
+    from TAXIIServer import NAMESPACE, NAMESPACE_URI, get_stix_indicator
 
     # Arrange
     stix_indicator = get_stix_indicator(indicator)
@@ -423,15 +432,14 @@ def test_validate_indicators(indicator):
     assert sdv.validate_xml(tree)
 
 
-@pytest.mark.parametrize('request_headers, url_scheme, expected, is_xsiam',
-                         [
-                             ({}, 'http', 'http://host:9000', False),
-                             ({'X-Request-URI': 'http://host/instance/execute'}, 'https',
-                              'https://host/instance/execute/eyy', False),
-                             ({'X-Request-URI': 'http://host/instance/execute'}, 'https',
-                              'https://ext-host/xsoar/instance/execute/eyy', True)
-                         ]
-                         )
+@pytest.mark.parametrize(
+    "request_headers, url_scheme, expected, is_xsiam",
+    [
+        ({}, "http", "http://host:9000", False),
+        ({"X-Request-URI": "http://host/instance/execute"}, "https", "https://host/instance/execute/eyy", False),
+        ({"X-Request-URI": "http://host/instance/execute"}, "https", "https://ext-host/xsoar/instance/execute/eyy", True),
+    ],
+)
 def test_get_url(mocker, request_headers, url_scheme, expected, is_xsiam):
     """
     Given:
@@ -446,21 +454,28 @@ def test_get_url(mocker, request_headers, url_scheme, expected, is_xsiam):
         - Case 2: Ensure server URL address contain the /instance/execute endpoint and the https URL scheme
     """
     import TAXIIServer
+
     taxii_server = TAXIIServer.TAXIIServer(
-        url_scheme='http', host='host', port=9000, collections={},
-        certificate='', private_key='', http_server=False, credentials={}
+        url_scheme="http",
+        host="host",
+        port=9000,
+        collections={},
+        certificate="",
+        private_key="",
+        http_server=False,
+        credentials={},
     )
     TAXIIServer.SERVER = taxii_server
     if request_headers:
-        mocker.patch('TAXIIServer.get_calling_context', return_value={'IntegrationInstance': 'eyy'})
-        mocker.patch('TAXIIServer.is_xsiam_or_xsoar_saas', return_value=is_xsiam)
+        mocker.patch("TAXIIServer.get_calling_context", return_value={"IntegrationInstance": "eyy"})
+        mocker.patch("TAXIIServer.is_xsiam_or_xsoar_saas", return_value=is_xsiam)
     assert taxii_server.get_url(request_headers) == expected
 
 
 def test_create_stix_hash_observable():
     """
     Given:
-        - namespace: The XML namespace, indicator: The Demisto File indicator.
+        - namespace: The XML namespace, indicator: The Demisto File indicator with a valid MD5 hash.
 
     When:
         - Getting a File indicator
@@ -470,7 +485,131 @@ def test_create_stix_hash_observable():
     """
 
     from TAXIIServer import create_stix_hash_observable
+
     namespace = "namespace"
-    indicator = {'indicator_type': 'File', 'value': '123456789'}
+    indicator = {"indicator_type": "File", "value": "86d96212bfe35ed590aa4f7ace76bb51"}
     observable = create_stix_hash_observable(namespace, indicator)
     assert observable
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "123456789",
+        r"C:\Windows\System32\malware.exe",
+        "malware.exe",
+        "3:AXGBicFlgVNhBGcL6wCrFQEv:AXGXrbWXrFQW",  # SSDEEP-style fuzzy hash
+    ],
+)
+def test_create_stix_hash_observable_rejects_non_hash_values(value):
+    """
+    Given:
+        - A File indicator whose value is not a valid MD5/SHA1/SHA256/SHA512 hash
+          (a bare numeric string, a Windows file path, a file name, or a fuzzy/SSDEEP hash).
+
+    When:
+        - Building the STIX hash observable for the outbound TAXII 1 feed.
+
+    Then:
+        - A ValueError is raised instead of silently serializing an invalid CybOX Hash,
+          which previously caused STIX/CybOX schema validation failures and an HTTP 500.
+    """
+    from TAXIIServer import create_stix_hash_observable
+
+    indicator = {"indicator_type": "File", "value": value}
+
+    with pytest.raises(ValueError):
+        create_stix_hash_observable("namespace", indicator)
+
+
+def test_create_stix_hash_observable_strips_control_characters():
+    """
+    Given:
+        - A File indicator whose hash value is wrapped with invalid XML control characters
+          (e.g. a NULL byte), as could occur with corrupted threat intelligence feed data.
+
+    When:
+        - Building the STIX hash observable.
+
+    Then:
+        - The control characters are stripped and the remaining valid hash value is used,
+          so XML/CybOX serialization never fails on invalid characters.
+    """
+    from TAXIIServer import create_stix_hash_observable
+
+    indicator = {"indicator_type": "File", "value": "86d96212bfe35ed590aa4f7ace76bb51\x00"}
+    observable = create_stix_hash_observable("namespace", indicator)
+    assert observable
+
+
+def test_sanitize_for_xml_removes_control_characters():
+    """
+    Given:
+        - A string containing NULL bytes and other control characters that are invalid in XML 1.0.
+
+    When:
+        - Sanitizing the string before it is embedded in a CybOX/STIX observable.
+
+    Then:
+        - All invalid XML control characters are removed while valid characters are preserved.
+    """
+    from TAXIIServer import sanitize_for_xml
+
+    assert sanitize_for_xml("abc\x00def") == "abcdef"
+    assert sanitize_for_xml("abc\x01\x1fdef") == "abcdef"
+    assert sanitize_for_xml("normal-value.com") == "normal-value.com"
+    assert sanitize_for_xml("") == ""
+
+
+def test_taxii_poll_service_does_not_return_500_on_internal_error(mocker):
+    """
+    Given:
+        - A TAXII poll request whose collection name is not configured on the server, causing
+          TAXIIServer.get_poll_response to raise a ValueError synchronously (before a streaming
+          Response is built). This same class of synchronous failure (e.g. a STIX/CybOX
+          serialization error surfacing before streaming begins) previously propagated
+          uncaught through the Flask route and crashed with an HTTP 500.
+
+    When:
+        - POSTing to the /taxii-poll-service endpoint.
+
+    Then:
+        - The server responds with a handled 400 error instead of an unhandled HTTP 500,
+          and the error is reported via handle_long_running_error.
+    """
+    import TAXIIServer
+
+    taxii_server = TAXIIServer.TAXIIServer(
+        url_scheme="http",
+        host="host",
+        port=9000,
+        collections={"TestCollection": "type:File"},
+        certificate="",
+        private_key="",
+        http_server=True,
+        credentials={},
+    )
+    TAXIIServer.SERVER = taxii_server
+
+    mocker.patch.object(demisto, "updateModuleHealth")
+    mocker.patch.object(demisto, "error")
+    mocker.patch.object(demisto, "debug")
+
+    class FakePollRequest:
+        message_type = TAXIIServer.MSG_POLL_REQUEST
+        message_id = "1"
+        collection_name = "UnknownCollection"  # not present in SERVER.collections
+        exclusive_begin_timestamp_label = None
+        inclusive_end_timestamp_label = None
+
+    mocker.patch("TAXIIServer.get_message_from_xml", return_value=FakePollRequest())
+
+    headers = {
+        "X-TAXII-Content-Type": "urn:taxii.mitre.org:message:xml:1.1",
+        "X-TAXII-Protocol": "urn:taxii.mitre.org:protocol:http:1.0",
+        "X-TAXII-Services": "urn:taxii.mitre.org:services:1.1",
+    }
+
+    with TAXIIServer.APP.test_client() as test_client:
+        response = test_client.post("/taxii-poll-service", data=b"<fake/>", headers=headers)
+        assert response.status_code == 400

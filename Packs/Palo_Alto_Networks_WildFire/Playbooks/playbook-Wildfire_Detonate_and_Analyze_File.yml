@@ -70,7 +70,7 @@ tasks:
       id: 906821d8-ce2c-42d6-8446-020eb9190a16
       version: -1
       name: Is WildFire enabled?
-      description: Returns 'yes' if the WildFire integration is available. 
+      description: Returns 'yes' if the WildFire integration is available.
       scriptName: IsIntegrationAvailable
       type: condition
       iscommand: false
@@ -134,7 +134,7 @@ tasks:
                       iscontext: true
                     right:
                       value:
-                        simple: .*(?:APK|JAR|DOC|DOCX|RTF|XLS|XLSX|PPT|PPTX|OOXML|PE32|PE|PE64|PDF|DMG|PKG|RAR|7Z|JS|ELF|HTA|LNK|VBS|PS1|PERL|sh|PYTHON|SHELL|DLL|MSI)\b
+                        simple: .*(?:APK|JAR|DOC|DOCX|RTF|XLS|XLSX|PPT|PPTX|OOXML|PE32|PE|PE64|PDF|DMG|PKG|RAR|7Z|JS|ELF|HTA|LNK|VBS|PS1|PERL|sh|PYTHON|SHELL|DLL|MSI|SWF|DEX|BAT|BZ|CSV|GZ|ISO|CLASS|JSE|WSF|JPG|MACHO|ZBUNDLE|FAT|ONE|SLK|IQY|ODS|ODT|PL|PNG|PY|TAR|VBE|ASP|ASPX|XML|HTML|EML|CMD|CHM|ZIP)\b
                     ignorecase: true
                   - operator: match
                     left:
@@ -143,7 +143,7 @@ tasks:
                       iscontext: true
                     right:
                       value:
-                        simple: .*(?:APK|JAR|DOC|DOCX|RTF|XLS|XLSX|PPT|PPTX|OOXML|PE32|PE|PE64|PDF|DMG|PKG|RAR|7Z|JS|ELF|HTA|LNK|VBS|PS1|PERL|sh|PYTHON|SHELL|DLL|MSI)\b
+                        simple: .*(?:APK|JAR|DOC|DOCX|RTF|XLS|XLSX|PPT|PPTX|OOXML|PE32|PE|PE64|PDF|DMG|PKG|RAR|7Z|JS|ELF|HTA|LNK|VBS|PS1|PERL|sh|PYTHON|SHELL|DLL|MSI|SWF|DEX|BAT|BZ|CSV|GZ|ISO|CLASS|JSE|WSF|JPG|MACHO|ZBUNDLE|FAT|ONE|SLK|IQY|ODS|ODT|PL|PNG|PY|TAR|VBE|ASP|ASPX|XML|HTML|EML|CMD|CHM|ZIP)\b
                     ignorecase: true
                   - operator: match
                     left:
@@ -152,7 +152,7 @@ tasks:
                       iscontext: true
                     right:
                       value:
-                        simple: .*(?:APK|JAR|DOC|DOCX|RTF|XLS|XLSX|PPT|PPTX|OOXML|PE32|PE|PDF|DMG|PKG|RAR|7Z|JS|EXE|ELF|HTA|LNK|VBS|PS1|PERL|sh|PYTHON|SHELL|DLL|MSI)\b
+                        simple: .*(?:APK|JAR|DOC|DOCX|RTF|XLS|XLSX|PPT|PPTX|OOXML|PE32|PE|PDF|DMG|PKG|RAR|7Z|JS|EXE|ELF|HTA|LNK|VBS|PS1|PERL|sh|PYTHON|SHELL|DLL|MSI|SWF|DEX|BAT|BZ|CSV|GZ|ISO|CLASS|JSE|WSF|JPG|MACHO|ZBUNDLE|FAT|ONE|SLK|IQY|ODS|ODT|PL|PNG|PY|TAR|VBE|ASP|ASPX|XML|HTML|EML|CMD|CHM|ZIP)\b
                     ignorecase: true
                 accessor: EntryID
             iscontext: true
@@ -361,4 +361,10 @@ outputs:
   description: The Wildfire findings.
   type: string
 tests:
- -  No tests
+- No tests
+supportedModules:
+- agentix
+- xsiam
+- edr
+- cloud
+- cloud_runtime_security

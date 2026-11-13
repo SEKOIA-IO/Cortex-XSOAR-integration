@@ -8,12 +8,15 @@
     "filter": {
       "AND": [
         {
-            "SEARCH_FIELD": "alert_name",
-            "SEARCH_TYPE": "CONTAINS",
-            "SEARCH_VALUE": "Impossible traveler"
+          "SEARCH_FIELD": "alert_name",
+          "SEARCH_TYPE": "CONTAINS",
+          "SEARCH_VALUE": "Impossible traveler"
         }
       ]
     }
-  }
+  },
+  "supportedModules": [
+    "xsiam",
+    "agentix"
+  ]
 }
-

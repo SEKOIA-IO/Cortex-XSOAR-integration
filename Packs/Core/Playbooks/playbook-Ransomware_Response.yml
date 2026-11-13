@@ -1,39 +1,7 @@
 id: Ransomware Response
 version: -1
 name: Ransomware Response
-description: "This playbook handles ransomware alerts based on the Cortex XDR Traps\
-  \ module signature 'Suspicious File Modification'\n\n**Attacker’s Goals:**\n\nAn\
-  \ attacker is attempting to encrypt the victim files for either extortion or destruction\
-  \ purposes.\n\n**Investigative Actions:**\n\nInvestigate the executed process image\
-  \ and verify if it is malicious using:\n\nXDR trusted signers\n\nVT trusted signers\n\
-  \nVT detection rate\n\nNSRL DB\n\n**Response Actions:**\n\nThe playbook’s first\
-  \ response action is a remediation plan which includes two sub-playbooks, **Containment\
-  \ Plan** and **Eradication Plan**, which is based on the initial data provided within\
-  \ the alert. In that phase, the playbooks will execute:\n\nAuto endpoint isolation\n\
-  \nAuto block indicators\n\nAuto file quarantine\n\nAuto user disable\n\nAuto process\
-  \ termination\n\nNext, the playbook executes an enrichment and response phase\
-  \ which includes two sub-playbooks, **Ransomware Enrich and Contain** & **Account\
-  \ Enrichment - Generic v2.1**.\nThe Ransomware Enrich and Contain playbook does\
-  \ the following:\n\n1.Checks if the initiator is a remote attacker and allows\
-  \ isolating the remote host, if possible. \n\n2.Retrieves the WildFire sandbox report\
-  \ and extracts the indicators within it. * The playbook tries to retrieve the report,\
-  \ but if there is no report available, the playbook tries to fetch the ransomware\
-  \ file for detonation. \n\n3.Hunts for the ransomware alert indicators from the alert\
-  \ table, searches for endpoints that have been seen with them, and allows containing\
-  \ the identified endpoints.\n\nNext, an advanced analysis playbook, which is currently\
-  \ done mostly manually, will be executed. This sub-playbook, **Ransomware Advanced\
-  \ Analysis** allows the analyst to upload the ransomware note and for the ransomware\
-  \ identification. Using the **ID-Ransomware** service, the analyst will be able\
-  \ to get the ransomware type and the decryptor if available.\n\nWhen the playbook\
-  \ executes, it checks for additional activity using the Endpoint Investigation Plan\
-  \ playbook, and another phase, which includes the Containment Plan sub-playbook,\
-  \ is executed.\n\n**This phase will execute the following containment actions:**\n\
-  \nManual block indicators\n\nManual file quarantine\n\nAuto endpoint isolation\n\
-  \nFinally, the recovery phase is executed. If the analysts decides to continue with\
-  \ the investigation rather than recover and close the alert, a manual task with\
-  \ **CISA** official ransomware investigation checklist is provided for further investigation.\n\
-  \n**External resources:**\n\n[MITRE Technique T1486](https://attack.mitre.org/techniques/T1486/)\n\
-  \n[CISA Ransomware Guide](https://www.cisa.gov/stopransomware/ransomware-guide)"
+description: "This playbook handles ransomware alerts based on the Cortex XDR Traps module signature 'Suspicious File Modification'\n\n**Attacker’s Goals:**\n\nAn attacker is attempting to encrypt the victim files for either extortion or destruction purposes.\n\n**Investigative Actions:**\n\nInvestigate the executed process image and verify if it is malicious using:\n\nXDR trusted signers\n\nVT trusted signers\n\nVT detection rate\n\nNSRL DB\n\n**Response Actions:**\n\nThe playbook’s first response action is a remediation plan which includes two sub-playbooks, **Containment Plan** and **Eradication Plan**, which is based on the initial data provided within the alert. In that phase, the playbooks will execute:\n\nAuto endpoint isolation\n\nAuto block indicators\n\nAuto file quarantine\n\nAuto user disable\n\nAuto process termination\n\nNext, the playbook executes an enrichment and response phase which includes two sub-playbooks, **Ransomware Enrich and Contain** & **Account Enrichment - Generic v2.1**.\nThe Ransomware Enrich and Contain playbook does the following:\n\n1.Checks if the initiator is a remote attacker and allows isolating the remote host, if possible. \n\n2.Retrieves the WildFire sandbox report and extracts the indicators within it. * The playbook tries to retrieve the report, but if there is no report available, the playbook tries to fetch the ransomware file for detonation. \n\n3.Hunts for the ransomware alert indicators from the alert table, searches for endpoints that have been seen with them, and allows containing the identified endpoints.\n\nNext, an advanced analysis playbook, which is currently done mostly manually, will be executed. This sub-playbook, **Ransomware Advanced Analysis** allows the analyst to upload the ransomware note and for the ransomware identification. Using the **ID-Ransomware** service, the analyst will be able to get the ransomware type and the decryptor if available.\n\nWhen the playbook executes, it checks for additional activity using the Endpoint Investigation Plan playbook, and another phase, which includes the Containment Plan sub-playbook, is executed.\n\n**This phase will execute the following containment actions:**\n\nManual block indicators\n\nManual file quarantine\n\nAuto endpoint isolation\n\nFinally, the recovery phase is executed. If the analysts decides to continue with the investigation rather than recover and close the alert, a manual task with **CISA** official ransomware investigation checklist is provided for further investigation.\n\n**External resources:**\n\n[MITRE Technique T1486](https://attack.mitre.org/techniques/T1486/)\n\n[CISA Ransomware Guide](https://www.cisa.gov/stopransomware/ransomware-guide)"
 starttaskid: "0"
 tasks:
   "0":
@@ -79,7 +47,7 @@ tasks:
       description: ''
     nexttasks:
       '#none#':
-      - "5"
+      - "137"
     separatecontext: false
     view: |-
       {
@@ -131,7 +99,7 @@ tasks:
       {
         "position": {
           "x": 360,
-          "y": 3260
+          "y": 3430
         }
       }
     note: false
@@ -156,13 +124,12 @@ tasks:
     nexttasks:
       '#none#':
       - "120"
-      - "137"
     separatecontext: false
     view: |-
       {
         "position": {
           "x": 360,
-          "y": 3600
+          "y": 3770
         }
       }
     note: false
@@ -192,7 +159,7 @@ tasks:
       {
         "position": {
           "x": 360,
-          "y": 3930
+          "y": 4100
         }
       }
     note: false
@@ -222,7 +189,7 @@ tasks:
       {
         "position": {
           "x": 360,
-          "y": 4410
+          "y": 4580
         }
       }
     note: false
@@ -252,7 +219,7 @@ tasks:
       {
         "position": {
           "x": 740,
-          "y": 4910
+          "y": 5080
         }
       }
     note: false
@@ -279,7 +246,7 @@ tasks:
       {
         "position": {
           "x": -250,
-          "y": 6070
+          "y": 6350
         }
       }
     note: false
@@ -338,6 +305,25 @@ tasks:
         simple: Quarantine
       HostContainment:
         simple: "True"
+      IAMUserDomain:
+        complex:
+          root: Account.Email
+          filters:
+          - - operator: match
+              left:
+                value:
+                  simple: Account.Email
+                iscontext: true
+              right:
+                value:
+                  simple: ^[^@\s]+@[^@\s]+$
+          transformers:
+          - operator: split
+            args:
+              delimiter:
+                value:
+                  simple: '@'
+          - operator: LastArrayElement
       UserContainment:
         simple: "True"
       UserVerification:
@@ -364,7 +350,7 @@ tasks:
       {
         "position": {
           "x": 720,
-          "y": 3430
+          "y": 3600
         }
       }
     note: false
@@ -425,7 +411,24 @@ tasks:
       HostContainment:
         simple: "True"
       IAMUserDomain:
-        simple: ''
+        complex:
+          root: Account.Email
+          filters:
+          - - operator: match
+              left:
+                value:
+                  simple: Account.Email
+                iscontext: true
+              right:
+                value:
+                  simple: ^[^@\s]+@[^@\s]+$
+          transformers:
+          - operator: split
+            args:
+              delimiter:
+                value:
+                  simple: '@'
+          - operator: LastArrayElement
       UserContainment:
         simple: "True"
       UserVerification:
@@ -462,7 +465,7 @@ tasks:
       {
         "position": {
           "x": 740,
-          "y": 4910
+          "y": 5190
         }
       }
     note: false
@@ -518,8 +521,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 720,
-          "y": 3750
+          "x": 360,
+          "y": 3920
         }
       }
     note: false
@@ -564,7 +567,7 @@ tasks:
       {
         "position": {
           "x": 360,
-          "y": 4060
+          "y": 4230
         }
       }
     note: false
@@ -652,8 +655,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 370,
-          "y": 5900
+          "x": 360,
+          "y": 6180
         }
       }
     note: false
@@ -684,8 +687,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 370,
-          "y": 5205
+          "x": 360,
+          "y": 5485
         }
       }
     note: false
@@ -729,8 +732,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 370,
-          "y": 5560
+          "x": 360,
+          "y": 5840
         }
       }
     note: false
@@ -759,8 +762,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 730,
-          "y": 5730
+          "x": 720,
+          "y": 6010
         }
       }
     note: false
@@ -813,8 +816,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 730,
-          "y": 5380
+          "x": 720,
+          "y": 5660
         }
       }
     note: false
@@ -843,8 +846,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 370,
-          "y": 5080
+          "x": 360,
+          "y": 5360
         }
       }
     note: false
@@ -914,7 +917,7 @@ tasks:
       {
         "position": {
           "x": 360,
-          "y": 4725
+          "y": 4895
         }
       }
     note: false
@@ -1163,7 +1166,7 @@ tasks:
       {
         "position": {
           "x": 360,
-          "y": 4555
+          "y": 4725
         }
       }
     note: false
@@ -1223,7 +1226,7 @@ tasks:
       {
         "position": {
           "x": 1140,
-          "y": 3430
+          "y": 3600
         }
       }
     note: false
@@ -1251,7 +1254,7 @@ tasks:
       brand: ""
     nexttasks:
       '#none#':
-      - "36"
+      - "5"
     scriptarguments:
       Username:
         complex:
@@ -1266,8 +1269,8 @@ tasks:
     view: |-
       {
         "position": {
-          "x": 1140,
-          "y": 3750
+          "x": 360,
+          "y": 3260
         }
       }
     note: false
@@ -1306,7 +1309,7 @@ tasks:
       {
         "position": {
           "x": 720,
-          "y": 4230
+          "y": 4400
         }
       }
     note: false
@@ -1503,7 +1506,7 @@ view: |-
     },
     "paper": {
       "dimensions": {
-        "height": 4065,
+        "height": 4340,
         "width": 1780,
         "x": -260,
         "y": 2070
@@ -1533,15 +1536,13 @@ inputs:
   value:
     simple: "True"
   required: false
-  description: Whether to isolate the remote endpoint if the attack has been triggered
-    remotely.
+  description: Whether to isolate the remote endpoint if the attack has been triggered remotely.
   playbookInputQuery:
 - key: isolateSimilarEndpoints
   value:
     simple: "True"
   required: false
-  description: Whether to isolate the endpoints identified with similar IoCs to the
-    ransomware alert.
+  description: Whether to isolate the endpoints identified with similar IoCs to the ransomware alert.
   playbookInputQuery:
 - key: RunAdvancedAnalysis
   value:
@@ -1729,7 +1730,18 @@ outputSections:
 outputs: []
 tests:
 - No tests (auto formatted)
-marketplaces: ["marketplacev2"]
+marketplaces:
+- marketplacev2
+- platform
 fromversion: 6.6.0
 
 
+
+
+supportedModules:
+- agentix
+- cloud
+- cloud_posture
+- cloud_runtime_security
+- edr
+- xsiam

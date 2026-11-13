@@ -1,7 +1,9 @@
 # Prisma Cloud Compute
+
 This pack includes Cortex XSIAM content.
 
 <~XSIAM>
+
 ## Overview
 
 This integration lets you import **Palo Alto Networks - Prisma Cloud Compute** alerts into Cortex XSIAM.
@@ -38,10 +40,10 @@ Configure Prisma Cloud Compute to send alerts to Cortex XSIAM by creating an ale
 4. Click **Test** to validate the integration.
 5. Click **Done** to save the integration.
 
-
 ## Using the integration and scripts
 
 The integration ships with four default playbooks:
+
 * **Prisma Cloud Compute - Audit Alert v3**
 * **Prisma Cloud Compute - Cloud Discovery Alert**
 * **Prisma Cloud Compute - Compliance Alert v2**
@@ -57,38 +59,40 @@ To better understand how playbooks and scripts interoperate, consider the _Prism
 * When the playbook is triggered, a task called **Parse Vulnerability Alert** runs.
 * The task runs the **PrismaCloudComputeParseVulnerabilityAlert** script, which takes the `prismacloudcomputerawalertjson` field of the incident (the raw JSON alert data) as input.
 
-![image](https://raw.githubusercontent.com/demisto/content/f808c78aa6c94a09450879c8702a1b7f023f1d4b/Packs/PrismaCloudCompute/doc_files/prisma_alert_raw_input.png)
-
+![image](doc_files/prisma_alert_raw_input.png)
 
 * Click **outputs** to see how the script transformed the raw JSON input into a Cortex XSOAR object.
 
-
-![image](https://raw.githubusercontent.com/demisto/content/f808c78aa6c94a09450879c8702a1b7f023f1d4b/Packs/PrismaCloudCompute/doc_files/prisma_alert_outputs.png)
+![image](doc_files/prisma_alert_outputs.png)
 
 At this point, you can add tasks that extend the playbook to check and respond to alerts depending on the properties of the Cortex XSOAR object.
 
 ### Audit Alert v3 playbook
+
 This is a default playbook for parsing and enrichment of Prisma Cloud Compute audit alerts.
 
 The playbook has the following sections:
 
 Enrichment:
-- Image details
-- Similar container events
-- Owner details
-- Vulnerabilities
-- Compliance details
-- Forensics
-- Defender logs
+
+* Image details
+* Similar container events
+* Owner details
+* Vulnerabilities
+* Compliance details
+* Forensics
+* Defender logs
 
 Remediation:
-- Block Indicators - Generic v3
-- Cloud Response - Generic
-- Manual Remediation
+
+* Block Indicators - Generic v3
+* Cloud Response - Generic
+* Manual Remediation
 
 Currently, the playbook supports incidents created by **Runtime** and **WAAS** triggers.
 
 ### Compliance Alert v2
+
 This is a default playbook for parsing and enrichment of Prisma Cloud Compute compliance alerts.
 
 It will handle hosts, images and container compliance alerts.
@@ -99,12 +103,30 @@ In addition, the playbook can create and update external ticketing systems for e
 
 ## Troubleshooting
 
-If any alerts are missing in Cortex XSIAM, check the status of the integration:
+If any alerts are missing in Cortex XSIAM, do the following.
 
-![image](https://raw.githubusercontent.com/demisto/content/f808c78aa6c94a09450879c8702a1b7f023f1d4b/Packs/PrismaCloudCompute/doc_files/prisma_instance.png)
+![image](doc_files/prisma_instance.png)
+
+### Troubleshooting: Mismatch Between Prisma Cloud Alerts and Cortex XSIAM Issues
+
+Prisma Cloud Compute aggregates alerts occurring within a specific time window into a single alert before sending them to Cortex XSIAM. This may result in fewer issues created compared to the total number of alerts in the Prisma Cloud Compute console. Your alerts are not lost — they are stored inside each issue in the `aggregatedAlerts` field and can be viewed with this XQL query:
+
+```xql
+dataset = prisma_cloud_compute_raw
+| fields aggregatedAlerts
+```
+
+To receive each alert as a separate issue, reduce the aggregation window in your Prisma Cloud alert profile:
+
+1. Open a case with **Prisma Cloud Support** and request enabling `SAAS_ADDITIONAL_ALERT_AGGREGATION_OPTIONS_ENABLED = true` on your tenant. This unlocks the 1-second aggregation option (the default minimum is 10 minutes).
+2. In the Prisma Cloud Console, go to **Manage → Alerts → [Alert Profile] → Aggregation Period** and set it to **1 second**.
+3. Click **Save**. Each alert will now be forwarded individually to Cortex XSIAM.
+
+> **Note:** Reducing the aggregation period increases the volume of alerts ingested into Cortex XSIAM.
 </~XSIAM>
 
 <~XSOAR>
+
 ## Overview
 
 This integration lets you import **Palo Alto Networks - Prisma Cloud Compute** alerts into Cortex XSOAR.
@@ -141,10 +163,10 @@ Configure Prisma Cloud Compute to send alerts to Cortex XSOAR by creating an ale
 4. Click **Test** to validate the integration.
 5. Click **Done** to save the integration.
 
-
 ## Using the integration and scripts
 
 The integration ships with four default playbooks:
+
 * **Prisma Cloud Compute - Audit Alert v3**
 * **Prisma Cloud Compute - Cloud Discovery Alert**
 * **Prisma Cloud Compute - Compliance Alert v2**
@@ -160,38 +182,40 @@ To better understand how playbooks and scripts interoperate, consider the _Prism
 * When the playbook is triggered, a task called **Parse Vulnerability Alert** runs.
 * The task runs the **PrismaCloudComputeParseVulnerabilityAlert** script, which takes the `prismacloudcomputerawalertjson` field of the incident (the raw JSON alert data) as input.
 
-![image](https://raw.githubusercontent.com/demisto/content/f808c78aa6c94a09450879c8702a1b7f023f1d4b/Packs/PrismaCloudCompute/doc_files/prisma_alert_raw_input.png)
-
+![image](doc_files/prisma_alert_raw_input.png)
 
 * Click **outputs** to see how the script transformed the raw JSON input into a Cortex XSOAR object.
 
-
-![image](https://raw.githubusercontent.com/demisto/content/f808c78aa6c94a09450879c8702a1b7f023f1d4b/Packs/PrismaCloudCompute/doc_files/prisma_alert_outputs.png)
+![image](doc_files/prisma_alert_outputs.png)
 
 At this point, you can add tasks that extend the playbook to check and respond to alerts depending on the properties of the Cortex XSOAR object.
 
 ### Audit Alert v3 playbook
+
 This is a default playbook for parsing and enrichment of Prisma Cloud Compute audit alerts.
 
 The playbook has the following sections:
 
 Enrichment:
-- Image details
-- Similar container events
-- Owner details
-- Vulnerabilities
-- Compliance details
-- Forensics
-- Defender logs
+
+* Image details
+* Similar container events
+* Owner details
+* Vulnerabilities
+* Compliance details
+* Forensics
+* Defender logs
 
 Remediation:
-- Block Indicators - Generic v3
-- Cloud Response - Generic
-- Manual Remediation
+
+* Block Indicators - Generic v3
+* Cloud Response - Generic
+* Manual Remediation
 
 Currently, the playbook supports incidents created by **Runtime** and **WAAS** triggers.
 
 ### Compliance Alert v2
+
 This is a default playbook for parsing and enrichment of Prisma Cloud Compute compliance alerts.
 It will handle hosts, images and container compliance alerts.
 Each sub playbook in this playbook is dedicated to a specific resource type: host, container or image, and will loop through all of the retrieved Compliance Issue IDs in order to retrieve enriched information about each of the resources.
@@ -203,5 +227,17 @@ In addition, the playbook can create and update external ticketing systems for e
 
 If any alerts are missing in Cortex XSOAR, check the status of the integration:
 
-![image](https://raw.githubusercontent.com/demisto/content/f808c78aa6c94a09450879c8702a1b7f023f1d4b/Packs/PrismaCloudCompute/doc_files/prisma_instance.png)
+![image](doc_files/prisma_instance.png)
+
+### Troubleshooting: Mismatch Between Prisma Cloud Alerts and Cortex XSOAR Incidents
+
+Prisma Cloud Compute aggregates alerts occurring within a specific time window into a single alert before sending them to Cortex XSOAR. This may result in fewer incidents created compared to the total number of alerts in the Prisma Cloud Compute console. Your alerts are not lost — they are stored inside each incident in the `aggregatedAlerts` field.
+
+To receive each alert as a separate incident, reduce the aggregation window in your Prisma Cloud alert profile:
+
+1. Open a case with **Prisma Cloud Support** and request enabling `SAAS_ADDITIONAL_ALERT_AGGREGATION_OPTIONS_ENABLED = true` on your tenant. This unlocks the 1-second aggregation option (the default minimum is 10 minutes).
+2. In the Prisma Cloud Console, go to **Manage → Alerts → [Alert Profile] → Aggregation Period** and set it to **1 second**.
+3. Click **Save**. Each alert will now be forwarded individually to Cortex XSOAR.
+
+> **Note:** Reducing the aggregation period increases the volume of alerts ingested into Cortex XSOAR.
 </~XSOAR>

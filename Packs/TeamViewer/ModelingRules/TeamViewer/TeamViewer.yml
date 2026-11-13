@@ -1,5 +1,8 @@
 fromversion: 6.10.0
-id: TeamViewer_tensor_modeling_rule
+toversion: 8.14.0
+id: TeamViewer_Tensor_ModelingRule
 name: TeamViewer Tensor Modeling Rule
 rules: ''
 schema: ''
+supportedModules:
+- xsiam
